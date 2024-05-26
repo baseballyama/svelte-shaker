@@ -1,1 +1,3 @@
 pnpm-lock.yaml
+
+packages/svelte-shaker/tests/fixtures/**

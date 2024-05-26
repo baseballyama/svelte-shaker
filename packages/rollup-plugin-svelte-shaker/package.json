@@ -1,0 +1,17 @@
+{
+  "name": "rollup-plugin-svelte-shaker",
+  "description": "Tree shaking for Svelte components",
+  "author": "baseballyama",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --watch src/index.ts",
+    "test:watch": "vitest",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "svelte-shaker": "workspace:^"
+  },
+  "devDependencies": {
+    "rollup": "4.18.0"
+  }
+}
