@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { svelteShaker, fsResolve } from '../src/index';
@@ -22,6 +22,8 @@ describe('svelte-shaker / fixtures', () => {
 
       for (const [id, code] of Object.entries(out)) {
         const name = basename(id);
+        // `actual/` is a gitignored debug artifact, so create it on a fresh checkout.
+        mkdirSync(join(dir, 'actual'), { recursive: true });
         writeFileSync(join(dir, 'actual', name), code); // for inspection on failure
         assertCompiles(code, name);
         const expected = readFileSync(join(dir, 'expected', name), 'utf-8');
