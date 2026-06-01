@@ -29,14 +29,17 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # Build the engine first so its `dist/types` exist: the example and
+      # rollup-plugin packages import `svelte-shaker` / `svelte-shaker/vite`,
+      # which type-check (and run) resolve through the built package.
+      - name: Build engine
+        run: pnpm --filter svelte-shaker build
+
       - name: Type-check, lint, format
         run: pnpm all:check
 
       - name: Test (engine)
         run: pnpm --filter svelte-shaker test
-
-      - name: Build engine
-        run: pnpm --filter svelte-shaker build
 
       - name: Build example (end-to-end shake)
         run: pnpm --filter example build
