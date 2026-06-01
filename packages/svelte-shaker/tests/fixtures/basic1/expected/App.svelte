@@ -1,5 +1,5 @@
-<script lang="ts">
+<script>
   import Sub from './Sub.svelte';
 </script>
 
-<Sub hasIcon={false} />
+<Sub />

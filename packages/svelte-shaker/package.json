@@ -15,6 +15,10 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
+    "./vite": {
+      "types": "./dist/types/src/vite.d.ts",
+      "import": "./dist/vite.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -24,18 +28,21 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "acorn": "^8.11.3",
     "magic-string": "0.30.10",
     "zimmerframe": "1.1.2"
+  },
+  "peerDependencies": {
+    "svelte": "^5"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "25.0.8",
     "@rollup/plugin-node-resolve": "15.2.3",
     "@rollup/plugin-terser": "0.4.4",
     "@rollup/plugin-typescript": "11.1.6",
-    "@rollup/plugin-virtual": "^3.0.2",
+    "@sveltejs/vite-plugin-svelte": "^4",
     "rollup": "4.18.0",
-    "svelte": "5.0.0-next.141",
-    "tslib": "2.6.2"
+    "svelte": "^5",
+    "tslib": "2.6.2",
+    "vite": "^5"
   }
 }

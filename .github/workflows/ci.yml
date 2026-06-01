@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4 # version comes from package.json "packageManager"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Build the engine first so its `dist/types` exist: the example and
+      # rollup-plugin packages import `svelte-shaker` / `svelte-shaker/vite`,
+      # which type-check (and run) resolve through the built package.
+      - name: Build engine
+        run: pnpm --filter svelte-shaker build
+
+      - name: Type-check, lint, format
+        run: pnpm all:check
+
+      - name: Test (engine)
+        run: pnpm --filter svelte-shaker test
+
+      - name: Build example (end-to-end shake)
+        run: pnpm --filter example build

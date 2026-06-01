@@ -1,8 +1,14 @@
 {
   "extends": "@tsconfig/strictest/tsconfig.json",
+  "exclude": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/.shaker-tmp*/**",
+    "**/tests/fixtures/**/actual/**"
+  ],
   "compilerOptions": {
     "module": "esnext",
-    "lib": ["esnext"],
+    "lib": ["esnext", "dom", "dom.iterable"],
     "target": "esnext",
     "noEmit": true,
     "moduleResolution": "bundler",
