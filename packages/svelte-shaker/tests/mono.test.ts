@@ -8,22 +8,26 @@ import { shaker } from '../src/vite';
 import { analyze } from '../src/analyze';
 import { monomorphize } from '../src/mono';
 import { svelteShakerWithMono, svelteShaker } from '../src/index';
-import { assertCompiles, cleanTmp, renderHtml } from './diff';
+import { assertCompiles, cleanTmp, renderGraphHtml } from './diff';
 
 afterAll(() => cleanTmp());
 
 // ----------------------------------------------------------------------
-// L2 per-call-site monomorphization (docs §3 "L2", §13.2).  OPT-IN and
-// BAIL-SAFE.  The headline differentiator: a prop that is app-wide multi-valued
-// (so L1 cannot fold it and L1.5 cannot remove ANY arm, because every value is
-// reachable somewhere) is frozen PER CALL SITE, so a specific
-// `<Btn variant="primary"/>` gets a copy whose every non-primary branch is gone.
+// L2 per-call-site monomorphization (docs §3 "L2", §11, §13.2).  OPT-IN,
+// BAIL-SAFE, and — the property under test — NEVER BLOATING.
+//
+// L1.5 already removes every arm dead APP-WIDE, so L2 only shrinks the bundle
+// when specialization makes a whole MODULE become globally unreferenced — which
+// happens for CORRELATED multi-prop conditions L1.5's per-prop narrowing cannot
+// kill.  L2 therefore runs a MEASURED net-win gate:
+//   (1) ALL-SITES-OR-NOTHING: only specialize a child when every live call site
+//       maps to a non-base residual (so the base module becomes unreferenced),
+//   (2) measure the whole-program reachable module bytes (compiled client JS) in
+//       the BASE vs SPEC scenarios and specialize iff SPEC is strictly smaller.
 //
 // Soundness is proven by differential SSR: each specialized residual renders the
-// SAME observable HTML as the base component for the value that occurs at the
-// site it was made for.  "Sound" is also satisfied by leaving a site
-// un-specialized (a conservative bail) — every test that bails still renders
-// correctly because the base output is always correct.
+// SAME observable HTML as the base component for the value occurring at its site;
+// declining to specialize (the conservative bail) is also always correct.
 // ----------------------------------------------------------------------
 
 /** Minimal in-memory module graph for the engine (POSIX-style absolute ids). */
@@ -50,25 +54,40 @@ function memGraph(files: Record<string, string>): {
   return { resolve, readFile };
 }
 
-const ON = { enabled: true, maxVariants: 8 } as const;
+const ON = { enabled: true, maxVariants: 8, minSavings: 0 } as const;
 
-// A `variant` that is {primary, secondary, danger} app-wide: L1 cannot fold it
-// and L1.5 cannot remove any arm — every value occurs at SOME site.
-const VARIANT_FILES: Record<string, string> = {
+// ----------------------------------------------------------------------
+// THE CORRELATED-CONDITION CASE (the win L2 exists for).
+//
+// `a`,`b` are app-wide multi-valued (a∈{0,1}, b∈{0,1}), so L1 cannot fold them
+// and L1.5 narrows them INDEPENDENTLY — it cannot prove `a === 1 && b === 1` is
+// never both true, so it keeps `<Heavy/>`.  The only sites are (0,1) and (1,0),
+// never (1,1).  L2 freezes a (or b) per site, the correlated `{#if}` folds false
+// in every variant, `<Heavy/>` vanishes from every variant, Heavy is globally
+// unreferenced — and the bundle shrinks.
+// ----------------------------------------------------------------------
+
+const HEAVY_BODY =
+  '<div class="heavy">' +
+  Array.from(
+    { length: 40 },
+    (_, i) => `<span>heavy widget cell ${i}</span>`,
+  ).join('') +
+  '</div>';
+
+const CORRELATED_FILES: Record<string, string> = {
   '/App.svelte':
-    `<script>\n  import Btn from './Btn.svelte';\n</script>\n` +
-    `<Btn variant="primary" />\n<Btn variant="secondary" />\n<Btn variant="danger" />\n`,
-  '/Btn.svelte':
-    `<script>\n  let { variant } = $props();\n</script>\n` +
-    `{#if variant === 'danger'}<strong>DANGER</strong>` +
-    `{:else if variant === 'primary'}<b>P</b>` +
-    `{:else if variant === 'secondary'}<i>S</i>` +
-    `{:else}<u>O</u>{/if}\n`,
+    `<script>\n  import Child from './Child.svelte';\n</script>\n` +
+    `<Child a={0} b={1} />\n<Child a={1} b={0} />\n`,
+  '/Child.svelte':
+    `<script>\n  import Heavy from './Heavy.svelte';\n  let { a, b } = $props();\n</script>\n` +
+    `{#if a === 1 && b === 1}<Heavy />{/if}<p>base</p>\n`,
+  '/Heavy.svelte': `<script>\n  let { n = 0 } = $props();\n</script>\n${HEAVY_BODY}\n`,
 };
 
-describe('L2 monomorphize / engine (the differentiator)', () => {
-  it('OFF by default: no variants, no bindings, base output unchanged', async () => {
-    const { resolve, readFile } = memGraph(VARIANT_FILES);
+describe('L2 monomorphize / off-by-default + byte-identical (the contract)', () => {
+  it('OFF by default: no variants, no bindings, base output byte-identical', async () => {
+    const { resolve, readFile } = memGraph(CORRELATED_FILES);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
 
     // Default options -> disabled.
@@ -86,118 +105,195 @@ describe('L2 monomorphize / engine (the differentiator)', () => {
     expect(withMono.files).toEqual(base);
     expect(withMono.mono.variants.size).toBe(0);
   });
+});
 
-  it('removes an arm L1/L1.5 CANNOT: each literal site gets a single-arm residual', async () => {
-    const { resolve, readFile } = memGraph(VARIANT_FILES);
+describe('L2 monomorphize / correlated condition (C IS specialized, Heavy removed)', () => {
+  it('L1/L1.5 keep `<Heavy/>`: the correlated `{#if}` cannot be narrowed away', async () => {
+    const { resolve, readFile } = memGraph(CORRELATED_FILES);
+    const { plans } = await analyze('/App.svelte', resolve, readFile);
+    const childPlan = plans.get('/Child.svelte')!;
+    // a and b are multi-valued -> narrowed, not folded.
+    expect(childPlan.constFold.has('a')).toBe(false);
+    expect(childPlan.constFold.has('b')).toBe(false);
+    expect([...(childPlan.narrow.get('a') ?? [])].sort()).toEqual([0, 1]);
+    expect([...(childPlan.narrow.get('b') ?? [])].sort()).toEqual([0, 1]);
+
+    // The base-shaken Child STILL renders `<Heavy/>` (L1.5 cannot kill it).
+    const base = await svelteShaker('/App.svelte', resolve, readFile);
+    expect(base['/Child.svelte']).toContain('<Heavy');
+  });
+
+  it('L2 specializes Child: every variant drops `<Heavy/>` (net win)', async () => {
+    const { resolve, readFile } = memGraph(CORRELATED_FILES);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
+    const res = monomorphize(models, plans, ON, '/App.svelte');
 
-    // Baseline: L1 does NOT fold `variant` (multi-valued) and L1.5 narrows it to
-    // the full {primary,secondary,danger} set, so NO arm is removable app-wide.
-    const plan = plans.get('/Btn.svelte')!;
-    expect(plan.constFold.has('variant')).toBe(false);
-    expect([...(plan.narrow.get('variant') ?? [])].sort()).toEqual([
-      'danger',
-      'primary',
-      'secondary',
-    ]);
+    // Both live Child sites are specialized (all-sites-or-nothing satisfied).
+    expect(res.bindings.length).toBe(2);
+    expect(res.bindings.every((b) => b.childId === '/Child.svelte')).toBe(true);
 
-    // L2 specializes each of the three literal sites.
-    const res = monomorphize(models, plans, ON);
-    expect(res.variants.size).toBe(3);
-    expect(res.bindings.length).toBe(3);
-
-    // Each residual contains exactly ONE arm's content and no `{#if}` at all.
+    // No variant renders `<Heavy/>` (the correlated branch folded false in each).
     for (const v of res.variants.values()) {
+      expect(v.code).not.toContain('<Heavy');
       expect(v.code).not.toMatch(/\{#if/);
-      expect(v.code).not.toMatch(/\{:else/);
-      assertCompiles(v.code, 'Btn.svelte');
+      assertCompiles(v.code, 'Child.svelte');
     }
-    const bodies = [...res.variants.values()].map((v) => v.code);
-    expect(bodies.some((c) => c.includes('DANGER'))).toBe(true);
-    expect(bodies.some((c) => c.includes('<b>P</b>'))).toBe(true);
-    expect(bodies.some((c) => c.includes('<i>S</i>'))).toBe(true);
   });
 
-  it('soundness: every variant renders identically to the base for its value', async () => {
-    const { resolve, readFile } = memGraph(VARIANT_FILES);
+  it('soundness: each variant renders identically to base Child for its (a,b)', async () => {
+    const { resolve, readFile } = memGraph(CORRELATED_FILES);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON);
-    const original = VARIANT_FILES['/Btn.svelte']!;
+    const res = monomorphize(models, plans, ON, '/App.svelte');
 
-    for (const v of res.variants.values()) {
-      const variant = v.foldedProps.get('variant');
-      const before = await renderHtml(original, { variant }, 'Btn.svelte');
-      const after = await renderHtml(v.code, {}, 'Btn.svelte'); // frozen -> no props
-      expect(after, String(variant)).toBe(before);
+    const deps = { './Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']! };
+    for (const b of res.bindings) {
+      const a = b.foldedProps.get('a');
+      const bb = b.foldedProps.get('b');
+      const variant = res.variants.get(b.variantId)!;
+      const before = await renderGraphHtml(
+        {
+          specifier: './Child.svelte',
+          source: CORRELATED_FILES['/Child.svelte']!,
+        },
+        deps,
+        { a, b: bb },
+      );
+      const after = await renderGraphHtml(
+        { specifier: './Child.svelte', source: variant.code },
+        deps,
+        {},
+      );
+      expect(after, `a=${a} b=${bb}`).toBe(before);
     }
   });
 
-  it('dedup by residual: two identical-shape sites share ONE variant', async () => {
+  it('plain inline variants with no module elimination DECLINE (gate guards bloat)', async () => {
+    // A plain `variant ∈ {primary, secondary, danger}`: three DISTINCT residual
+    // shapes, each duplicating a large shared base.  No child module is
+    // eliminated, so splitting into three per-shape modules just triplicates the
+    // shared scaffolding -> the gate must DECLINE (and the output equals L1.5).
+    const shared = `<section>${Array.from({ length: 30 }, (_, i) => `<p class="row">shared base content line ${i}</p>`).join('')}</section>`;
     const files = {
       '/App.svelte':
         `<script>\n  import Btn from './Btn.svelte';\n</script>\n` +
-        `<Btn variant="primary" />\n<Btn variant="primary" />\n<Btn variant="secondary" />\n`,
-      '/Btn.svelte': VARIANT_FILES['/Btn.svelte']!,
+        `<Btn variant="primary" />\n<Btn variant="secondary" />\n<Btn variant="danger" />\n`,
+      '/Btn.svelte':
+        `<script>\n  let { variant } = $props();\n</script>\n` +
+        `${shared}\n` +
+        `{#if variant === 'danger'}<strong>D</strong>{:else if variant === 'primary'}<b>P</b>{:else}<i>S</i>{/if}\n`,
     };
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON);
-    // 3 sites, but the two `primary` sites dedup -> 2 variants, 3 bindings.
-    expect(res.variants.size).toBe(2);
-    expect(res.bindings.length).toBe(3);
-    const ids = res.bindings.map((b) => b.variantId);
-    expect(ids[0]).toBe(ids[1]); // both primary sites -> same variant id
-    expect(ids[2]).not.toBe(ids[0]);
+
+    // L1.5 cannot remove any arm app-wide (all three values occur).
+    expect(
+      [...(plans.get('/Btn.svelte')!.narrow.get('variant') ?? [])].sort(),
+    ).toEqual(['danger', 'primary', 'secondary']);
+
+    const res = monomorphize(models, plans, ON, '/App.svelte');
+    expect(res.variants.size).toBe(0); // declined: specializing would bloat
+    expect(res.bindings.length).toBe(0);
+
+    // And the wired output is byte-identical to the plain L1.5 shake.
+    const base = await svelteShaker('/App.svelte', resolve, readFile);
+    const withMono = await svelteShakerWithMono(
+      '/App.svelte',
+      resolve,
+      readFile,
+      ON,
+      (id) => id,
+    );
+    expect(withMono.files).toEqual(base);
+  });
+});
+
+describe('L2 monomorphize / all-sites-or-nothing gate', () => {
+  it('a single live site keeping the base disqualifies the whole child', async () => {
+    // Two Child sites: one correlated-foldable, one fully dynamic (`a={x} b={y}`)
+    // that folds NOTHING and keeps the base.  Because the base module can never
+    // be orphaned, we must NOT specialize (otherwise base + variant = bloat).
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Child from './Child.svelte';\n  let x = 1, y = 1;\n</script>\n` +
+        `<Child a={0} b={1} />\n<Child a={x} b={y} />\n`,
+      '/Child.svelte': CORRELATED_FILES['/Child.svelte']!,
+      '/Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']!,
+    };
+    const { resolve, readFile } = memGraph(files);
+    const { models, plans } = await analyze('/App.svelte', resolve, readFile);
+    const res = monomorphize(models, plans, ON, '/App.svelte');
+    expect(res.variants.size).toBe(0);
+    expect(res.bindings.length).toBe(0);
   });
 
-  it('maxVariants cap: surplus distinct shapes fall back to the base component', async () => {
-    const { resolve, readFile } = memGraph(VARIANT_FILES);
+  it('maxVariants exceeded => child keeps the base entirely (no partial split)', async () => {
+    // Three distinct shapes but a cap of 2: we cannot give every live site a
+    // variant, so the base would stay referenced -> specialize NONE of them.
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Btn from './Btn.svelte';\n</script>\n` +
+        `<Btn variant="primary" />\n<Btn variant="secondary" />\n<Btn variant="danger" />\n`,
+      '/Btn.svelte':
+        `<script>\n  import Heavy from './Heavy.svelte';\n  let { variant } = $props();\n</script>\n` +
+        `{#if variant === 'danger'}<Heavy />{/if}<b>{variant}</b>\n`,
+      '/Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']!,
+    };
+    const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, { enabled: true, maxVariants: 2 });
-    // Only 2 of the 3 distinct shapes get a variant; the 3rd keeps the base.
-    expect(res.variants.size).toBe(2);
-    expect(res.bindings.length).toBe(2);
+    const res = monomorphize(models, plans, { ...ON, maxVariants: 2 });
+    expect(res.variants.size).toBe(0);
+    expect(res.bindings.length).toBe(0);
+  });
+
+  it('nested specialization is declined (a candidate owner of a candidate child)', async () => {
+    // App -> Mid -> Leaf, where BOTH Mid and Leaf would specialize all-sites.
+    // If we specialized Leaf, Mid's variant residual would still render BASE Leaf
+    // (the variant is not re-wired), so Leaf's base stays referenced AND Leaf's
+    // variants are emitted = bloat.  The guard must decline Leaf (Mid may still
+    // specialize); declining is the conservative never-bloat choice.
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Mid from './Mid.svelte';\n</script>\n` +
+        `<Mid a={0} b={1} />\n<Mid a={1} b={0} />\n`,
+      '/Mid.svelte':
+        `<script>\n  import Heavy from './Heavy.svelte';\n  import Leaf from './Leaf.svelte';\n  let { a, b } = $props();\n</script>\n` +
+        `{#if a === 1 && b === 1}<Heavy />{/if}<Leaf a={a} b={b} />\n`,
+      '/Leaf.svelte':
+        `<script>\n  import Heavy from './Heavy.svelte';\n  let { a, b } = $props();\n</script>\n` +
+        `{#if a === 1 && b === 1}<Heavy />{/if}<p>leaf</p>\n`,
+      '/Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']!,
+    };
+    const { resolve, readFile } = memGraph(files);
+    const { models, plans } = await analyze('/App.svelte', resolve, readFile);
+    const res = monomorphize(models, plans, ON, '/App.svelte');
+    // Leaf is never specialized (its owner Mid is a candidate).
+    expect(
+      [...res.variants.values()].some((v) => v.childId === '/Leaf.svelte'),
+    ).toBe(false);
+    expect(res.bindings.some((b) => b.childId === '/Leaf.svelte')).toBe(false);
   });
 });
 
 describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => {
-  it('a dynamic call-site value is NOT specialized (only literal sites are)', async () => {
-    const files = {
-      '/App.svelte':
-        `<script>\n  import Btn from './Btn.svelte';\n  let v = 'primary';\n</script>\n` +
-        `<Btn variant={v} />\n<Btn variant="danger" />\n`,
-      '/Btn.svelte':
-        `<script>\n  let { variant } = $props();\n</script>\n` +
-        `{#if variant === 'danger'}<strong>D</strong>{:else}<i>o</i>{/if}\n`,
-    };
-    const { resolve, readFile } = memGraph(files);
-    const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON);
-    // The `variant={v}` site cannot be specialized; only `variant="danger"` is.
-    expect(res.bindings.length).toBe(1);
-    expect(res.bindings[0]!.foldedProps.get('variant')).toBe('danger');
-  });
-
   it('a fully-bailed child (escape) is never specialized', async () => {
     const files = {
       '/App.svelte':
         `<script>\n  import D from './D.svelte';\n</script>\n` +
-        `<D variant="primary" />\n<svelte:component this={D} variant="danger" />\n`,
-      '/D.svelte':
-        `<script>\n  let { variant } = $props();\n</script>\n` +
-        `{#if variant === 'danger'}<strong>D</strong>{:else}<i>o</i>{/if}\n`,
+        `<D a={0} b={1} />\n<svelte:component this={D} a={1} b={0} />\n`,
+      '/D.svelte': CORRELATED_FILES['/Child.svelte']!.replace(
+        './Heavy.svelte',
+        './Heavy.svelte',
+      ),
+      '/Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']!,
     };
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
     expect(plans.get('/D.svelte')!.bail).toBe(true);
-    const res = monomorphize(models, plans, ON);
+    const res = monomorphize(models, plans, ON, '/App.svelte');
     expect(res.variants.size).toBe(0); // escaped child -> no specialization
   });
 
   it('a prop shadowed by an `{#each as}` binding is never frozen', async () => {
-    // `item` is a prop AND the loop binding. Freezing it would rewrite `as item`
-    // and delete the wrong arm. The analysis already refuses to fold it; L2 must
-    // too. (No other foldable prop here -> no variant at all.)
     const files = {
       '/App.svelte':
         `<script>\n  import Child from './Child.svelte';\n</script>\n` +
@@ -209,15 +305,12 @@ describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => 
     };
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON);
+    const res = monomorphize(models, plans, ON, '/App.svelte');
     for (const v of res.variants.values())
       expect(v.foldedProps.has('item')).toBe(false);
   });
 
   it('a call site inside a DEAD `{#if}` span is never specialized', async () => {
-    // `<Mid show={false}/>` folds Mid's `{#if show}` block, which CONTAINS the
-    // only `<Btn variant="danger"/>` site. That dead site must NOT drive a
-    // variant (it disappears from the output).
     const files = {
       '/App.svelte':
         `<script>\n  import Mid from './Mid.svelte';\n</script>\n` +
@@ -231,22 +324,24 @@ describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => 
     };
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON);
-    // The only Btn site is in a dead span -> no variant for Btn.
+    const res = monomorphize(models, plans, ON, '/App.svelte');
     const btnVariants = [...res.variants.values()].filter(
       (v) => v.childId === '/Btn.svelte',
     );
     expect(btnVariants.length).toBe(0);
   });
 
-  it('rest forwarding survives: a specialized site keeps its `{...spread}`', async () => {
+  it('rest forwarding survives a specialized site (and renders identically)', async () => {
+    // App-wide a∈{0,1}, b∈{0,1}, only (0,1)/(1,0): correlated, so the child IS
+    // specialized; the `{...spread}` must still be forwarded by the variant.
     const files = {
       '/App.svelte':
-        `<script>\n  import Btn from './Btn.svelte';\n  let extra = { id: 'X' };\n</script>\n` +
-        `<Btn {...extra} variant="danger" />\n<Btn variant="primary" />\n`,
-      '/Btn.svelte':
-        `<script>\n  let { variant = 'x', ...rest } = $props();\n</script>\n` +
-        `<div {...rest}>{#if variant === 'danger'}D{:else if variant === 'primary'}P{:else}o{/if}</div>\n`,
+        `<script>\n  import Child from './Child.svelte';\n  let extra = { id: 'X' };\n</script>\n` +
+        `<Child {...extra} a={0} b={1} />\n<Child {...extra} a={1} b={0} />\n`,
+      '/Child.svelte':
+        `<script>\n  import Heavy from './Heavy.svelte';\n  let { a, b, ...rest } = $props();\n</script>\n` +
+        `<div {...rest}>{#if a === 1 && b === 1}<Heavy />{/if}base</div>\n`,
+      '/Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']!,
     };
     const { resolve, readFile } = memGraph(files);
     const res = await svelteShakerWithMono(
@@ -256,55 +351,35 @@ describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => 
       ON,
       (id) => id,
     );
-    const danger = [...res.mono.variants.values()].find(
-      (v) => v.foldedProps.get('variant') === 'danger',
-    )!;
-    expect(danger.code).toContain('{...rest}'); // rest still forwarded
-    assertCompiles(danger.code, 'Btn.svelte');
+    const variant = [...res.mono.variants.values()][0]!;
+    expect(variant.code).toContain('{...rest}'); // rest still forwarded
+    expect(variant.code).not.toContain('<Heavy');
+    assertCompiles(variant.code, 'Child.svelte');
 
-    // Differential SSR: the danger residual + forwarded rest renders identically
-    // to the base Btn(variant=danger, id=X).
-    const before = await renderHtml(
-      files['/Btn.svelte']!,
-      { variant: 'danger', id: 'X' },
-      'Btn.svelte',
+    // Differential SSR: variant + forwarded rest renders identically to base.
+    const deps = { './Heavy.svelte': files['/Heavy.svelte']! };
+    const before = await renderGraphHtml(
+      { specifier: './Child.svelte', source: files['/Child.svelte']! },
+      deps,
+      { a: 0, b: 1, id: 'X' },
     );
-    const after = await renderHtml(danger.code, { id: 'X' }, 'Btn.svelte');
+    const after = await renderGraphHtml(
+      { specifier: './Child.svelte', source: variant.code },
+      deps,
+      { id: 'X' },
+    );
     expect(after).toBe(before);
-    expect(before).toBe('<div id="X">D</div>');
-  });
-
-  it('CSS narrows further per variant: a frozen variant drops more rules', async () => {
-    // App-wide variant ∈ {primary, danger}: L1.5 keeps both `.btn-primary` and
-    // `.btn-danger`. The `variant="primary"` variant freezes it, so `.btn-danger`
-    // becomes provably dead in THAT residual and is removed.
-    const files = {
-      '/App.svelte':
-        `<script>\n  import Btn from './Btn.svelte';\n</script>\n` +
-        `<Btn variant="primary" />\n<Btn variant="danger" />\n`,
-      '/Btn.svelte':
-        `<script>\n  let { variant } = $props();\n</script>\n` +
-        `<button class="btn btn-{variant}">{variant}</button>\n` +
-        `<style>\n  .btn-primary { color: green }\n  .btn-danger { color: red }\n</style>\n`,
-    };
-    const { resolve, readFile } = memGraph(files);
-    const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON);
-    const primary = [...res.variants.values()].find(
-      (v) => v.foldedProps.get('variant') === 'primary',
-    )!;
-    expect(primary.code).toContain('.btn-primary');
-    expect(primary.code).not.toContain('.btn-danger'); // unreachable in this variant
-    assertCompiles(primary.code, 'Btn.svelte');
+    expect(before).toBe('<div id="X">base</div>');
   });
 });
 
 // ----------------------------------------------------------------------
-// End-to-end Vite build: L2 wires the variants to real (virtual) modules.  The
-// control build (no shaker) compiles the shared `Btn` into conditional `{#if}`
-// machinery; the L2 build specializes each call site so NO conditional survives,
-// yet every occurring label still renders.  This is the rollup-can't proof for
-// L2 (rollup cannot specialize a component per call site).
+// End-to-end Vite build: L2 wires the variants to real (virtual) modules and the
+// net-win gate orphans Heavy.  The control build (no shaker) keeps the shared
+// `Child` conditional AND bundles Heavy; the L2 build specializes both call sites
+// so the conditional is gone and Heavy is dropped from the bundle.  This is the
+// rollup-can't proof: rollup cannot specialize a component per call site, so it
+// keeps the correlated `{#if}` and therefore keeps Heavy.
 // ----------------------------------------------------------------------
 
 const VITE_APP = join(
@@ -312,10 +387,12 @@ const VITE_APP = join(
   '.shaker-tmp-mono',
 );
 
+const HEAVY_MARK = 'HEAVY_WIDGET_MARKER';
 const VITE_FILES: Record<string, string> = {
   'main.ts': `import { mount } from 'svelte';\nimport App from './App.svelte';\nmount(App, { target: document.body });\n`,
-  'App.svelte': `<script lang="ts">\n  import Btn from './Btn.svelte';\n</script>\n<Btn variant="primary" />\n<Btn variant="secondary" />\n<Btn variant="danger" />\n`,
-  'Btn.svelte': `<script lang="ts">\n  let { variant }: { variant: 'primary' | 'secondary' | 'danger' } = $props();\n</script>\n{#if variant === 'danger'}<strong>DANGER</strong>{:else if variant === 'primary'}<b>PRIMARY</b>{:else}<i>SECONDARY</i>{/if}\n`,
+  'App.svelte': `<script lang="ts">\n  import Child from './Child.svelte';\n</script>\n<Child a={0} b={1} />\n<Child a={1} b={0} />\n`,
+  'Child.svelte': `<script lang="ts">\n  import Heavy from './Heavy.svelte';\n  let { a, b }: { a: number; b: number } = $props();\n</script>\n{#if a === 1 && b === 1}<Heavy />{/if}<p>base</p>\n`,
+  'Heavy.svelte': `<script lang="ts">\n</script>\n<div>${HEAVY_MARK}</div>\n`,
 };
 
 const IF_MACHINERY = /\bif_block\b|\$\.if\(/;
@@ -348,26 +425,36 @@ async function bundle(pre: unknown[]): Promise<string> {
 }
 
 describe('vite-plugin-svelte-shaker / L2 (end-to-end build)', () => {
-  it('control: the shared Btn compiles into conditional `{#if}` machinery', async () => {
+  it('control: the correlated `{#if}` survives and Heavy is bundled', async () => {
     const code = await bundle([]);
     expect(code).toMatch(IF_MACHINERY);
+    expect(code).toContain(HEAVY_MARK);
   });
 
-  it('level 1 (default): L2 is OFF, the conditional survives', async () => {
-    // Opt-in guard: without `level: 2 + monomorphize`, nothing specializes.
+  it('level 1 (default): L2 is OFF, the conditional and Heavy both survive', async () => {
     const code = await bundle([shaker({ include: ['.'] })]);
     expect(code).toMatch(IF_MACHINERY);
+    expect(code).toContain(HEAVY_MARK);
   });
 
-  it('level 2: every call site is specialized -> no `{#if}` machinery remains', async () => {
+  it('level 2: correlated sites specialized -> `{#if}` gone AND Heavy dropped', async () => {
     const code = await bundle([
       shaker({ include: ['.'], level: 2, monomorphize: true }),
     ]);
-    // Each variant is straight-line: the conditional is gone entirely.
+    // The correlated branch folded false in every variant -> no conditional.
     expect(code).not.toMatch(IF_MACHINERY);
-    // Yet every occurring label still renders (each from its own variant).
-    expect(code).toContain('DANGER');
-    expect(code).toContain('PRIMARY');
-    expect(code).toContain('SECONDARY');
+    // ... and `<Heavy/>` is gone from every variant -> Heavy is unreferenced ->
+    // the bundler drops it entirely.  THAT is the L2 win.
+    expect(code).not.toContain(HEAVY_MARK);
+    // The base content still renders.
+    expect(code).toContain('base');
+  });
+
+  it('level 2 bundle is <= the level-1 (L1.5) bundle in bytes (never bloat)', async () => {
+    const l1 = await bundle([shaker({ include: ['.'] })]);
+    const l2 = await bundle([
+      shaker({ include: ['.'], level: 2, monomorphize: true }),
+    ]);
+    expect(l2.length).toBeLessThanOrEqual(l1.length);
   });
 });

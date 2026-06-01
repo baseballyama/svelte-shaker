@@ -75,7 +75,9 @@ export async function svelteShakerWithMono(
   variantSpecifier: VariantSpecifier = (id) => id,
 ): Promise<ShakeResult> {
   const { models, plans } = await analyze(entries, resolve, readFile);
-  const result = monomorphize(models, plans, mono);
+  // Thread the shake entries through so the net-win gate can compute module
+  // reachability from them (docs §3 L2, §13.2).
+  const result = monomorphize(models, plans, mono, entries);
   // With no bindings the wired pass and the base pass are identical, so reuse
   // the plain transform to keep the default path byte-for-byte unchanged.
   const files =
