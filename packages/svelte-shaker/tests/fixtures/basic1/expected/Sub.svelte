@@ -1,8 +1,5 @@
 <script lang="ts">
-  let { hasIcon }: { hasIcon: boolean } = $props();
 </script>
-
-
 
 
 
