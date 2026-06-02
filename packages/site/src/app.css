@@ -9,15 +9,18 @@
   --line: #ececea;
   --line-2: #dededa;
   --ink: #1a1a17;
-  --ink-dim: #5d5d55;
-  --ink-faint: #9a9a90;
+  --ink-dim: #50504a;
+  --ink-faint: #6e6e64;
   --accent: #ff3e00;
   --accent-deep: #d33300;
+  /* readable orange for inline code / small text (AA on white); brand orange
+     stays for large/decorative use. */
+  --code-fg: #c5330b;
   --accent-bg: rgba(255, 62, 0, 0.07);
-  --del: #d64545;
-  --del-bg: rgba(214, 69, 69, 0.06);
-  --add: #2f9e44;
-  --add-bg: rgba(47, 158, 68, 0.07);
+  --del: #c92a2a;
+  --del-bg: rgba(201, 42, 42, 0.08);
+  --add: #2b8a3e;
+  --add-bg: rgba(43, 138, 62, 0.09);
   --head-bg: rgba(255, 255, 255, 0.82);
   --sel-fg: var(--accent-deep);
   --sans: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
@@ -35,10 +38,11 @@
   --line: #232826;
   --line-2: #323833;
   --ink: #e7e9e3;
-  --ink-dim: #9aa098;
-  --ink-faint: #656b63;
+  --ink-dim: #aab0a6;
+  --ink-faint: #838a80;
   --accent: #ff5a2c;
   --accent-deep: #ff7a52;
+  --code-fg: #ff8a5c;
   --accent-bg: rgba(255, 90, 44, 0.13);
   --del: #ff6b6b;
   --del-bg: rgba(255, 107, 107, 0.1);
