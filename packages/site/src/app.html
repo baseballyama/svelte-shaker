@@ -2,11 +2,41 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+    <link rel="icon" type="image/png" href="%sveltekit.assets%/favicon.png" />
+    <link rel="apple-touch-icon" href="%sveltekit.assets%/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
       content="svelte-shaker — a source-level, whole-program tree-shaker for Svelte 5. Delete dead-prop code before the compiler. Try it in the browser."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://baseballyama.github.io/svelte-shaker/" />
+    <meta
+      property="og:title"
+      content="svelte-shaker — source-level tree-shaking for Svelte 5"
+    />
+    <meta
+      property="og:description"
+      content="A sound, whole-program tree-shaker for Svelte 5. Deletes dead-prop code, branches and unreachable CSS before the compiler — never changing what the user sees."
+    />
+    <meta
+      property="og:image"
+      content="https://baseballyama.github.io/svelte-shaker/og.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="svelte-shaker — source-level tree-shaking for Svelte 5"
+    />
+    <meta
+      name="twitter:description"
+      content="A sound, whole-program tree-shaker for Svelte 5. Deletes dead-prop code, branches and unreachable CSS before the compiler."
+    />
+    <meta
+      name="twitter:image"
+      content="https://baseballyama.github.io/svelte-shaker/og.png"
     />
     <script>
       // Resolve the theme before first paint to avoid a flash.

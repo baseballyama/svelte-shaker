@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { base } from '$app/paths';
   import Playground from '$lib/Playground.svelte';
 </script>
 
@@ -8,11 +9,22 @@
 
 <main>
   <section class="hero">
-    <div class="tagline mono-label">whole-program · source-level · Svelte 5</div>
-    <h1>
-      Delete dead-prop code <span class="strike">before</span> the Svelte
-      compiler ever sees it.
-    </h1>
+    <div class="hero-top">
+      <div class="hero-lead">
+        <div class="tagline mono-label">whole-program · source-level · Svelte 5</div>
+        <h1>
+          Delete dead-prop code <span class="strike">before</span> the Svelte
+          compiler ever sees it.
+        </h1>
+      </div>
+      <img
+        class="hero-logo"
+        src="{base}/logo.png"
+        alt="svelte-shaker — the Svelte logo shaking a cocktail shaker"
+        width="200"
+        height="195"
+      />
+    </div>
     <p class="lede">
       Design-system components carry dozens of props; your app uses a handful.
       The code behind the rest — branches, classes, reactive statements, imports,
@@ -106,6 +118,52 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
 
   .hero {
     padding: clamp(48px, 9vw, 110px) 0 36px;
+  }
+  .hero-top {
+    display: flex;
+    align-items: center;
+    gap: clamp(20px, 4vw, 56px);
+  }
+  .hero-lead {
+    flex: 1;
+    min-width: 0;
+  }
+  .hero-logo {
+    flex-shrink: 0;
+    width: clamp(120px, 17vw, 200px);
+    height: auto;
+    filter: drop-shadow(0 8px 22px rgba(255, 62, 0, 0.18));
+    /* pivot near the feet so it reads as rocking while working the shaker */
+    transform-origin: 52% 82%;
+    animation: shake 2.6s ease-in-out infinite;
+    will-change: transform;
+  }
+  /* hover: shake harder, like it heard the order */
+  .hero-logo:hover {
+    animation-duration: 0.85s;
+  }
+  @keyframes shake {
+    0%,
+    100% {
+      transform: translateY(0) rotate(0deg);
+    }
+    18% {
+      transform: translateY(-5px) rotate(-2.4deg);
+    }
+    38% {
+      transform: translateY(0) rotate(1.9deg);
+    }
+    58% {
+      transform: translateY(-3px) rotate(-1.4deg);
+    }
+    78% {
+      transform: translateY(0) rotate(1deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hero-logo {
+      animation: none;
+    }
   }
   .tagline {
     margin-bottom: 20px;
@@ -263,6 +321,17 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
     .why,
     .steps {
       grid-template-columns: 1fr;
+    }
+    .hero-top {
+      flex-direction: column-reverse;
+      align-items: center;
+      gap: 14px;
+    }
+    .hero-lead {
+      width: 100%;
+    }
+    .hero-logo {
+      width: 132px;
     }
   }
 </style>
