@@ -1,18 +1,20 @@
 /* @ts-self-types="./svelte_shaker_engine.d.ts" */
 
 /**
- * Extract declared prop names + whole-component bail reasons from a component
- * AST (JSON). Returns `{"props": [...], "bail": [...]}` or `{"error": "..."}`.
+ * Analyze one component AST (JSON), returning the per-file model fields ported
+ * so far: declared props, whether a `...rest` is present, the shadowed /
+ * `{@debug}` names that block folding, and the whole-component bail reasons.
+ * `{"error": "..."}` on malformed input.
  * @param {string} ast_json
  * @returns {string}
  */
-function analyze_props(ast_json) {
+function analyze_component(ast_json) {
     let deferred2_0;
     let deferred2_1;
     try {
         const ptr0 = passStringToWasm0(ast_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.analyze_props(ptr0, len0);
+        const ret = wasm.analyze_component(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -20,7 +22,7 @@ function analyze_props(ast_json) {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
-exports.analyze_props = analyze_props;
+exports.analyze_component = analyze_component;
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,

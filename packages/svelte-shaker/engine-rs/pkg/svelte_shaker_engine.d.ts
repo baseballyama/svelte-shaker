@@ -2,7 +2,9 @@
 /* eslint-disable */
 
 /**
- * Extract declared prop names + whole-component bail reasons from a component
- * AST (JSON). Returns `{"props": [...], "bail": [...]}` or `{"error": "..."}`.
+ * Analyze one component AST (JSON), returning the per-file model fields ported
+ * so far: declared props, whether a `...rest` is present, the shadowed /
+ * `{@debug}` names that block folding, and the whole-component bail reasons.
+ * `{"error": "..."}` on malformed input.
  */
-export function analyze_props(ast_json: string): string;
+export function analyze_component(ast_json: string): string;
