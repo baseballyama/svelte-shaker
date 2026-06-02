@@ -114,9 +114,7 @@ describe('probe: barrel-import (mixed direct + barrel re-export)', () => {
     const out = await svelteShaker('/App.svelte', resolve, readFile);
     // Both occurring values render the correct arm (x=2 must stay TWO).
     await expectSound(out, readFile, '/Child.svelte', [{ x: 1 }, { x: 2 }]);
-    expect(
-      await renderHtml(out['/Child.svelte']!, { x: 2 }, 'Child.svelte'),
-    ).toContain('TWO');
+    expect(await renderHtml(out['/Child.svelte']!, { x: 2 }, 'Child.svelte')).toContain('TWO');
   });
 
   it('mixed default+barrel constFold+drop: barrel value keeps its branch', async () => {
@@ -129,8 +127,7 @@ describe('probe: barrel-import (mixed direct + barrel re-export)', () => {
         `<Child label="direct" />\n<ChildB label="barrel" />\n`,
       '/lib.js': `export { default as Child } from "./Child.svelte";\n`,
       '/Child.svelte':
-        `<script>\n  let { label = '?' } = $props();\n</script>\n` +
-        `<p>{label}</p>\n`,
+        `<script>\n  let { label = '?' } = $props();\n</script>\n` + `<p>{label}</p>\n`,
     };
     const { out, readFile } = await shake(files);
     const shaken = await expectSound(out, readFile, '/Child.svelte', [
@@ -164,11 +161,7 @@ describe('probe: barrel-import (mixed direct + barrel re-export)', () => {
       { variant: 'secondary' },
     ]);
     expect(
-      await renderHtml(
-        out['/Child.svelte']!,
-        { variant: 'secondary' },
-        'Child.svelte',
-      ),
+      await renderHtml(out['/Child.svelte']!, { variant: 'secondary' }, 'Child.svelte'),
     ).toContain('S');
   });
 
@@ -209,9 +202,7 @@ describe('probe: callback-parameter shadowing a folded prop', () => {
         `  $effect(() => { const f = (x) => x + 100; void f; });\n</script>\n<p>ok</p>\n`,
     };
     const { out, readFile } = await shake(files);
-    const shaken = await expectSound(out, readFile, '/Child.svelte', [
-      { x: 1 },
-    ]);
+    const shaken = await expectSound(out, readFile, '/Child.svelte', [{ x: 1 }]);
     expect(shaken).toContain('(x) => x + 100'); // param + body untouched
     expect(shaken).not.toContain('(1) =>');
   });
@@ -243,9 +234,7 @@ describe('probe: callback-parameter shadowing a folded prop', () => {
         `  function g(y) { return y + 1; }\n  const r = g(5);\n</script>\n<p>{r}</p>\n`,
     };
     const { out, readFile } = await shake(files);
-    const shaken = await expectSound(out, readFile, '/Child.svelte', [
-      { y: 2 },
-    ]);
+    const shaken = await expectSound(out, readFile, '/Child.svelte', [{ y: 2 }]);
     expect(shaken).toContain('function g(y)');
     expect(shaken).not.toContain('function g(2)');
   });
@@ -258,9 +247,7 @@ describe('probe: callback-parameter shadowing a folded prop', () => {
         `  const f = ({ k }) => k + 1;\n  const r = f({ k: 9 });\n</script>\n<p>{r}</p>\n`,
     };
     const { out, readFile } = await shake(files);
-    const shaken = await expectSound(out, readFile, '/Child.svelte', [
-      { k: 3 },
-    ]);
+    const shaken = await expectSound(out, readFile, '/Child.svelte', [{ k: 3 }]);
     expect(shaken).toContain('({ k }) =>');
     expect(shaken).not.toContain('({ 3 }) =>');
   });
@@ -274,9 +261,7 @@ describe('probe: callback-parameter shadowing a folded prop', () => {
         `  let doubled = $derived(base * 2);\n</script>\n<p>{doubled}</p>\n`,
     };
     const { out, readFile } = await shake(files);
-    const shaken = await expectSound(out, readFile, '/Child.svelte', [
-      { base: 10 },
-    ]);
+    const shaken = await expectSound(out, readFile, '/Child.svelte', [{ base: 10 }]);
     expect(shaken).toContain('$derived(10 * 2)'); // folded
     expect(shaken).not.toMatch(/let \{ base/); // dropped
   });
@@ -299,47 +284,40 @@ describe('probe: loose-equality coercion in set narrowing', () => {
   const empty = consts({});
 
   it('`n == false` over {0,1} is UNKNOWN (0 == false is true at runtime)', () => {
-    expect(
-      evaluateWithSets(expr('n == false'), empty, sets({ n: [0, 1] })).known,
-    ).toBe(false);
+    expect(evaluateWithSets(expr('n == false'), empty, sets({ n: [0, 1] })).known).toBe(false);
   });
 
   it("`n == ''` over {0,2} is UNKNOWN (0 == '' is true)", () => {
-    expect(
-      evaluateWithSets(expr("n == ''"), empty, sets({ n: [0, 2] })).known,
-    ).toBe(false);
+    expect(evaluateWithSets(expr("n == ''"), empty, sets({ n: [0, 2] })).known).toBe(false);
   });
 
   it('`x == undefined` over {null,1} is UNKNOWN (null == undefined is true)', () => {
-    expect(
-      evaluateWithSets(expr('x == undefined'), empty, sets({ x: [null, 1] }))
-        .known,
-    ).toBe(false);
+    expect(evaluateWithSets(expr('x == undefined'), empty, sets({ x: [null, 1] })).known).toBe(
+      false,
+    );
   });
 
   it('`b == 1` over {true,false} is UNKNOWN (true == 1 is true)', () => {
-    expect(
-      evaluateWithSets(expr('b == 1'), empty, sets({ b: [true, false] })).known,
-    ).toBe(false);
+    expect(evaluateWithSets(expr('b == 1'), empty, sets({ b: [true, false] })).known).toBe(false);
   });
 
   it("`n != ''` over {0,1} is UNKNOWN (negation path; 0 != '' is false)", () => {
-    expect(
-      evaluateWithSets(expr("n != ''"), empty, sets({ n: [0, 1] })).known,
-    ).toBe(false);
+    expect(evaluateWithSets(expr("n != ''"), empty, sets({ n: [0, 1] })).known).toBe(false);
   });
 
   it('strict `===` set narrowing stays correct (lit ∉ set -> provably false)', () => {
-    expect(
-      evaluateWithSets(expr('n === 2'), empty, sets({ n: [0, 1] })),
-    ).toEqual({ known: true, value: false });
+    expect(evaluateWithSets(expr('n === 2'), empty, sets({ n: [0, 1] }))).toEqual({
+      known: true,
+      value: false,
+    });
   });
 
   it('loose `==` is still provably FALSE when no member can coerce-match', () => {
     // No member of {1,2} loosely equals 'x', so the arm is genuinely dead.
-    expect(
-      evaluateWithSets(expr("n == 'x'"), empty, sets({ n: [1, 2] })),
-    ).toEqual({ known: true, value: false });
+    expect(evaluateWithSets(expr("n == 'x'"), empty, sets({ n: [1, 2] }))).toEqual({
+      known: true,
+      value: false,
+    });
   });
 
   it('end-to-end: `{#if n == false}` over occurring {0,1} keeps the live arm', async () => {
@@ -352,15 +330,10 @@ describe('probe: loose-equality coercion in set narrowing', () => {
         `{#if n == false}<b>ZEROish</b>{:else}<i>other</i>{/if}\n`,
     };
     const { out, readFile } = await shake(files);
-    const shaken = await expectSound(out, readFile, '/Child.svelte', [
-      { n: 0 },
-      { n: 1 },
-    ]);
+    const shaken = await expectSound(out, readFile, '/Child.svelte', [{ n: 0 }, { n: 1 }]);
     // n=0 hits the loose-equality arm at runtime, so it must survive.
     expect(shaken).toContain('ZEROish');
-    expect(await renderHtml(shaken, { n: 0 }, 'Child.svelte')).toContain(
-      'ZEROish',
-    );
+    expect(await renderHtml(shaken, { n: 0 }, 'Child.svelte')).toContain('ZEROish');
   });
 });
 
@@ -382,9 +355,7 @@ describe('probe: $props() sharing a multi-declarator statement', () => {
     expect(plans.get('/Child.svelte')!.bail).toBe(true);
 
     const out = await svelteShaker('/App.svelte', resolve, readFile);
-    const shaken = await expectSound(out, readFile, '/Child.svelte', [
-      { x: false },
-    ]);
+    const shaken = await expectSound(out, readFile, '/Child.svelte', [{ x: false }]);
     // The whole declaration (incl. `y = 1`) is left intact.
     expect(shaken).toContain('let { x } = $props(), y = 1;');
     // The call-site attribute must NOT be removed (child kept its prop).
@@ -399,9 +370,7 @@ describe('probe: $props() sharing a multi-declarator statement', () => {
         `{#if x}<p>ON</p>{:else}<p>OFF {y}</p>{/if}\n`,
     };
     const { out, readFile } = await shake(files);
-    const shaken = await expectSound(out, readFile, '/Child.svelte', [
-      { x: false },
-    ]);
+    const shaken = await expectSound(out, readFile, '/Child.svelte', [{ x: false }]);
     expect(shaken).toContain('let y = 1, { x } = $props();');
   });
 
@@ -414,9 +383,7 @@ describe('probe: $props() sharing a multi-declarator statement', () => {
         `{#if x}<p>ON</p>{:else}<p>OFF</p>{/if}\n`,
     };
     const { out, readFile } = await shake(files);
-    const shaken = await expectSound(out, readFile, '/Child.svelte', [
-      { x: false },
-    ]);
+    const shaken = await expectSound(out, readFile, '/Child.svelte', [{ x: false }]);
     expect(shaken).not.toMatch(/let \{ x \}/); // dropped
   });
 });
@@ -430,8 +397,7 @@ describe('probe: body-synthesized children / snippet props', () => {
   it('`children` from body content is kept (not folded to undefined)', async () => {
     const files = {
       '/App.svelte':
-        `<script>\n  import Box from './Box.svelte';\n</script>\n` +
-        `<Box>hello world</Box>\n`,
+        `<script>\n  import Box from './Box.svelte';\n</script>\n` + `<Box>hello world</Box>\n`,
       '/Box.svelte':
         `<script>\n  let { loading = false, children } = $props();\n</script>\n` +
         `<div>{#if loading}<span>L</span>{/if}{@render children?.()}</div>\n`,
@@ -516,10 +482,7 @@ describe('probe: body-synthesized children / snippet props', () => {
 // ---- helpers for rendering an App -> child graph through the oracle ---------
 
 /** Compile a `{ id: source }` graph (only `.svelte` entries) and render `entry`. */
-async function renderGraph(
-  sources: Record<string, string>,
-  entry: string,
-): Promise<string> {
+async function renderGraph(sources: Record<string, string>, entry: string): Promise<string> {
   mkdirSync(TMP, { recursive: true });
   const hash = createHash('sha1')
     .update(JSON.stringify(Object.entries(sources).sort()))
@@ -543,9 +506,7 @@ async function renderGraph(
     writeFileSync(join(dir, `${name}.js`), rewired);
   }
   const entryName = entry.replace(/^\//, '');
-  const mod = await import(
-    pathToFileURL(join(dir, `${entryName}.js`)).href + `?t=${Date.now()}`
-  );
+  const mod = await import(pathToFileURL(join(dir, `${entryName}.js`)).href + `?t=${Date.now()}`);
   const out = render(mod.default, { props: {} });
   return (out.body ?? out.html ?? '')
     .replace(/<!--[\s\S]*?-->/g, '')
@@ -553,10 +514,7 @@ async function renderGraph(
     .trim();
 }
 
-function renderApp(
-  files: Record<string, string>,
-  entry: string,
-): Promise<string> {
+function renderApp(files: Record<string, string>, entry: string): Promise<string> {
   return renderGraph(files, entry);
 }
 

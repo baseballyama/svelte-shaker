@@ -69,10 +69,7 @@ const ON = { enabled: true, maxVariants: 8, minSavings: 0 } as const;
 
 const HEAVY_BODY =
   '<div class="heavy">' +
-  Array.from(
-    { length: 40 },
-    (_, i) => `<span>heavy widget cell ${i}</span>`,
-  ).join('') +
+  Array.from({ length: 40 }, (_, i) => `<span>heavy widget cell ${i}</span>`).join('') +
   '</div>';
 
 const CORRELATED_FILES: Record<string, string> = {
@@ -97,11 +94,7 @@ describe('L2 monomorphize / off-by-default + byte-identical (the contract)', () 
 
     // With L2 off, the wired output equals the plain shaker output byte-for-byte.
     const base = await svelteShaker('/App.svelte', resolve, readFile);
-    const withMono = await svelteShakerWithMono(
-      '/App.svelte',
-      resolve,
-      readFile,
-    );
+    const withMono = await svelteShakerWithMono('/App.svelte', resolve, readFile);
     expect(withMono.files).toEqual(base);
     expect(withMono.mono.variants.size).toBe(0);
   });
@@ -186,9 +179,11 @@ describe('L2 monomorphize / correlated condition (C IS specialized, Heavy remove
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
 
     // L1.5 cannot remove any arm app-wide (all three values occur).
-    expect(
-      [...(plans.get('/Btn.svelte')!.narrow.get('variant') ?? [])].sort(),
-    ).toEqual(['danger', 'primary', 'secondary']);
+    expect([...(plans.get('/Btn.svelte')!.narrow.get('variant') ?? [])].sort()).toEqual([
+      'danger',
+      'primary',
+      'secondary',
+    ]);
 
     const res = monomorphize(models, plans, ON, '/App.svelte');
     expect(res.variants.size).toBe(0); // declined: specializing would bloat
@@ -196,13 +191,7 @@ describe('L2 monomorphize / correlated condition (C IS specialized, Heavy remove
 
     // And the wired output is byte-identical to the plain L1.5 shake.
     const base = await svelteShaker('/App.svelte', resolve, readFile);
-    const withMono = await svelteShakerWithMono(
-      '/App.svelte',
-      resolve,
-      readFile,
-      ON,
-      (id) => id,
-    );
+    const withMono = await svelteShakerWithMono('/App.svelte', resolve, readFile, ON, (id) => id);
     expect(withMono.files).toEqual(base);
   });
 });
@@ -267,9 +256,7 @@ describe('L2 monomorphize / all-sites-or-nothing gate', () => {
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
     const res = monomorphize(models, plans, ON, '/App.svelte');
     // Leaf is never specialized (its owner Mid is a candidate).
-    expect(
-      [...res.variants.values()].some((v) => v.childId === '/Leaf.svelte'),
-    ).toBe(false);
+    expect([...res.variants.values()].some((v) => v.childId === '/Leaf.svelte')).toBe(false);
     expect(res.bindings.some((b) => b.childId === '/Leaf.svelte')).toBe(false);
   });
 });
@@ -280,10 +267,7 @@ describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => 
       '/App.svelte':
         `<script>\n  import D from './D.svelte';\n</script>\n` +
         `<D a={0} b={1} />\n<svelte:component this={D} a={1} b={0} />\n`,
-      '/D.svelte': CORRELATED_FILES['/Child.svelte']!.replace(
-        './Heavy.svelte',
-        './Heavy.svelte',
-      ),
+      '/D.svelte': CORRELATED_FILES['/Child.svelte']!.replace('./Heavy.svelte', './Heavy.svelte'),
       '/Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']!,
     };
     const { resolve, readFile } = memGraph(files);
@@ -306,15 +290,13 @@ describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => 
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
     const res = monomorphize(models, plans, ON, '/App.svelte');
-    for (const v of res.variants.values())
-      expect(v.foldedProps.has('item')).toBe(false);
+    for (const v of res.variants.values()) expect(v.foldedProps.has('item')).toBe(false);
   });
 
   it('a call site inside a DEAD `{#if}` span is never specialized', async () => {
     const files = {
       '/App.svelte':
-        `<script>\n  import Mid from './Mid.svelte';\n</script>\n` +
-        `<Mid show={false} />\n`,
+        `<script>\n  import Mid from './Mid.svelte';\n</script>\n` + `<Mid show={false} />\n`,
       '/Mid.svelte':
         `<script>\n  import Btn from './Btn.svelte';\n  let { show } = $props();\n</script>\n` +
         `{#if show}<Btn variant="danger" />{/if}<p>mid</p>\n`,
@@ -325,9 +307,7 @@ describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => 
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
     const res = monomorphize(models, plans, ON, '/App.svelte');
-    const btnVariants = [...res.variants.values()].filter(
-      (v) => v.childId === '/Btn.svelte',
-    );
+    const btnVariants = [...res.variants.values()].filter((v) => v.childId === '/Btn.svelte');
     expect(btnVariants.length).toBe(0);
   });
 
@@ -344,13 +324,7 @@ describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => 
       '/Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']!,
     };
     const { resolve, readFile } = memGraph(files);
-    const res = await svelteShakerWithMono(
-      '/App.svelte',
-      resolve,
-      readFile,
-      ON,
-      (id) => id,
-    );
+    const res = await svelteShakerWithMono('/App.svelte', resolve, readFile, ON, (id) => id);
     const variant = [...res.mono.variants.values()][0]!;
     expect(variant.code).toContain('{...rest}'); // rest still forwarded
     expect(variant.code).not.toContain('<Heavy');
@@ -382,10 +356,7 @@ describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => 
 // keeps the correlated `{#if}` and therefore keeps Heavy.
 // ----------------------------------------------------------------------
 
-const VITE_APP = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '.shaker-tmp-mono',
-);
+const VITE_APP = join(dirname(fileURLToPath(import.meta.url)), '.shaker-tmp-mono');
 
 const HEAVY_MARK = 'HEAVY_WIDGET_MARKER';
 const VITE_FILES: Record<string, string> = {
@@ -438,9 +409,7 @@ describe('vite-plugin-svelte-shaker / L2 (end-to-end build)', () => {
   });
 
   it('level 2: correlated sites specialized -> `{#if}` gone AND Heavy dropped', async () => {
-    const code = await bundle([
-      shaker({ include: ['.'], level: 2, monomorphize: true }),
-    ]);
+    const code = await bundle([shaker({ include: ['.'], level: 2, monomorphize: true })]);
     // The correlated branch folded false in every variant -> no conditional.
     expect(code).not.toMatch(IF_MACHINERY);
     // ... and `<Heavy/>` is gone from every variant -> Heavy is unreferenced ->
@@ -452,9 +421,7 @@ describe('vite-plugin-svelte-shaker / L2 (end-to-end build)', () => {
 
   it('level 2 bundle is <= the level-1 (L1.5) bundle in bytes (never bloat)', async () => {
     const l1 = await bundle([shaker({ include: ['.'] })]);
-    const l2 = await bundle([
-      shaker({ include: ['.'], level: 2, monomorphize: true }),
-    ]);
+    const l2 = await bundle([shaker({ include: ['.'], level: 2, monomorphize: true })]);
     expect(l2.length).toBeLessThanOrEqual(l1.length);
   });
 });

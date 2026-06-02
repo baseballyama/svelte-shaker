@@ -16,10 +16,7 @@ import { render } from 'svelte/server';
 // pid); fall back to the pid when run outside Vitest.  Files run sequentially
 // within a worker, so a worker never races its own dir.
 const WORKER_ID = process.env['VITEST_WORKER_ID'] ?? String(process.pid);
-const TMP = join(
-  dirname(fileURLToPath(import.meta.url)),
-  `.shaker-tmp-${WORKER_ID}`,
-);
+const TMP = join(dirname(fileURLToPath(import.meta.url)), `.shaker-tmp-${WORKER_ID}`);
 
 export function cleanTmp(): void {
   rmSync(TMP, { recursive: true, force: true });
@@ -39,11 +36,7 @@ export async function renderHtml(
 ): Promise<string> {
   const { js } = compile(source, { generate: 'server', filename, dev: false });
   mkdirSync(TMP, { recursive: true });
-  const hash = createHash('sha1')
-    .update(source)
-    .update(filename)
-    .digest('hex')
-    .slice(0, 16);
+  const hash = createHash('sha1').update(source).update(filename).digest('hex').slice(0, 16);
   const file = join(TMP, `${hash}.js`);
   writeFileSync(file, js.code);
   const mod = await import(pathToFileURL(file).href);

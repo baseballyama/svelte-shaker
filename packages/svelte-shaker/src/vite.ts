@@ -38,8 +38,7 @@ const VARIANT_QUERY = 'shaker_variant';
  */
 function resolveMono(options: ShakerOptions): MonomorphizeOptions {
   if (options.level !== 2 || !options.monomorphize) return DEFAULT_MONO_OPTIONS;
-  const overrides =
-    typeof options.monomorphize === 'object' ? options.monomorphize : {};
+  const overrides = typeof options.monomorphize === 'object' ? options.monomorphize : {};
   return { ...DEFAULT_MONO_OPTIONS, enabled: true, ...overrides };
 }
 
@@ -104,13 +103,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         return;
       }
 
-      const result = await svelteShakerWithMono(
-        entries,
-        fsResolve,
-        read,
-        mono,
-        variantSpecifier,
-      );
+      const result = await svelteShakerWithMono(entries, fsResolve, read, mono, variantSpecifier);
       shaken = result.files;
       variantSources = new Map();
       for (const v of result.mono.variants.values())

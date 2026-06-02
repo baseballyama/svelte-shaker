@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "singleQuote": true,
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/.shaker-tmp*/**",
+    "pnpm-lock.yaml",
+    "**/*.md",
+    "packages/site/**",
+    "packages/svelte-shaker/tests/fixtures/**"
+  ]
+}

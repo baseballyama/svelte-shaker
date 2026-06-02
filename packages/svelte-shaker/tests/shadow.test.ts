@@ -155,15 +155,12 @@ describe('soundness probes: template-binding / escape collisions', () => {
     // parameter slot) -> "Assigning to rvalue" crash. Must be left untouched.
     const files = {
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n</script>\n` +
-        `<Child label="Z" />\n`,
+        `<script>\n  import Child from './Child.svelte';\n</script>\n` + `<Child label="Z" />\n`,
       '/Child.svelte':
         `<script>\n  let { label } = $props();\n</script>\n` +
         `{#snippet row(label)}<li>{label}</li>{/snippet}\n{@render row('alpha')}\n`,
     };
-    const shaken = await expectSoundChild(files, '/Child.svelte', [
-      { label: 'Z' },
-    ]);
+    const shaken = await expectSoundChild(files, '/Child.svelte', [{ label: 'Z' }]);
     expect(shaken).toContain('{#snippet row(label)}');
     expect(shaken).not.toContain('row("Z")');
     expect(shaken).toMatch(/let \{ label \}/); // kept in signature
@@ -189,9 +186,7 @@ describe('soundness probes: template-binding / escape collisions', () => {
     // `import { count as store }` must survive verbatim; the prop `count` folds
     // only in value positions. The import `imported` name is never a prop read.
     const files = {
-      '/App.svelte':
-        `<script>\n  import C from './C1.svelte';\n</script>\n` +
-        `<C count={3} />\n`,
+      '/App.svelte': `<script>\n  import C from './C1.svelte';\n</script>\n` + `<C count={3} />\n`,
       '/C1.svelte':
         `<script>\n` +
         `  import { count as store } from './store.js';\n` +
@@ -217,15 +212,11 @@ describe('soundness probes: template-binding / escape collisions', () => {
     // prop. The engine must bail folding any prop named in a `{@debug}`.
     const files = {
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n</script>\n` +
-        `<Child label="hi" />\n`,
+        `<script>\n  import Child from './Child.svelte';\n</script>\n` + `<Child label="hi" />\n`,
       '/Child.svelte':
-        `<script>\n  let { label } = $props();\n</script>\n` +
-        `{@debug label}\n<p>{label}</p>\n`,
+        `<script>\n  let { label } = $props();\n</script>\n` + `{@debug label}\n<p>{label}</p>\n`,
     };
-    const shaken = await expectSoundChild(files, '/Child.svelte', [
-      { label: 'hi' },
-    ]);
+    const shaken = await expectSoundChild(files, '/Child.svelte', [{ label: 'hi' }]);
     expect(shaken).toContain('{@debug label}'); // bare identifier preserved
     expect(shaken).toMatch(/let \{ label \}/); // prop kept in signature
   });
@@ -295,9 +286,7 @@ describe('soundness probes: dynamic component escape (docs §4.1)', () => {
       const after = await renderHtml(dShaken, { variant }, 'D.svelte');
       expect(after, variant).toBe(before);
     }
-    expect(
-      await renderHtml(dShaken, { variant: 'danger' }, 'D.svelte'),
-    ).toContain('DANGER');
+    expect(await renderHtml(dShaken, { variant: 'danger' }, 'D.svelte')).toContain('DANGER');
 
     // Plain folded soundly for the value that occurs.
     const plainOriginal = readFile('/Plain.svelte');

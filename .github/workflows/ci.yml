@@ -6,40 +6,46 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
+# Cancel in-flight runs on the same ref so a fast-forward push doesn't spend
+# minutes on stale CI.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  check:
+  # Cheap, single-version gate. Catches format / lint / typing violations and
+  # the end-to-end build before the test matrix spins up.
+  static:
+    name: Static checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4 # version comes from package.json "packageManager"
-
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
-      - name: Install
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
 
-      # Build the engine first so its `dist/types` exist: the example and
-      # rollup-plugin packages import `svelte-shaker` / `svelte-shaker/vite`,
-      # which type-check (and run) resolve through the built package.
+      # Build the engine first so its dist/types exist: the example and
+      # rollup-plugin packages type-check (and resolve) through the built
+      # `svelte-shaker` / `svelte-shaker/vite` package.
       - name: Build engine
-        run: pnpm --filter svelte-shaker build
+        run: pnpm build
 
-      - name: Type-check, lint, format
-        run: pnpm all:check
+      - name: Format check
+        run: pnpm format:check
 
-      - name: Test (engine)
-        run: pnpm --filter svelte-shaker test
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm typecheck
 
       - name: Build example (end-to-end shake)
         run: pnpm --filter example build
@@ -49,3 +55,27 @@ jobs:
 
       - name: Build playground site (rsvelte compiler + self-dogfooded shake)
         run: pnpm --filter site build
+
+  # Multi-version test matrix for the engine. Node versions track the project's
+  # supported runtimes; drop versions past EOL.
+  test:
+    name: Test (Node ${{ matrix.node-version }})
+    needs: static
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Test (engine)
+        run: pnpm test

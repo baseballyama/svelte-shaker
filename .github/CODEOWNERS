@@ -1,0 +1,14 @@
+# GitHub CODEOWNERS — routes review requests automatically.
+#
+# The starter template assumes a single maintainer. When the project grows
+# subsystems, add per-path entries above the wildcard so the right people
+# are auto-requested for the right files. Example:
+#
+#   /src/api/        @api-team
+#   /docs/           @docs-team
+#   /infra/          @infra-team
+#
+# Lines later in the file take precedence, so keep `*` at the bottom as
+# the catch-all.
+
+* @baseballyama

@@ -214,10 +214,7 @@ export function monomorphize(
       }
       const list = liveSitesByChild.get(call.childId);
       if (list) list.push({ owner: owner.id, node: call.node, shape, code });
-      else
-        liveSitesByChild.set(call.childId, [
-          { owner: owner.id, node: call.node, shape, code },
-        ]);
+      else liveSitesByChild.set(call.childId, [{ owner: owner.id, node: call.node, shape, code }]);
     }
   }
 
@@ -228,10 +225,7 @@ export function monomorphize(
   const baseSource = baseSourceMap(models, plans);
   const baseChildrenOf = new Map<ComponentId, ComponentId[]>();
   for (const model of models.values())
-    baseChildrenOf.set(
-      model.id,
-      liveChildIds(baseSource.get(model.id)!, model),
-    );
+    baseChildrenOf.set(model.id, liveChildIds(baseSource.get(model.id)!, model));
 
   // Reachability roots = the shake entries (docs §3 L2, §13.2), narrowed to the
   // TRUE import-graph roots.  The Shell seeds the crawl with EVERY `.svelte` file
@@ -240,11 +234,8 @@ export function monomorphize(
   // by another component.  What remains are the real app entry points, and a
   // module reachable only through a folded-away edge becomes orphan-able.
   const incoming = new Set<ComponentId>();
-  for (const children of baseChildrenOf.values())
-    for (const c of children) incoming.add(c);
-  const entryList = (Array.isArray(entries) ? entries : [entries]).filter((e) =>
-    models.has(e),
-  );
+  for (const children of baseChildrenOf.values()) for (const c of children) incoming.add(c);
+  const entryList = (Array.isArray(entries) ? entries : [entries]).filter((e) => models.has(e));
   const roots = entryList.filter((e) => !incoming.has(e));
 
   const sizeCache = new Map<string, number>();
@@ -287,10 +278,7 @@ export function monomorphize(
     if (ineligible.has(childId)) continue; // some live site keeps the base
     // A live-site owner is itself specializable -> declining avoids base+variant
     // bloat of THIS child (see `candidateChildren`).
-    if (
-      sites.some((s) => s.owner !== childId && candidateChildren.has(s.owner))
-    )
-      continue;
+    if (sites.some((s) => s.owner !== childId && candidateChildren.has(s.owner))) continue;
 
     // Dedup the candidate sites' residuals into the distinct variant set.
     const residualToVariant = new Map<string, string>();
@@ -377,8 +365,7 @@ function netWin(
   // child's import map (variants never add imports — they only fold/remove).
   const childModel = models.get(childId)!;
   const variantChildren = new Map<string, ComponentId[]>();
-  for (const v of variantSources)
-    variantChildren.set(v.id, liveChildIds(v.code, childModel));
+  for (const v of variantSources) variantChildren.set(v.id, liveChildIds(v.code, childModel));
 
   // --- Sigma_base: reachable set in the BASE scenario, sized by base residual.
   const baseReached = new Set<ComponentId>();
@@ -407,9 +394,7 @@ function netWin(
   // Redirect any edge into the child to ALL its variants (all-sites means every
   // live caller now renders a variant; for a sound upper bound we keep them all).
   const expand = (id: ComponentId): { comps: ComponentId[]; vars: string[] } =>
-    id === childId
-      ? { comps: [], vars: allVariantIds }
-      : { comps: [id], vars: [] };
+    id === childId ? { comps: [], vars: allVariantIds } : { comps: [id], vars: [] };
 
   const compStack: ComponentId[] = [];
   const varStack: string[] = [];
@@ -533,8 +518,7 @@ function renderResidual(
   const env = new Map<string, Literal>(plan.constFold);
   for (const [name, value] of extra) env.set(name, value);
   const setEnv = new Map<string, Literal[]>();
-  for (const [name, set] of plan.narrow)
-    if (!env.has(name)) setEnv.set(name, set);
+  for (const [name, set] of plan.narrow) if (!env.has(name)) setEnv.set(name, set);
 
   const s = new MagicString(child.code);
   shakeBody(child, env, setEnv, plan, s);

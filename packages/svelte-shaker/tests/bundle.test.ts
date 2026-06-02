@@ -71,17 +71,14 @@ async function buildBytes(root: string, pre: unknown[]): Promise<number> {
 async function benchAll(root: string): Promise<Sizes> {
   const control = await buildBytes(root, []);
   const l15 = await buildBytes(root, [shaker({ include: ['.'] })]);
-  const l2 = await buildBytes(root, [
-    shaker({ include: ['.'], level: 2, monomorphize: true }),
-  ]);
+  const l2 = await buildBytes(root, [shaker({ include: ['.'], level: 2, monomorphize: true })]);
   return { control, l15, l2 };
 }
 
 function writeApp(root: string, files: Record<string, string>): void {
   rmSync(root, { recursive: true, force: true });
   mkdirSync(root, { recursive: true });
-  for (const [name, content] of Object.entries(files))
-    writeFileSync(join(root, name), content);
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(root, name), content);
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -110,8 +107,7 @@ const HEAVY_BODY =
   `<div class="heavy">` +
   Array.from(
     { length: 80 },
-    (_, i) =>
-      `<span class="heavy-cell">${HEAVY_MARK} heavy widget cell ${i}</span>`,
+    (_, i) => `<span class="heavy-cell">${HEAVY_MARK} heavy widget cell ${i}</span>`,
   ).join('') +
   `</div>`;
 
@@ -173,9 +169,7 @@ describe('vite-plugin-svelte-shaker / L2 BYTE BENCH (the ground truth)', () => {
   it('CASE A: L2 wins — correlated condition orphans Heavy, bytes(L2) < bytes(L1.5)', async () => {
     const { control, l15, l2 } = await benchAll(APP_A);
 
-    console.log(
-      `[BUNDLE BENCH / CASE A] control=${control}B  L1.5=${l15}B  L2=${l2}B`,
-    );
+    console.log(`[BUNDLE BENCH / CASE A] control=${control}B  L1.5=${l15}B  L2=${l2}B`);
 
     // Shaking never loses to the toolchain.
     expect(l15).toBeLessThanOrEqual(control);
@@ -202,9 +196,7 @@ describe('vite-plugin-svelte-shaker / L2 BYTE BENCH (the ground truth)', () => {
   it('CASE B: L2 must not bloat — plain inline variant declines, bytes(L2) == bytes(L1.5)', async () => {
     const { control, l15, l2 } = await benchAll(APP_B);
 
-    console.log(
-      `[BUNDLE BENCH / CASE B] control=${control}B  L1.5=${l15}B  L2=${l2}B`,
-    );
+    console.log(`[BUNDLE BENCH / CASE B] control=${control}B  L1.5=${l15}B  L2=${l2}B`);
 
     // Shaking never loses to the toolchain.
     expect(l15).toBeLessThanOrEqual(control);

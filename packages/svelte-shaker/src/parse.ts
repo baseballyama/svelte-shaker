@@ -100,16 +100,9 @@ export interface WalkCtx<S> {
   stop: () => void;
 }
 
-export type Visitors<S> = Record<
-  string,
-  (node: AnyNode, ctx: WalkCtx<S>) => void
->;
+export type Visitors<S> = Record<string, (node: AnyNode, ctx: WalkCtx<S>) => void>;
 
 /** `zimmerframe.walk`, narrowed to our loose node type. */
 export function walk<S>(root: AnyNode, state: S, visitors: Visitors<S>): void {
-  (zfWalk as unknown as (r: AnyNode, s: S, v: Visitors<S>) => void)(
-    root,
-    state,
-    visitors,
-  );
+  (zfWalk as unknown as (r: AnyNode, s: S, v: Visitors<S>) => void)(root, state, visitors);
 }
