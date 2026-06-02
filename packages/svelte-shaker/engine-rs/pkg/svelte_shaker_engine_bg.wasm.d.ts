@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const analyze_component: (a: number, b: number, c: number, d: number) => [number, number];
 export const analyze_program: (a: number, b: number) => [number, number];
+export const shake_program: (a: number, b: number) => [number, number];
 export const __wbindgen_externrefs: WebAssembly.Table;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

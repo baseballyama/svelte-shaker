@@ -12,7 +12,9 @@ use std::collections::{HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
 mod eval;
-use eval::{evaluate_with_sets, Env, Literal, SetEnv};
+mod transform;
+use eval::{evaluate, evaluate_with_sets, Env, Literal, SetEnv};
+use transform::MagicEdit;
 
 const NULL: Value = Value::Null;
 
@@ -508,21 +510,29 @@ struct PropDecl {
     name: String,
     /// The default-value expression node, or `Null` when omitted.
     default: Value,
+    /// The `Property` node inside the `ObjectPattern` (for surgical removal).
+    property: Value,
 }
 
-/// `findPropsDeclaration` + the prop loop: returns the declared props (None when
-/// the component has no `$props()` destructuring), `hasRestProp`, and whether the
-/// `$props()` shares a multi-declarator statement (a conservative bail in analyze.ts).
-fn declared_props_full(ast: &Value) -> (Option<Vec<PropDecl>>, bool, bool) {
-    let body = match ast
+/// The `$props()` destructuring of a component, when present.
+struct PropsInfo {
+    props: Vec<PropDecl>,
+    has_rest: bool,
+    /// `$props()` is not the sole declarator of its statement (a conservative bail).
+    shares_statement: bool,
+    /// The `ObjectPattern` (for editing) and the whole `VariableDeclaration`.
+    pattern: Value,
+    declaration: Value,
+}
+
+/// `findPropsDeclaration` + the prop loop. `None` when the component has no
+/// `$props()` destructuring.
+fn declared_props_full(ast: &Value) -> Option<PropsInfo> {
+    let body = ast
         .get("instance")
         .and_then(|i| i.get("content"))
         .and_then(|c| c.get("body"))
-        .and_then(Value::as_array)
-    {
-        Some(b) => b,
-        None => return (None, false, false),
-    };
+        .and_then(Value::as_array)?;
     for stmt in body {
         if !str_eq(stmt, "type", "VariableDeclaration") {
             continue;
@@ -546,25 +556,29 @@ fn declared_props_full(ast: &Value) -> (Option<Vec<PropDecl>>, bool, bool) {
                         let key = get(p, "key");
                         if str_eq(key, "type", "Identifier") {
                             if let Some(name) = key.get("name").and_then(Value::as_str) {
-                                // `name = <default>` -> the value is an AssignmentPattern.
                                 let value = get(p, "value");
                                 let default = if str_eq(value, "type", "AssignmentPattern") {
                                     get(value, "right").clone()
                                 } else {
                                     Value::Null
                                 };
-                                props.push(PropDecl { name: name.to_string(), default });
+                                props.push(PropDecl { name: name.to_string(), default, property: p.clone() });
                             }
                         }
                     }
                     _ => {}
                 }
             }
-            let shares_statement = decls.len() > 1;
-            return (Some(props), has_rest, shares_statement);
+            return Some(PropsInfo {
+                props,
+                has_rest,
+                shares_statement: decls.len() > 1,
+                pattern: id.clone(),
+                declaration: stmt.clone(),
+            });
         }
     }
-    (None, false, false)
+    None
 }
 
 // ---- call-site reading -----------------------------------------------------
@@ -798,8 +812,8 @@ fn build_plan(model: &Model, sites: Option<&Vec<CallSite>>) -> ComponentPlan {
         plan.reasons = model.bail_reasons.clone();
         return plan;
     }
-    let props = match &model.props {
-        Some(p) if !p.is_empty() => p,
+    let props = match &model.props_info {
+        Some(pi) if !pi.props.is_empty() => &pi.props,
         _ => return plan,
     };
     let sites = match sites {
@@ -918,8 +932,20 @@ fn dead_tail(arms: &[ChainArm], truth: &[Option<bool>], from: usize) -> Vec<Span
     removed
 }
 
-/// The dead-span view of decideChain: the removed ranges + whether to recurse.
-fn decide_chain_dead(top: &Value, env: &Env, set_env: &SetEnv) -> (Vec<Span>, bool) {
+/// The full fold decision for one if/else-if chain — the single source of truth
+/// shared by the analysis (dead spans) and the transform (edits), so they can
+/// never disagree on what folds (the §2.1 soundness invariant).
+struct ChainDecision {
+    span: Span,
+    removed: Vec<Span>,
+    /// Consequent/else fragment to re-emit verbatim when the chain collapses.
+    kept: Option<Value>,
+    recurse: bool,
+    /// Promote a surviving `{:else if}` to `{#if}`: replace `[from,to)` with `text`.
+    header_rewrite: Option<(i64, i64, String)>,
+}
+
+fn decide_chain(top: &Value, env: &Env, set_env: &SetEnv) -> ChainDecision {
     let (arms, else_frag) = collect_chain(top);
     let span: Span = (off(top, "start"), off(top, "end"));
     let truth: Vec<Option<bool>> = arms
@@ -933,7 +959,13 @@ fn decide_chain_dead(top: &Value, env: &Env, set_env: &SetEnv) -> (Vec<Span>, bo
     let mut all_earlier_false = true;
     for i in 0..arms.len() {
         if is_true(truth[i]) && all_earlier_false {
-            return (around_kept(span, fragment_span(&arms[i].consequent)), false);
+            return ChainDecision {
+                span,
+                removed: around_kept(span, fragment_span(&arms[i].consequent)),
+                kept: Some(arms[i].consequent.clone()),
+                recurse: false,
+                header_rewrite: None,
+            };
         }
         if !is_false(truth[i]) {
             all_earlier_false = false;
@@ -945,17 +977,37 @@ fn decide_chain_dead(top: &Value, env: &Env, set_env: &SetEnv) -> (Vec<Span>, bo
     match first_kept {
         None => {
             if let Some(ef) = else_frag {
-                (around_kept(span, fragment_span(&ef)), false)
+                ChainDecision {
+                    span,
+                    removed: around_kept(span, fragment_span(&ef)),
+                    kept: Some(ef),
+                    recurse: false,
+                    header_rewrite: None,
+                }
             } else {
-                (vec![span], false)
+                ChainDecision { span, removed: vec![span], kept: None, recurse: false, header_rewrite: None }
             }
         }
-        Some(0) => (dead_tail(&arms, &truth, 0), true),
+        Some(0) => ChainDecision {
+            span,
+            removed: dead_tail(&arms, &truth, 0),
+            kept: None,
+            recurse: true,
+            header_rewrite: None,
+        },
         Some(k) => {
-            let kept_start = off(&arms[k].block, "start");
+            let kept_block = &arms[k].block;
+            let kept_start = off(kept_block, "start");
             let mut removed = vec![(span.0, kept_start)];
             removed.extend(dead_tail(&arms, &truth, k));
-            (removed, false)
+            ChainDecision {
+                span,
+                removed,
+                kept: None,
+                recurse: false,
+                // `{:else if ` -> `{#if ` (header runs from block start to its test).
+                header_rewrite: Some((kept_start, off(&arms[k].test, "start"), "{#if ".to_string())),
+            }
         }
     }
 }
@@ -982,9 +1034,9 @@ fn collect_dead(node: &Value, env: &Env, set_env: &SetEnv, dead: &mut Vec<Span>)
                 if node.get("elseif") == Some(&Value::Bool(true)) || in_spans(node, dead) {
                     return;
                 }
-                let (removed, recurse) = decide_chain_dead(node, env, set_env);
-                dead.extend(removed);
-                if recurse {
+                let decision = decide_chain(node, env, set_env);
+                dead.extend(decision.removed);
+                if decision.recurse {
                     for v in map.values() {
                         collect_dead(v, env, set_env, dead);
                     }
@@ -1004,7 +1056,8 @@ fn collect_dead(node: &Value, env: &Env, set_env: &SetEnv, dead: &mut Vec<Span>)
 struct Model {
     id: String,
     ast: Value,
-    props: Option<Vec<PropDecl>>,
+    imports: HashMap<String, String>, // local -> childId (default-svelte), for call-site edits
+    props_info: Option<PropsInfo>,
     shadowed: HashSet<String>,
     debug: HashSet<String>,
     /// (childId, the `<Child/>` Component node) for every rendered direct child.
@@ -1016,10 +1069,10 @@ struct Model {
 
 fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
     let (imports, barrel_locals) = edge_maps(&Value::Array(edges.to_vec()));
-    let (props, _has_rest, shares_statement) = declared_props_full(&ast);
+    let props_info = declared_props_full(&ast);
     let (shadowed_vec, debug_vec) = template_bindings(&ast);
     let mut bail_reasons = component_bail(&ast);
-    if shares_statement {
+    if props_info.as_ref().map(|p| p.shares_statement).unwrap_or(false) {
         bail_reasons.push("$props() shares a multi-declarator statement".to_string());
     }
     let mut child_calls = Vec::new();
@@ -1036,7 +1089,8 @@ fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
     Model {
         id: id.to_string(),
         ast,
-        props,
+        imports,
+        props_info,
         shadowed: shadowed_vec.into_iter().collect(),
         debug: debug_vec.into_iter().collect(),
         child_calls,
@@ -1204,6 +1258,608 @@ pub fn analyze_program(input_json: &str) -> String {
     let plans = run_fixpoint(&models);
     let out: serde_json::Map<String, Value> =
         plans.iter().map(|(id, plan)| (id.clone(), plan_to_json(plan))).collect();
+    Value::Object(out).to_string()
+}
+
+// ======================================================================
+// Transform + emit (docs/RUST-MIGRATION.md M5): the Rust port of transform.ts +
+// css.ts.  Edits the original source by surgical span removal/overwrite via
+// MagicEdit, sharing decide_chain with the analysis so folds never disagree.
+// All source access goes through the MagicEdit (UTF-16 units), so it is correct
+// for non-ASCII source.
+// ======================================================================
+
+const NL: u16 = b'\n' as u16;
+const SEMI: u16 = b';' as u16;
+
+fn is_ws_u16(u: u16) -> bool {
+    u == b' ' as u16 || u == b'\t' as u16 || u == b'\n' as u16 || u == b'\r' as u16
+}
+
+/// `isNonReference`: an Identifier used as a property key / member name / import
+/// specifier slot — not a value read, so a literal must NOT be substituted there.
+fn is_non_reference(node: &Value, parent: Option<&Value>) -> bool {
+    let p = match parent {
+        Some(p) => p,
+        None => return false,
+    };
+    if str_eq(p, "type", "MemberExpression") && !bool_field(p, "computed") && same_node(get(p, "property"), node) {
+        return true;
+    }
+    if str_eq(p, "type", "Property")
+        && !bool_field(p, "computed")
+        && p.get("shorthand").and_then(Value::as_bool) != Some(true)
+        && same_node(get(p, "key"), node)
+    {
+        return true;
+    }
+    is_import_specifier_position(p)
+}
+
+/// `substitutedSlice`: the source for `[from,to)` with every folded-prop reference
+/// inside `roots` replaced by its literal.
+fn substituted_slice(edits: &MagicEdit, from: i64, to: i64, roots: &[&Value], env: &Env) -> String {
+    if env.is_empty() {
+        return edits.slice(from as usize, to as usize);
+    }
+    let mut refs: Vec<(i64, i64, String)> = Vec::new();
+    for root in roots {
+        walk_parented(root, None, &mut |node, parent| {
+            if str_eq(node, "type", "Identifier") {
+                if let Some(name) = node.get("name").and_then(Value::as_str) {
+                    if env.contains_key(name) && !is_non_reference(node, parent) {
+                        refs.push((off(node, "start"), off(node, "end"), name.to_string()));
+                    }
+                }
+            }
+        });
+    }
+    if refs.is_empty() {
+        return edits.slice(from as usize, to as usize);
+    }
+    refs.sort_by_key(|r| r.0);
+    let mut out = String::new();
+    let mut cursor = from;
+    for (s, e, name) in refs {
+        out.push_str(&edits.slice(cursor as usize, s as usize));
+        out.push_str(&env[&name].to_source());
+        cursor = e;
+    }
+    out.push_str(&edits.slice(cursor as usize, to as usize));
+    out
+}
+
+fn fragment_source(edits: &MagicEdit, fragment: &Value, env: &Env) -> String {
+    match fragment.get("nodes").and_then(Value::as_array) {
+        Some(n) if !n.is_empty() => {
+            let from = off(&n[0], "start");
+            let to = off(&n[n.len() - 1], "end");
+            let roots: Vec<&Value> = n.iter().collect();
+            substituted_slice(edits, from, to, &roots, env)
+        }
+        _ => String::new(),
+    }
+}
+
+fn apply_chain(decision: &ChainDecision, env: &Env, edits: &mut MagicEdit) {
+    if let Some(frag) = &decision.kept {
+        let text = fragment_source(edits, frag, env);
+        edits.overwrite(decision.span.0 as usize, decision.span.1 as usize, &text);
+        return;
+    }
+    for (a, b) in &decision.removed {
+        edits.remove(*a as usize, *b as usize);
+    }
+    if let Some((from, to, text)) = &decision.header_rewrite {
+        edits.overwrite(*from as usize, *to as usize, text);
+    }
+}
+
+fn fold_if_blocks(node: &Value, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit, dead: &mut Vec<Span>) {
+    match node {
+        Value::Array(items) => {
+            for v in items {
+                fold_if_blocks(v, env, set_env, edits, dead);
+            }
+        }
+        Value::Object(map) => {
+            if type_of(node) == Some("IfBlock") {
+                if node.get("elseif") == Some(&Value::Bool(true)) || in_spans(node, dead) {
+                    return;
+                }
+                let decision = decide_chain(node, env, set_env);
+                apply_chain(&decision, env, edits);
+                if decision.kept.is_some() {
+                    dead.push(decision.span);
+                } else {
+                    dead.extend(decision.removed.iter().copied());
+                }
+                if decision.recurse {
+                    for v in map.values() {
+                        fold_if_blocks(v, env, set_env, edits, dead);
+                    }
+                }
+                return;
+            }
+            for v in map.values() {
+                fold_if_blocks(v, env, set_env, edits, dead);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fold_ternaries(node: &Value, env: &Env, edits: &mut MagicEdit, dead: &mut Vec<Span>) {
+    match node {
+        Value::Array(items) => {
+            for v in items {
+                fold_ternaries(v, env, edits, dead);
+            }
+        }
+        Value::Object(map) => {
+            if type_of(node) == Some("ConditionalExpression") {
+                if in_spans(node, dead) {
+                    return;
+                }
+                match evaluate(get(node, "test"), env) {
+                    None => {
+                        for v in map.values() {
+                            fold_ternaries(v, env, edits, dead);
+                        }
+                    }
+                    Some(t) => {
+                        let taken = if t.is_truthy() { get(node, "consequent") } else { get(node, "alternate") };
+                        if taken.is_null() {
+                            for v in map.values() {
+                                fold_ternaries(v, env, edits, dead);
+                            }
+                            return;
+                        }
+                        let text = substituted_slice(edits, off(taken, "start"), off(taken, "end"), &[taken], env);
+                        edits.overwrite(off(node, "start") as usize, off(node, "end") as usize, &text);
+                        dead.push((off(node, "start"), off(node, "end")));
+                    }
+                }
+                return;
+            }
+            for v in map.values() {
+                fold_ternaries(v, env, edits, dead);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_prop_refs(model: &Model, env: &Env, dead: &[Span]) -> Vec<(i64, i64, String)> {
+    let mut refs = Vec::new();
+    let mut collect = |node: &Value, parent: Option<&Value>| {
+        if str_eq(node, "type", "Identifier") {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                if env.contains_key(name) && !in_spans(node, dead) && !is_non_reference(node, parent) {
+                    refs.push((off(node, "start"), off(node, "end"), name.to_string()));
+                }
+            }
+        }
+    };
+    walk_parented(get(&model.ast, "instance"), None, &mut collect);
+    walk_parented(get(&model.ast, "fragment"), None, &mut collect);
+    refs
+}
+
+fn remove_pattern_property(properties: &[Value], property: &Value, edits: &mut MagicEdit) {
+    let i = match properties.iter().position(|p| same_node(p, property)) {
+        Some(i) => i,
+        None => return,
+    };
+    if let Some(next) = properties.get(i + 1) {
+        edits.remove(off(property, "start") as usize, off(next, "start") as usize);
+    } else if i > 0 {
+        edits.remove(off(&properties[i - 1], "end") as usize, off(property, "end") as usize);
+    } else {
+        edits.remove(off(property, "start") as usize, off(property, "end") as usize);
+    }
+}
+
+fn remove_type_member(pattern: &Value, name: &str, edits: &mut MagicEdit) {
+    let members = get(get(get(pattern, "typeAnnotation"), "typeAnnotation"), "members");
+    let members = match members.as_array() {
+        Some(m) => m,
+        None => return,
+    };
+    let i = members.iter().position(|m| {
+        str_eq(get(m, "key"), "type", "Identifier") && get(m, "key").get("name").and_then(Value::as_str) == Some(name)
+    });
+    let i = match i {
+        Some(i) => i,
+        None => return,
+    };
+    if let Some(next) = members.get(i + 1) {
+        edits.remove(off(&members[i], "start") as usize, off(next, "start") as usize);
+    } else if i > 0 {
+        edits.remove(off(&members[i - 1], "end") as usize, off(&members[i], "end") as usize);
+    } else {
+        edits.remove(off(&members[i], "start") as usize, off(&members[i], "end") as usize);
+    }
+}
+
+fn remove_whole_line(node: &Value, edits: &mut MagicEdit) {
+    let start = off(node, "start") as usize;
+    let end = off(node, "end") as usize;
+    let len = edits.len();
+    let mut line_start = start;
+    while line_start > 0 && edits.unit_at(line_start - 1) != Some(NL) {
+        line_start -= 1;
+    }
+    let mut line_end = end;
+    while line_end < len && edits.unit_at(line_end) != Some(NL) {
+        line_end += 1;
+    }
+    let prefix = edits.slice(line_start, start);
+    let suffix = edits.slice(end, line_end);
+    let suffix_non_ws: String = suffix.chars().filter(|c| !c.is_whitespace()).collect();
+    if prefix.trim().is_empty() && (suffix_non_ws.is_empty() || suffix_non_ws == ";") {
+        let rm_end = if line_end < len { line_end + 1 } else { line_end };
+        edits.remove(line_start, rm_end);
+    } else {
+        let rm_end = if edits.unit_at(end) == Some(SEMI) { end + 1 } else { end };
+        edits.remove(start, rm_end);
+    }
+}
+
+fn drop_props(model: &Model, drop: &HashSet<String>, edits: &mut MagicEdit) {
+    let pi = match &model.props_info {
+        Some(p) => p,
+        None => return,
+    };
+    if drop.is_empty() {
+        return;
+    }
+    let remaining = pi.props.iter().filter(|p| !drop.contains(&p.name)).count();
+    if remaining == 0 && !pi.has_rest {
+        remove_whole_line(&pi.declaration, edits);
+        return;
+    }
+    let properties = arr(&pi.pattern, "properties");
+    for decl in &pi.props {
+        if !drop.contains(&decl.name) {
+            continue;
+        }
+        remove_pattern_property(properties, &decl.property, edits);
+        remove_type_member(&pi.pattern, &decl.name, edits);
+    }
+}
+
+/// A call-site attribute is safe to delete only if its value has no side effects.
+fn is_side_effect_free(value: &Value) -> bool {
+    if value == &Value::Bool(true) || value.is_null() {
+        return true;
+    }
+    let single;
+    let parts: &[Value] = match value.as_array() {
+        Some(a) => a,
+        None => {
+            single = [value.clone()];
+            &single
+        }
+    };
+    parts.iter().all(|part| match type_of(part) {
+        Some("Text") => true,
+        Some("ExpressionTag") => str_eq(get(part, "expression"), "type", "Literal"),
+        _ => false,
+    })
+}
+
+fn remove_attr_with_space(attr: &Value, edits: &mut MagicEdit) {
+    let mut start = off(attr, "start") as usize;
+    if start > 0 && matches!(edits.unit_at(start - 1), Some(c) if c == b' ' as u16 || c == b'\t' as u16) {
+        start -= 1;
+    }
+    edits.remove(start, off(attr, "end") as usize);
+}
+
+fn remove_call_site_attributes(model: &Model, dropped: &HashMap<String, HashSet<String>>, edits: &mut MagicEdit) {
+    // Collect first (so we don't borrow the ast through `walk` while editing).
+    let mut to_remove: Vec<Value> = Vec::new();
+    walk(get(&model.ast, "fragment"), &mut |node| {
+        if !str_eq(node, "type", "Component") {
+            return;
+        }
+        let drop = node
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(|n| model.imports.get(n))
+            .and_then(|cid| dropped.get(cid));
+        if let Some(drop) = drop {
+            if drop.is_empty() {
+                return;
+            }
+            for attr in arr(node, "attributes") {
+                if type_of(attr) == Some("Attribute") {
+                    if let Some(name) = attr.get("name").and_then(Value::as_str) {
+                        if drop.contains(name) && is_side_effect_free(get(attr, "value")) {
+                            to_remove.push(attr.clone());
+                        }
+                    }
+                }
+            }
+        }
+    });
+    for attr in &to_remove {
+        remove_attr_with_space(attr, edits);
+    }
+}
+
+// ---- CSS rule removal (css.ts) ---------------------------------------------
+
+const MAX_CLASS_COMBOS: usize = 64;
+
+struct PossibleClasses {
+    classes: HashSet<String>,
+    unbounded: bool,
+}
+
+fn is_element_like(t: Option<&str>) -> bool {
+    matches!(
+        t,
+        Some("RegularElement") | Some("SvelteElement") | Some("Component") | Some("SvelteComponent") | Some("SvelteSelf")
+    )
+}
+
+/// Possible string values of one interpolated `{expr}` in a class attribute, or
+/// `None` (UNBOUNDED). A bare set-var enumerates its set; else it must fold.
+fn expression_strings(expr: &Value, env: &Env, set_env: &SetEnv) -> Option<HashSet<String>> {
+    if str_eq(expr, "type", "Identifier") {
+        if let Some(name) = expr.get("name").and_then(Value::as_str) {
+            if let Some(set) = set_env.get(name) {
+                return Some(set.iter().map(|v| v.to_dom_string()).collect());
+            }
+        }
+    }
+    evaluate(expr, env).map(|v| {
+        let mut s = HashSet::new();
+        s.insert(v.to_dom_string());
+        s
+    })
+}
+
+fn part_strings(part: &Value, env: &Env, set_env: &SetEnv) -> Option<HashSet<String>> {
+    match type_of(part) {
+        Some("Text") => {
+            let mut s = HashSet::new();
+            s.insert(text_data(part));
+            Some(s)
+        }
+        Some("ExpressionTag") => expression_strings(get(part, "expression"), env, set_env),
+        _ => None, // unknown part kind -> conservative
+    }
+}
+
+/// Class tokens contributed by one `class=` attribute value, or `None` (UNBOUNDED).
+fn class_tokens_from_attr(value: &Value, env: &Env, set_env: &SetEnv) -> Option<HashSet<String>> {
+    if value == &Value::Bool(true) {
+        return None; // `{class}` shorthand -> dynamic
+    }
+    if value.is_null() {
+        return Some(HashSet::new());
+    }
+    let single;
+    let parts: &[Value] = match value.as_array() {
+        Some(a) => a,
+        None => {
+            single = [value.clone()];
+            &single
+        }
+    };
+    let mut combos: Vec<String> = vec![String::new()];
+    for part in parts {
+        let frags = part_strings(part, env, set_env)?;
+        let mut next = Vec::new();
+        for base in &combos {
+            for f in &frags {
+                next.push(format!("{base}{f}"));
+                if next.len() > MAX_CLASS_COMBOS {
+                    return None;
+                }
+            }
+        }
+        combos = next;
+    }
+    let mut tokens = HashSet::new();
+    for combo in &combos {
+        for tok in combo.split_whitespace() {
+            tokens.insert(tok.to_string());
+        }
+    }
+    Some(tokens)
+}
+
+fn compute_possible_classes(model: &Model, env: &Env, set_env: &SetEnv) -> PossibleClasses {
+    let mut classes = HashSet::new();
+    let mut unbounded = false;
+    walk(get(&model.ast, "fragment"), &mut |node| {
+        if !is_element_like(type_of(node)) {
+            return;
+        }
+        for attr in arr(node, "attributes") {
+            match type_of(attr) {
+                Some("SpreadAttribute") => unbounded = true,
+                Some("ClassDirective") => {
+                    if let Some(n) = attr.get("name").and_then(Value::as_str) {
+                        classes.insert(n.to_string());
+                    }
+                }
+                Some("Attribute") if attr.get("name").and_then(Value::as_str) == Some("class") => {
+                    match class_tokens_from_attr(get(attr, "value"), env, set_env) {
+                        None => unbounded = true,
+                        Some(toks) => classes.extend(toks),
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    PossibleClasses { classes, unbounded }
+}
+
+fn has_global(rule: &Value) -> bool {
+    let mut found = false;
+    walk(rule, &mut |n| {
+        if str_eq(n, "type", "PseudoClassSelector") && n.get("name").and_then(Value::as_str) == Some("global") {
+            found = true;
+        }
+    });
+    found
+}
+
+fn is_complex_dead(complex: &Value, possible: &HashSet<String>) -> bool {
+    let mut dead = false;
+    for rel in arr(complex, "children") {
+        for sel in arr(rel, "selectors") {
+            if str_eq(sel, "type", "ClassSelector") {
+                if let Some(n) = sel.get("name").and_then(Value::as_str) {
+                    if !possible.contains(n) {
+                        dead = true;
+                    }
+                }
+            }
+        }
+    }
+    dead
+}
+
+fn is_rule_dead(rule: &Value, possible: &HashSet<String>) -> bool {
+    if has_global(rule) {
+        return false;
+    }
+    let complexes = get(rule, "prelude").get("children").and_then(Value::as_array);
+    match complexes {
+        Some(c) if !c.is_empty() => c.iter().all(|complex| is_complex_dead(complex, possible)),
+        _ => false,
+    }
+}
+
+fn remove_rule(rule: &Value, siblings: &[Value], edits: &mut MagicEdit) {
+    let i = match siblings.iter().position(|s| same_node(s, rule)) {
+        Some(i) => i,
+        None => return,
+    };
+    let floor = if i > 0 { off(&siblings[i - 1], "end") } else { 0 };
+    let mut start = off(rule, "start");
+    while start > floor && edits.unit_at((start - 1) as usize).map(is_ws_u16).unwrap_or(false) {
+        start -= 1;
+    }
+    edits.remove(start as usize, off(rule, "end") as usize);
+}
+
+fn shake_css(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit) {
+    let css = get(&model.ast, "css");
+    let children = match css.get("children").and_then(Value::as_array) {
+        Some(c) => c.clone(),
+        None => return,
+    };
+    let possible = compute_possible_classes(model, env, set_env);
+    if possible.unbounded {
+        return; // cannot bound the class set -> removing nothing is the only sound choice
+    }
+    for child in &children {
+        if type_of(child) == Some("Rule") && is_rule_dead(child, &possible.classes) {
+            remove_rule(child, &children, edits);
+        }
+    }
+}
+
+/// Slim one component into `edits`, returning the props dropped from the
+/// `$props()` signature (mirrors `shakeBody`).
+fn shake_body(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit) -> HashSet<String> {
+    if env.is_empty() && set_env.is_empty() {
+        return HashSet::new();
+    }
+    let fragment = get(&model.ast, "fragment");
+    let mut dead: Vec<Span> = Vec::new();
+    fold_if_blocks(fragment, env, set_env, edits, &mut dead);
+    if !env.is_empty() {
+        fold_ternaries(fragment, env, edits, &mut dead);
+    }
+    for (s, e, name) in collect_prop_refs(model, env, &dead) {
+        edits.overwrite(s as usize, e as usize, &env[&name].to_source());
+    }
+    let droppable: HashSet<String> = env.keys().cloned().collect();
+    drop_props(model, &droppable, edits);
+    shake_css(model, env, set_env, edits);
+    droppable
+}
+
+/// Whole-program shake: analyze + transform.  `input` is `{ files: [{id, ast,
+/// code}], edges, entries }`.  Returns `{ id: slimmedSource }` for every file —
+/// byte-for-byte the L0/L1/L1.5 output (the `svelteShaker` equivalent).
+#[wasm_bindgen]
+pub fn shake_program(input_json: &str) -> String {
+    let input: Value = match serde_json::from_str(input_json) {
+        Ok(v) => v,
+        Err(e) => return json!({ "error": e.to_string() }).to_string(),
+    };
+    let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
+    for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        if let Some(from) = e.get("from").and_then(Value::as_str) {
+            edges_by_from.entry(from.to_string()).or_default().push(e.clone());
+        }
+    }
+    let mut models: Vec<Model> = Vec::new();
+    let mut code_by_id: HashMap<String, String> = HashMap::new();
+    for f in input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        let id = match f.get("id").and_then(Value::as_str) {
+            Some(i) => i.to_string(),
+            None => continue,
+        };
+        let ast = f.get("ast").cloned().unwrap_or(Value::Null);
+        code_by_id.insert(id.clone(), f.get("code").and_then(Value::as_str).unwrap_or("").to_string());
+        let empty = Vec::new();
+        let edges = edges_by_from.get(&id).unwrap_or(&empty);
+        models.push(build_model_full(&id, ast, edges));
+    }
+
+    let mut escaped = HashSet::new();
+    let mut barreled = HashSet::new();
+    for m in &models {
+        escaped.extend(m.escaped.iter().cloned());
+        barreled.extend(m.barrel.iter().cloned());
+    }
+    for m in &mut models {
+        if escaped.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == ESCAPE_REASON) {
+            m.bail_reasons.push(ESCAPE_REASON.to_string());
+        }
+        if barreled.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == BARREL_REASON) {
+            m.bail_reasons.push(BARREL_REASON.to_string());
+        }
+    }
+
+    let plans = run_fixpoint(&models);
+
+    // Phase 1: fold each body and drop its folded props.
+    let mut edits_map: HashMap<String, MagicEdit> = HashMap::new();
+    let mut dropped: HashMap<String, HashSet<String>> = HashMap::new();
+    for model in &models {
+        let plan = &plans[&model.id];
+        let mut edits = MagicEdit::new(code_by_id.get(&model.id).map(String::as_str).unwrap_or(""));
+        let d = if plan.bail {
+            HashSet::new()
+        } else {
+            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits)
+        };
+        dropped.insert(model.id.clone(), d);
+        edits_map.insert(model.id.clone(), edits);
+    }
+    // Phase 2: remove call-site attributes for props the child actually dropped.
+    for model in &models {
+        if let Some(edits) = edits_map.get_mut(&model.id) {
+            remove_call_site_attributes(model, &dropped, edits);
+        }
+    }
+
+    let out: serde_json::Map<String, Value> = models
+        .iter()
+        .map(|m| (m.id.clone(), Value::String(edits_map.get(&m.id).map(|e| e.render()).unwrap_or_default())))
+        .collect();
     Value::Object(out).to_string()
 }
 
