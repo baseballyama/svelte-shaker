@@ -1,0 +1,12 @@
+{
+  "name": "svelte-shaker-engine",
+  "description": "WASM core for svelte-shaker (docs/RUST-MIGRATION.md M4+). Self-contained: analyzes a Svelte AST passed as JSON; no rsvelte_core build dependency.",
+  "version": "0.0.0",
+  "files": [
+    "svelte_shaker_engine_bg.wasm",
+    "svelte_shaker_engine.js",
+    "svelte_shaker_engine.d.ts"
+  ],
+  "main": "svelte_shaker_engine.js",
+  "types": "svelte_shaker_engine.d.ts"
+}
