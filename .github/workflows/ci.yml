@@ -43,3 +43,9 @@ jobs:
 
       - name: Build example (end-to-end shake)
         run: pnpm --filter example build
+
+      - name: Check site (@rsvelte/svelte-check)
+        run: pnpm --filter site check
+
+      - name: Build playground site (rsvelte compiler + self-dogfooded shake)
+        run: pnpm --filter site build
