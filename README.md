@@ -2,6 +2,10 @@
 
 A **sound, source-level tree-shaker for Svelte 5 (runes) components.**
 
+**▶ Try it in the browser: https://baseballyama.github.io/svelte-shaker/** — an
+interactive playground that runs the engine entirely client-side (and is itself
+built with rsvelte + dogfooded through svelte-shaker).
+
 It runs in your app's production build, _before_ the Svelte compiler, and slims
 each `.svelte` file by partially evaluating it against how the **whole app**
 actually uses it: props that are never passed (or always passed the same value)

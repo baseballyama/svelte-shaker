@@ -7,6 +7,7 @@ export default tseslint.config(
       '**/dist/**',
       '**/.shaker-tmp*/**',
       '**/tests/fixtures/**/actual/**',
+      'packages/site/**',
     ],
   },
   eslint.configs.recommended,

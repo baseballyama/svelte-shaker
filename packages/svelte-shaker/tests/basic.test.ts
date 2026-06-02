@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { svelteShaker, fsResolve } from '../src/index';
+import { svelteShaker } from '../src/index';
+import { fsResolve } from '../src/scan';
 import { analyze } from '../src/analyze';
 import { assertCompiles, cleanTmp, renderHtml, renderGraphHtml } from './diff';
 

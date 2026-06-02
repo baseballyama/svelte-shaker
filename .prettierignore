@@ -1,5 +1,9 @@
 pnpm-lock.yaml
 
+# The site has its own SvelteKit toolchain (and .svelte files need the svelte
+# prettier plugin); it is formatted/checked independently of the engine.
+packages/site/**
+
 packages/svelte-shaker/tests/fixtures/**
 
 # Transient compiled output from the differential-SSR oracle (tests/diff.ts) and

@@ -4,7 +4,8 @@
     "**/dist/**",
     "**/node_modules/**",
     "**/.shaker-tmp*/**",
-    "**/tests/fixtures/**/actual/**"
+    "**/tests/fixtures/**/actual/**",
+    "packages/site/**"
   ],
   "compilerOptions": {
     "module": "esnext",
