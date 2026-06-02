@@ -61,6 +61,7 @@ import { shakeBody } from './transform';
 import {
   readCallSite,
   deadSpansForPlans,
+  isFoldBlockedName,
   type FileModel,
   type PropDecl,
 } from './analyze';
@@ -509,7 +510,7 @@ function specializableShape(
   for (const [name, explicit] of site.explicit) {
     if (!declared.has(name)) continue; // undeclared -> flows to `...rest`, skip
     if (plan.constFold.has(name)) continue; // already an app-wide L1 constant
-    if (child.shadowedNames.has(name) || child.debugNames.has(name)) continue;
+    if (isFoldBlockedName(child, name)) continue; // shadowed / `{@debug}` — same as L1
     // The value must be a literal this site genuinely passes and no spread can
     // override — exactly the analysis's "safely explicit" condition.
     if (explicit.dynamic || !explicit.afterLastSpread) continue;
