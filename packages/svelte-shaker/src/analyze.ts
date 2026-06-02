@@ -1,10 +1,13 @@
-import { parseSvelte, walk, type AnyNode, type Root } from './parse';
+import { parseCached, parseSvelte, walk, type AnyNode, type ParseCache, type Root } from './parse';
 import {
   emptyPlan,
+  type AnalyzeInput,
   type ComponentId,
   type ComponentPlan,
+  type InputFile,
   type Literal,
   type PropValueSet,
+  type ResolvedEdge,
 } from './ir';
 import { computeDeadSpans, inSpans, type Span } from './dead';
 
@@ -149,7 +152,19 @@ export async function analyze(
   resolve: Resolve,
   readFile: ReadFile,
 ): Promise<AnalyzeResult> {
-  const models = await crawl(entries, resolve, readFile);
+  return analyzeInput(await buildAnalyzeInput(entries, resolve, readFile));
+}
+
+/**
+ * The pure, environment-free engine entry (docs/RUST-MIGRATION.md §2): given a
+ * fully-resolved, batched {@link AnalyzeInput}, build every component's model and
+ * compute its plan to a whole-program fixpoint (docs §2.1).  It does NO module
+ * resolution or file IO — that is the Shell-side resolution layer's job
+ * ({@link buildAnalyzeInput}) — so this is the half that ports to Rust unchanged:
+ * one batched call in, plans out, no per-edge callback across the boundary.
+ */
+export function analyzeInput(input: AnalyzeInput, parseCache?: ParseCache): AnalyzeResult {
+  const models = buildModels(input, parseCache);
 
   // Escape bail (docs §4.1): any component leaked as a value somewhere in the
   // program (e.g. `<svelte:component this={X}>`) has an unobservable prop
@@ -197,32 +212,93 @@ export async function analyze(
   return { models, plans };
 }
 
-/** BFS-crawl the component graph from `entries`, parsing each file once. */
-async function crawl(
+/**
+ * Build a {@link FileModel} per `.svelte` file from the batched input — the
+ * resolution-free counterpart of the old crawl.  Models are created in the
+ * input's file order (the Shell crawls breadth-first), so the output order is
+ * stable and matches the pre-batch behavior.
+ */
+function buildModels(input: AnalyzeInput, parseCache?: ParseCache): Map<ComponentId, FileModel> {
+  // Group resolved edges by their owning file so each model reads only its own.
+  const edgesByFrom = new Map<ComponentId, ResolvedEdge[]>();
+  for (const edge of input.edges) {
+    const list = edgesByFrom.get(edge.from);
+    if (list) list.push(edge);
+    else edgesByFrom.set(edge.from, [edge]);
+  }
+  const models = new Map<ComponentId, FileModel>();
+  for (const file of input.files) {
+    models.set(file.id, buildModelFromInput(file, edgesByFrom.get(file.id) ?? [], parseCache));
+  }
+  return models;
+}
+
+/**
+ * The Shell-side resolution + IO layer (docs/RUST-MIGRATION.md §2.1): BFS-crawl
+ * the component graph from `entries`, resolving every import edge and reading
+ * every reachable `.svelte` file up front, into a batched {@link AnalyzeInput}.
+ *
+ * This is the half that STAYS in JS — it owns `this.resolve` / file IO for Vite
+ * ecosystem compat (docs ARCHITECTURE §5/§9) — so the engine ({@link
+ * analyzeInput}) consumes its output with no callback across the boundary.  The
+ * traversal mirrors the old crawl exactly: direct default-`.svelte` children and
+ * the barrel children a file actually RENDERS are followed (an unrendered barrel
+ * import is never crawled — its `<Comp/>` site cannot exist, so it cannot taint a
+ * value set), keeping the produced model set — and thus the output — identical.
+ */
+export async function buildAnalyzeInput(
   entries: ComponentId | ComponentId[],
   resolve: Resolve,
   readFile: ReadFile,
-): Promise<Map<ComponentId, FileModel>> {
-  const models = new Map<ComponentId, FileModel>();
-  const queue: ComponentId[] = Array.isArray(entries) ? [...entries] : [entries];
+  parseCache?: ParseCache,
+): Promise<AnalyzeInput> {
+  const entryList = Array.isArray(entries) ? [...entries] : [entries];
+  const files: InputFile[] = [];
+  const edges: ResolvedEdge[] = [];
+  const queue: ComponentId[] = [...entryList];
   const seen = new Set<ComponentId>(queue);
 
   while (queue.length > 0) {
     const id = queue.shift()!;
     const code = await readFile(id);
-    const model = await buildModel(id, code, resolve, readFile);
-    models.set(id, model);
-    // Crawl both directly-imported children and any child reached through a
-    // barrel/named import: the latter must enter `models` so `analyze` can bail
-    // it (its prop profile is unobservable from the visible `<Child/>` sites).
-    for (const childId of [...model.imports.values(), ...model.barrelChildIds]) {
+    files.push({ id, code });
+
+    const ast = parseCached(id, code, parseCache);
+    const instance = ast.instance;
+    if (!instance) continue;
+
+    // Resolve this file's imports into default-`.svelte` edges and barrel edges,
+    // exactly as the old `buildModel` did inline.
+    const barrelLocals = new Map<string, ComponentId>();
+    const directChildren: ComponentId[] = [];
+    for (const imp of importSources(instance)) {
+      if (imp.imported === 'default' && isSvelte(imp.value)) {
+        const childId = await resolve(imp.value, id);
+        if (childId) {
+          edges.push({ from: id, local: imp.local, to: childId, kind: 'default-svelte' });
+          directChildren.push(childId);
+        }
+        continue;
+      }
+      const childId = await resolveThroughBarrel(imp.value, imp.imported, id, resolve, readFile);
+      if (childId) {
+        edges.push({ from: id, local: imp.local, to: childId, kind: 'barrel' });
+        barrelLocals.set(imp.local, childId);
+      }
+    }
+
+    // Enqueue exactly the old crawl's set: every direct `.svelte` child, plus the
+    // barrel children this file renders.
+    const rendered = collectBarrelChildIds(ast, barrelLocals);
+    for (const childId of [...directChildren, ...rendered]) {
       if (!seen.has(childId)) {
         seen.add(childId);
         queue.push(childId);
       }
     }
   }
-  return models;
+
+  return { files, edges, entries: entryList };
 }
 
 /**
@@ -332,17 +408,23 @@ export function deadSpansForPlans(
   return out;
 }
 
-async function buildModel(
-  id: ComponentId,
-  code: string,
-  resolve: Resolve,
-  readFile: ReadFile,
-): Promise<FileModel> {
-  const ast = parseSvelte(code, id);
+function buildModelFromInput(
+  file: InputFile,
+  edges: ResolvedEdge[],
+  parseCache?: ParseCache,
+): FileModel {
+  const { id, code } = file;
+  const ast = parseCached(id, code, parseCache);
+  // Reconstruct the import maps from the already-resolved edges (docs §2.1): the
+  // engine never resolves.  `default-svelte` edges drive the value sets; barrel
+  // edges (local -> child reached through a barrel/named import; disjoint from
+  // `imports`) exist only so a barrel-reached child can be bailed.
   const imports = new Map<string, ComponentId>();
-  /** Local name -> child id reached through a barrel/named import (see
-   * {@link FileModel.barrelChildIds}). Disjoint from `imports`. */
   const barrelLocals = new Map<string, ComponentId>();
+  for (const edge of edges) {
+    if (edge.kind === 'default-svelte') imports.set(edge.local, edge.to);
+    else barrelLocals.set(edge.local, edge.to);
+  }
   const bailReasons: string[] = [];
 
   // svelte:options accessors / customElement -> public props, never touchable.
@@ -362,28 +444,13 @@ async function buildModel(
   let propsPattern: AnyNode | undefined;
   let hasRestProp = false;
 
-  // Local component imports (`Sub` -> resolved id) AND every imported local
-  // name (svelte or not) — the latter is needed for escape detection below.
+  // Every imported local name (svelte or not) — needed for escape detection
+  // below.  Resolution already happened in the Shell ({@link buildAnalyzeInput});
+  // here we only read names off the parse, no IO.
   const importedLocals = new Set<string>();
   const instance = ast.instance;
   if (instance) {
-    for (const imp of importSources(instance)) {
-      importedLocals.add(imp.local);
-      // A direct `import Sub from './Sub.svelte'`: the common, fully-attributed
-      // case — these sites drive the value sets.
-      if (imp.imported === 'default' && isSvelte(imp.value)) {
-        const childId = await resolve(imp.value, id);
-        if (childId) imports.set(imp.local, childId);
-        continue;
-      }
-      // Otherwise this local may STILL render a `.svelte` component we crawl —
-      // a named/namespace import, or a default import of a `.js`/`.ts` barrel
-      // that re-exports a `.svelte` default.  Resolve through the barrel; if it
-      // lands on a `.svelte` file, record it so `analyze` bails that child (its
-      // `<Comp/>` sites are invisible to the value-set scan — docs §4.2).
-      const childId = await resolveThroughBarrel(imp.value, imp.imported, id, resolve, readFile);
-      if (childId) barrelLocals.set(imp.local, childId);
-    }
+    for (const imp of importSources(instance)) importedLocals.add(imp.local);
 
     const found = findPropsDeclaration(instance);
     if (found) {

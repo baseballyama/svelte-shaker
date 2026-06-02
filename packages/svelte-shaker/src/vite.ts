@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plugin } from 'vite';
 import { svelteShaker, svelteShakerWithMono } from './index';
+import { DevShaker, type DevMode } from './engine';
 import { collectSvelteFiles, fsResolve } from './scan';
 import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono';
 import type { ComponentId } from './ir';
@@ -26,6 +27,17 @@ export interface ShakerOptions {
    * to OFF.
    */
   monomorphize?: boolean | Partial<Omit<MonomorphizeOptions, 'enabled'>>;
+  /**
+   * Whether to shake in `vite dev` too (docs/RUST-MIGRATION.md §3 M2,
+   * ARCHITECTURE §6.2).  Default `false` — dev is a pass-through, which is always
+   * correct and keeps HMR simple.  Opt in to incremental dev shaking with:
+   *  - `'incremental'` — re-parses only changed files, re-runs the whole-program
+   *    fixpoint over a long-lived {@link DevShaker} (fast, the intended mode);
+   *  - `'coarse'` — re-analyzes the whole program on every change (the slow but
+   *    trivially-correct safety valve).
+   * L2 is NOT applied in dev (L0/L1/L1.5 only — docs §5 risks).
+   */
+  dev?: false | DevMode;
 }
 
 /** Query flag a specialized-variant `.svelte` request carries (see below). */
@@ -45,9 +57,12 @@ function resolveMono(options: ShakerOptions): MonomorphizeOptions {
 /**
  * Source-level Svelte tree-shaking as a Vite plugin (docs/ARCHITECTURE.md §6).
  *
- * Build-only by design: `apply: 'build'` makes dev a pass-through, because the
- * whole-program analysis is incompatible with HMR's locality (§6.2).
- * `enforce: 'pre'` runs us before `@sveltejs/vite-plugin-svelte`, so we hand it
+ * Build-only by default: dev is a pass-through unless `dev` is set (§6.2), so
+ * `apply` returns true in build always and in serve only when opted in.  When
+ * `dev` is enabled, `configureServer` drives a long-lived incremental
+ * {@link DevShaker} and `handleHotUpdate` widens the HMR boundary to the children
+ * whose residual changed (docs/RUST-MIGRATION.md §3 M2).  `enforce: 'pre'` runs
+ * us before `@sveltejs/vite-plugin-svelte` in both modes, so we hand it
  * already-slimmed `.svelte` source and stay decoupled from Svelte's codegen.
  *
  * L2 wiring (opt-in, `level: 2`): a specialized variant is exposed as a request
@@ -65,6 +80,12 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   let variantSources = new Map<string, string>();
   let root = process.cwd();
 
+  // Dev (serve) shaking is opt-in (docs §6.2); `null` keeps dev a pass-through.
+  const devMode: DevMode | null =
+    options.dev === 'coarse' || options.dev === 'incremental' ? options.dev : null;
+  /** The long-lived incremental engine, created in `configureServer` (serve only). */
+  let devShaker: DevShaker | null = null;
+
   /** The module specifier the rewritten owner imports a given variant from. */
   const variantSpecifier = (variantId: string): string => {
     // `variantId` is `<childPath>::v<n>`; turn it into a query request on the
@@ -78,15 +99,75 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   return {
     name: 'vite-plugin-svelte-shaker',
     enforce: 'pre',
-    apply: 'build',
+    // Build always; dev (serve) only when opted in via `dev` (docs §6.2).
+    apply(_config, env) {
+      return devMode != null || env.command === 'build';
+    },
 
     configResolved(config) {
       root = config.root;
     },
 
+    // Dev (serve): drive the long-lived incremental engine instead of the
+    // one-shot build crawl.  `configureServer` runs before `buildStart`, so
+    // setting `devShaker` here makes `buildStart` skip the build path (docs §3 M2).
+    async configureServer(server) {
+      if (!devMode) return;
+      const dirs = (options.include ?? ['.']).map((p) => path.resolve(root, p));
+      const entries = dirs.flatMap(collectSvelteFiles);
+      const read = (id: ComponentId) => fs.readFileSync(id, 'utf-8');
+      devShaker = new DevShaker(entries, fsResolve, read, devMode);
+      shaken = await devShaker.init();
+
+      // A `.svelte` add/remove changes the call-site set (a new caller can
+      // un-shake a child; a removed one can re-shake it — docs §4).  Re-shake and
+      // full-reload: over-invalidation is always sound, and add/remove is rare
+      // enough that fine-grained HMR for it is not worth the complexity here.
+      const isOurs = (file: string): boolean =>
+        file.endsWith('.svelte') && dirs.some((d) => file === d || file.startsWith(d + path.sep));
+      const onGraphChange = async (file: string, kind: 'added' | 'removed'): Promise<void> => {
+        if (!devShaker || !isOurs(file)) return;
+        const result = await devShaker.update({ [kind]: [file] });
+        for (const [id, code] of Object.entries(result.changed)) shaken[id] = code;
+        for (const id of result.removed) delete shaken[id];
+        server.moduleGraph.invalidateAll();
+        server.ws.send({ type: 'full-reload' });
+      };
+      server.watcher.on('add', (file) => void onGraphChange(file, 'added'));
+      server.watcher.on('unlink', (file) => void onGraphChange(file, 'removed'));
+    },
+
+    // Dev HMR: re-shake the changed file and WIDEN the update set with every
+    // component whose slimmed output changed — crucially the un-edited children
+    // whose residual shifted because a call site changed (the module-graph
+    // divergence, docs §3 M2).  Returning a superset is sound; under-reporting
+    // would leave stale output in the browser.
+    async handleHotUpdate(ctx) {
+      if (!devShaker || !ctx.file.endsWith('.svelte')) return;
+      const result = await devShaker.update({ changed: [ctx.file] });
+      for (const [id, code] of Object.entries(result.changed)) shaken[id] = code;
+      for (const id of result.removed) delete shaken[id];
+
+      const widened = new Set(ctx.modules);
+      for (const id of Object.keys(result.changed)) {
+        const mods = ctx.server.moduleGraph.getModulesByFile(id);
+        if (!mods) continue;
+        for (const m of mods) {
+          // Invalidate so vite-plugin-svelte re-runs our `transform` (now serving
+          // the new `shaken[id]`) and recompiles — including the extracted CSS in
+          // the `?svelte&type=style` sub-resource (L1.5 rule removal lives there).
+          ctx.server.moduleGraph.invalidateModule(m);
+          widened.add(m);
+        }
+      }
+      return [...widened];
+    },
+
     // Phase 1 (docs §6.1): crawl the whole component graph and compute plans
-    // before any file is compiled.
+    // before any file is compiled.  Skipped in serve — `configureServer` owns the
+    // dev path and has already populated `shaken` via the incremental engine.
     async buildStart() {
+      if (devShaker) return;
       const dirs = (options.include ?? ['.']).map((p) => path.resolve(root, p));
       const entries = dirs.flatMap(collectSvelteFiles);
       if (entries.length === 0) {
