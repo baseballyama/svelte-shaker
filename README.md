@@ -4,7 +4,12 @@
 
 <h1 align="center">svelte-shaker</h1>
 
-<p align="center">A <strong>sound, source-level tree-shaker for Svelte&nbsp;5 (runes) components.</strong></p>
+<p align="center">
+  <strong>Remove the dead Svelte&nbsp;5 (runes) code your bundler can't</strong> — dead
+  branches, the child components they pull in, and unreachable CSS — by
+  partial-evaluating each component against how your <em>whole app</em> actually
+  uses it, before the compiler. Sound: it never changes what renders.
+</p>
 
 **▶ Try it in the browser: https://baseballyama.github.io/svelte-shaker/** — an
 interactive playground that runs the engine entirely client-side (and is itself

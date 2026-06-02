@@ -4,7 +4,7 @@
 </script>
 
 <svelte:head>
-  <title>svelte-shaker — source-level tree-shaking for Svelte 5</title>
+  <title>svelte-shaker — delete the Svelte code your bundler can't</title>
 </svelte:head>
 
 <main>
@@ -13,8 +13,8 @@
       <div class="hero-lead">
         <div class="tagline mono-label">whole-program · source-level · Svelte 5</div>
         <h1>
-          Delete dead-prop code <span class="strike">before</span> the Svelte
-          compiler ever sees it.
+          Your bundler ships the component code your app
+          <span class="strike">never runs</span>. svelte-shaker deletes it.
         </h1>
       </div>
       <img
@@ -26,25 +26,29 @@
       />
     </div>
     <p class="lede">
-      Design-system components carry dozens of props; your app uses a handful.
-      The code behind the rest — branches, classes, reactive statements, imports,
-      CSS — ships anyway. <strong>svelte-shaker</strong> partial-evaluates each
-      <code>.svelte</code> file against how the <em>whole app</em> actually calls
-      it, and removes what can never run, <em>before</em> the compiler.
+      A design-system <code>&lt;Button&gt;</code> has 30 props; your app passes 5.
+      The dead branches behind the other 25 — the <code>&lt;Spinner&gt;</code> and
+      <code>&lt;Icon&gt;</code> they pull in, the reactive code, the
+      <code>.btn-danger</code> CSS — all ship to your users anyway.
+      <strong>svelte-shaker</strong> reads how your <em>whole app</em> actually
+      calls every component and removes what can never run, at the source, before
+      the compiler — without ever changing what renders.
     </p>
     <div class="why">
       <div class="why-card">
-        <span class="k">A bundler can't reach this.</span>
-        After Svelte compiles, a prop's value flows through the runtime — it's not
-        a static constant, so terser/Rollup can't fold
-        <code>if&nbsp;(loading)</code> away or drop a <code>.btn-danger</code> rule
-        hiding behind an interpolated class.
+        <span class="k">A bundler can't remove this.</span>
+        After Svelte compiles, a prop's value flows through the runtime — it isn't
+        a static constant, so Rollup/terser can't fold an
+        <code>{'{#if loading}'}</code> branch away, drop the
+        <code>&lt;Spinner&gt;</code> module it guards, or delete a
+        <code>.btn-danger</code> rule hiding behind <code>class="btn-{'{variant}'}"</code>.
       </div>
       <div class="why-card">
-        <span class="k">So we work one step earlier.</span>
-        On the pre-compile source, the prop's value (its default, or the literal
-        at the call site) is still visible and the template is intact. It's a
-        Svelte-aware partial evaluator + dead-code eliminator.
+        <span class="k">Whole-program, so it cascades.</span>
+        Folding a prop deletes a <code>&lt;Child/&gt;</code> call; that can make the
+        child itself unused, which shrinks <em>its</em> profile, and so on. It
+        iterates to a fixpoint — then hands slimmed source to the compiler, which
+        compiles only what survives.
       </div>
     </div>
     <div class="levels">
@@ -193,7 +197,7 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
     color: var(--ink);
   }
   code {
-    color: var(--accent);
+    color: var(--code-fg);
     background: var(--accent-bg);
     padding: 1px 5px;
     border-radius: 4px;
@@ -314,7 +318,7 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
     color: var(--ink-faint);
   }
   .install .s {
-    color: var(--accent);
+    color: var(--code-fg);
   }
 
   @media (max-width: 760px) {

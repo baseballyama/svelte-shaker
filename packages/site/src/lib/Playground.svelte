@@ -2,6 +2,7 @@
   import { shake, type ShakeOutput, type Files } from './engine';
   import { diffLines, hasChanges, type DiffLine } from './diff';
   import { presets, clonePresetFiles, type Preset } from './presets';
+  import CodeEditor from './CodeEditor.svelte';
 
   let activePreset = $state<Preset>(presets[0]!);
   let files = $state<Files>(clonePresetFiles(presets[0]!));
@@ -146,13 +147,11 @@
           {/each}
         </div>
       </div>
-      <textarea
-        class="editor"
-        spellcheck="false"
-        value={files[activeFile]}
+      <CodeEditor
+        value={files[activeFile] ?? ''}
         onkeydown={onTab}
         oninput={(e) => onEdit(activeFile, e.currentTarget.value)}
-      ></textarea>
+      />
     </section>
 
     <section class="col">
@@ -333,7 +332,7 @@
     line-height: 1.65;
   }
   .blurb :global(code) {
-    color: var(--accent);
+    color: var(--code-fg);
     background: var(--accent-bg);
     padding: 1px 4px;
     border-radius: 4px;
@@ -488,21 +487,6 @@
   }
   .sw.add {
     background: var(--add);
-  }
-
-  .editor {
-    flex: 1;
-    border: 0;
-    outline: 0;
-    resize: none;
-    background: transparent;
-    color: var(--ink);
-    padding: 12px 14px;
-    font-size: 13px;
-    line-height: 1.7;
-    tab-size: 2;
-    white-space: pre;
-    overflow: auto;
   }
 
   .out {
