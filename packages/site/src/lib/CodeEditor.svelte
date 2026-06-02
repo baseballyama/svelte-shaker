@@ -14,20 +14,30 @@
 
   let html = $state('');
   let ready = $state(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let hl: any = null;
+  // `$state` so the effect below re-runs once the async highlighter resolves.
+  let hl = $state<Awaited<ReturnType<typeof getHighlighter>> | null>(null);
   let ta = $state<HTMLTextAreaElement>();
   let overlay = $state<HTMLDivElement>();
 
   onMount(async () => {
-    hl = await getHighlighter();
-    ready = true;
+    try {
+      hl = await getHighlighter();
+    } catch {
+      // Leave the plain textarea visible if highlighting can't load.
+    }
   });
 
-  // Repaint whenever the source changes — synchronous once the highlighter loaded.
+  // Repaint whenever the highlighter loads or the source changes — synchronous
+  // once `hl` is set. `ready` only flips after a successful paint, so the plain
+  // textarea stays visible until the overlay actually has content.
   $effect(() => {
-    const code = value;
-    if (hl) html = highlightSvelte(hl, code);
+    if (!hl) return;
+    try {
+      html = highlightSvelte(hl, value);
+      ready = true;
+    } catch {
+      ready = false;
+    }
   });
 
   // Keep the (transparent-text) textarea and the highlighted overlay in lockstep.
