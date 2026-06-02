@@ -115,8 +115,25 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
   - 公開 API: `dev: false | 'coarse' | 'incremental'`（既定 `false`）。`'coarse'` = 毎編集フル再解析（安全弁）。
   - **ゲート**: dev 差分オラクル緑。`dev:false` で挙動不変。
 
-- **M3（Rust ①）クレート足場 + パーサ** — `crates/` + napi（rsvelte raw-transfer、§9-1）。`parse` のみ Rust。
-  **ゲート**: 既存テスト全緑。
+- **M3（Rust ①）rsvelte パーサで TS エンジンを駆動（差分オラクルで検証）** — `parse` を rsvelte（Rust/OXC）に
+  差し替えても TS エンジン（解析+変換）が**同一の shake 出力**を出すことを実証する。
+  - **seam**: 新規プラグインを足さず、既存の `ParseCache` をパーサ注入点として使う（`analyzeInput(input, cache)` に
+    rsvelte AST を seed すると、エンジン全体が rsvelte AST で動く）。rsvelte は公開 WASM パッケージ
+    `@rsvelte/compiler`（devDependency、出荷エンジンは未参照）を `initSync` で読み込む。
+  - **検証（実測）**: 全ゴールデンフィクスチャを rsvelte 駆動で回し svelte/compiler 駆動と file 単位で比較。
+    **9 中 7 が byte 完全一致**。残り 2（`rest-prop`/`spread-after`）は唯一の既知差分に起因
+    （下記）で、rsvelte 出力も compile 可・**SSR 等価**（`tests/rsvelte-diff.test.ts`）。
+  - **既定は svelte/compiler のまま**。rsvelte は差分オラクルで検証する Rust 経路として導入し、default flip は
+    下記ブロッカー解消後（M4/M5 で恒久差分オラクルとして常設）。
+  - **default flip のブロッカー（rsvelte 上流の小修正 2 件）**:
+    1. **TS 型ノード未実装** — rsvelte@0.6.1 は inline 型注釈（`{ x: boolean }`）を `members` の無い
+       `TSUnknownKeyword` stub で出すため、落とした prop の型メンバ除去（`transform.ts removeTypeMember`）が
+       no-op になり死んだ型テキストが残る（compile で消えるので挙動は健全、byte のみ差分）。rsvelte が完全な
+       TS 型ノードを出せば解消（M4/M5 でも同じ gap を踏むので上流で直すのが二度手間回避）。
+    2. **`parse` の wrapper 再エクスポート欠落** — `@rsvelte/vite-plugin-svelte-native@0.2.1`（native）は
+       `index.cjs` から `parse`/`parseEnvelope` を再エクスポートしておらず（型定義にはある）、native の高速
+       raw-transfer 経路は現状 raw binding 経由でしか使えない。WASM 経路（`@rsvelte/compiler`）は parse 可。
+  - **ゲート**: 差分オラクル緑（7 byte 一致 + 2 既知差分が SSR 等価）。既存テスト全緑・`dev:false` 挙動不変。
 
 - **M4（Rust ②）解析（クエリグラフ）を Rust + 本物の Salsa db へ** — `program_plans` fixpoint・`plan(id)`
   射影・`importers_of` 派生。AST ノードは安定 id（`SyntaxNodePtr` 方式）で interning。
