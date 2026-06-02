@@ -73,6 +73,25 @@ impl Literal {
         }
     }
 
+    /// Source text to substitute for a folded reference (`literalSource` in
+    /// transform.ts): `undefined`/`null`/`true`/`false` verbatim, numbers via JS
+    /// `toString`, strings JSON-quoted.
+    pub fn to_source(&self) -> String {
+        match self {
+            Literal::Undefined => "undefined".to_string(),
+            Literal::Null => "null".to_string(),
+            Literal::Bool(b) => b.to_string(),
+            Literal::Num(n) => js_number_to_string(*n),
+            Literal::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| format!("{s:?}")),
+        }
+    }
+
+    /// How a value renders into a DOM string when interpolated (`String(value)`),
+    /// for the CSS possible-class computation.
+    pub fn to_dom_string(&self) -> String {
+        self.to_js_string()
+    }
+
     /// JSON-serializable form for handing a folded literal back to the Shell.
     /// `Undefined` has no JSON form; callers that can produce it must special-case
     /// it (the plan layer keeps it out of JSON by construction).

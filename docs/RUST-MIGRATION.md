@@ -163,9 +163,12 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
     AST ノードは安定 id で interning）。**ゲート**: Rust plans == TS plans（全フィクスチャ）。TS エンジンを恒久差分
     オラクルとして残す。CI に `cargo test` + `build:wasm`（pinned toolchain）ジョブ追加は follow-up。
 
-- **M5（Rust ③）変換 + emit を Rust へ** — `oxc_ecmascript`(畳み込み) + minifier(DCE) + `rsvelte_formatter`。
-  `magic-string` サージカル削除 → AST 変換 + printer。`TransformResult.map` を実体化。
-  **ゲート**: フル Rust エンジンで build 出力 byte 一致 + 差分 SSR 等価。
+- **M5（Rust ③）変換 + emit を Rust へ — 完了**。`transform.ts` + `css.ts` を Rust に移植し、`magic-string` 相当の
+  `MagicEdit`（**UTF-16 単位**の span エディタ。non-ASCII でも健全。後勝ち overlap で `drop` が先行 substitute を
+  supersede）でサージカル削除/上書き。`decide_chain` を解析と共有（fold が食い違わない）。`shake_program(input with
+  ASTs + code) → {id: slimmedSrc}` = 解析 + 変換のフルエンジン。**全 9 フィクスチャ + non-ASCII で Rust 出力 ==
+  TS `svelteShaker` 出力（byte 一致）+ compile 可**（`tests/wasm-shake.test.ts`）。
+  → **エンジン全体（解析+変換+emit+CSS）の Rust/WASM 移植は完了**。L0/L1/L1.5 のみ（L2/sourcemap は後続）。
 
 - **M6 dev インクリメンタルを Rust エンジン上で配線** — 長命 `ShakerEngine` を napi 公開、M2 の dev Shell を接続。
   **ゲート**: dev 差分オラクル（Rust）緑。`dev:'coarse'` を安全弁として常設。
