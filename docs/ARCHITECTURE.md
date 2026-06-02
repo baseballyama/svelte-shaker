@@ -411,6 +411,12 @@ transform（enforce: 'pre'：vite-plugin-svelte より前）:
 - どうしても dev で prod 相当を見たい人向けに `dev: 'coarse'`（毎回ルートから完全クロール、HMR は遅い）を
   後続マイルストーンで **opt-in** 提供。**既定 off で確定**。
 
+> **dev インクリメンタル DCE の検討**：dev を避ける本当の壁は「負の情報の不完全性」ではなく
+> **(a) インクリメンタル fixpoint 無効化の健全性**と **(b) HMR のモジュールグラフ乖離**である
+> （コールサイト集合は import グラフ追跡ではなく FS 走査由来なので、完全性は build/dev で同条件）。
+> Salsa 風の自動依存追跡（(a)）と `handleHotUpdate` の module widening（(b)）で opt-in 提供する
+> 移行計画は [`RUST-MIGRATION.md`](./RUST-MIGRATION.md) を参照。
+
 ### 6.3 ソースマップ / プリプロセッサ順序 / TS
 
 - 我々は元 `.svelte` から **span を削除**する変換なので、magic-string で
@@ -532,6 +538,10 @@ const { files, mono } = await svelteShakerWithMono(
 
 rsvelte は **OXC フルスタック上の Svelte5 コンパイラ移植**で、shaker に必要な部品が既に揃う。
 エンジン境界（§5.1 IR）を最初から固定しておけば、Engine 実装だけを差し替えられる。
+
+> **dev インクリメンタル DCE を最終ゴールに据えた移行計画**（バッチ境界化 → クエリ束化 → Rust 化 →
+> dev opt-in）の詳細マイルストーンは [`RUST-MIGRATION.md`](./RUST-MIGRATION.md)。以下の表は
+> その M3–M5 で差し替える Engine 部品の対応。
 
 | shaker が必要とする処理        | rsvelte / OXC の既存資産                                                         |
 | ------------------------------ | -------------------------------------------------------------------------------- |

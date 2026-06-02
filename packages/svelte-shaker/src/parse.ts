@@ -92,6 +92,25 @@ export function parseSvelte(code: string, filename: string): Root {
   return parse(code, { modern: true, filename }) as unknown as Root;
 }
 
+/**
+ * Content-keyed parse cache: a hit returns the IDENTICAL AST for unchanged
+ * source, so the dev engine re-parses only the files that actually changed
+ * (docs/RUST-MIGRATION.md §2.2 — `parse(id)` is the cached input query, the
+ * dominant cost an edit avoids).  Keyed by content, so a stale entry can never
+ * return an AST whose byte offsets disagree with the source: a code mismatch
+ * forces a re-parse.
+ */
+export type ParseCache = Map<string, { code: string; ast: Root }>;
+
+export function parseCached(filename: string, code: string, cache?: ParseCache): Root {
+  if (!cache) return parseSvelte(code, filename);
+  const hit = cache.get(filename);
+  if (hit && hit.code === code) return hit.ast;
+  const ast = parseSvelte(code, filename);
+  cache.set(filename, { code, ast });
+  return ast;
+}
+
 // ---- typed zimmerframe facade ----------------------------------------
 
 export interface WalkCtx<S> {

@@ -10,6 +10,58 @@ export type ComponentId = string;
 /** A statically-known literal value a prop can take. */
 export type Literal = string | number | boolean | null | undefined;
 
+// ----------------------------------------------------------------------
+// Batched engine boundary (docs/RUST-MIGRATION.md §2.1 / ARCHITECTURE §5.1).
+// The Shell resolves the whole module graph up front and hands the engine ONE
+// `AnalyzeInput`; the engine returns plans/output with no per-edge callback.
+// Everything here is plain data (JSON-serializable) so the engine can later be a
+// Rust process behind napi — only source strings + this resolved graph cross.
+// ----------------------------------------------------------------------
+
+/** How an imported local name binds to a child `.svelte` component. */
+export type EdgeKind =
+  | 'default-svelte' // `import Child from './Child.svelte'` — drives the value sets
+  | 'barrel'; // reached through a named/namespace or `.js`/`.ts` barrel re-export
+
+/** One reachable `.svelte` source the engine will model. */
+export interface InputFile {
+  id: ComponentId;
+  code: string;
+}
+
+/** One resolved import edge: `from` binds `local` to the child `.svelte` `to`. */
+export interface ResolvedEdge {
+  from: ComponentId;
+  local: string;
+  to: ComponentId;
+  kind: EdgeKind;
+}
+
+/**
+ * The fully-resolved, batched input to the engine (docs §2.1).  `files` is every
+ * reachable `.svelte` (barrel `.js`/`.ts` are consumed during resolution and do
+ * not appear here); `edges` are already resolved to absolute ids; `entries` is
+ * the call-site-completeness set (the Shell's FS scan) and the L2 net-win roots.
+ */
+export interface AnalyzeInput {
+  files: InputFile[];
+  edges: ResolvedEdge[];
+  entries: ComponentId[];
+}
+
+/**
+ * The delta the dev engine returns after applying file changes (docs §2.1, the
+ * `vite dev` incremental path).  `changed` maps each component whose SLIMMED
+ * OUTPUT changed to its new source — a SUPERSET of the edited files, because a
+ * call-site edit can change a child's residual without the child being touched
+ * (the HMR module-graph divergence the Shell must widen for).  `removed` lists
+ * components no longer in the program (deleted or now unreachable).
+ */
+export interface EditResult {
+  changed: Record<ComponentId, string>;
+  removed: ComponentId[];
+}
+
 /**
  * The join, over every call site in the program, of the value passed to a
  * single prop.  See the lattice in docs/ARCHITECTURE.md §2.2.

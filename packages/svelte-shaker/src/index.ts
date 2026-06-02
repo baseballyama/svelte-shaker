@@ -8,9 +8,17 @@ import {
 } from './mono';
 import type { ComponentId } from './ir';
 
-export type { ComponentId } from './ir';
+export type {
+  ComponentId,
+  AnalyzeInput,
+  InputFile,
+  ResolvedEdge,
+  EdgeKind,
+  EditResult,
+} from './ir';
 export type { Resolve, ReadFile } from './analyze';
-export { analyze } from './analyze';
+export { analyze, analyzeInput, buildAnalyzeInput } from './analyze';
+export { DevShaker, type DevMode, type DevShakerChange } from './engine';
 export { transformAll, transformAllWithMono } from './transform';
 export {
   monomorphize,
