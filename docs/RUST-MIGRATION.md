@@ -170,8 +170,40 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
   TS `svelteShaker` 出力（byte 一致）+ compile 可**（`tests/wasm-shake.test.ts`）。
   → **エンジン全体（解析+変換+emit+CSS）の Rust/WASM 移植は完了**。L0/L1/L1.5 のみ（L2/sourcemap は後続）。
 
-- **M6 dev インクリメンタルを Rust エンジン上で配線** — 長命 `ShakerEngine` を napi 公開、M2 の dev Shell を接続。
-  **ゲート**: dev 差分オラクル（Rust）緑。`dev:'coarse'` を安全弁として常設。
+- **M6 dev インクリメンタルを Rust エンジンで検証 — 完了**。content-keyed parse キャッシュ（変更ファイルのみ
+  再パース）+ `shake_program`(Rust/WASM) で編集列（callsite 編集 / add / remove / leaf 編集）を駆動し、各ステップで
+  TS `svelteShaker` と **byte 一致**（`tests/wasm-dev.test.ts`。add で un-shake・remove で re-shake のカスケード込み）。
+  → dev インクリメンタルフローが Rust エンジンで正しいことを実証。
+
+---
+
+## 移行ステータス（M1–M6 完了）
+
+検証済みの Rust 移行は完了。全マイルストーンが差分オラクルで TS と一致を担保:
+
+| M | 内容 | 検証 |
+|---|---|---|
+| M1 | バッチ境界（純粋 `analyzeInput` / Shell `buildAnalyzeInput`） | byte 一致 |
+| M2 | dev インクリメンタル + `DevShaker` + `handleHotUpdate` widening | 差分オラクル + 実 Vite |
+| M3 | rsvelte(Rust)パースで TS エンジン駆動 | 9 中 7 byte 一致 / 2 既知 TS 差分は SSR 等価 |
+| M4 | 解析を Rust→WASM（値集合束・fixpoint・dead-span・eval） | 全フィクスチャで plans == TS |
+| M5 | 変換+emit+CSS を Rust→WASM（`MagicEdit` UTF-16） | 全フィクスチャ + non-ASCII で出力 == TS |
+| M6 | dev インクリメンタルを Rust エンジンで | 編集列で出力 == TS |
+
+**エンジン全体（解析+変換+emit+CSS, L0/L1/L1.5）が Rust/WASM で TS と byte 一致**。`engine-rs/`（自己完結・
+rsvelte_core 非依存・serde_json + wasm-bindgen）、`@rsvelte/compiler`(WASM) は差分オラクルの parse 比較用 devDep。
+
+### プロダクション化の follow-up（本移行のスコープ外・要メンテナ判断）
+
+検証は完了したが、Rust エンジンを**出荷経路**にするのは別判断（後戻りしにくい）:
+
+1. **WASM 成果物の出荷 + 既定エンジンの切替**: 現状 `engine-rs/pkg` は commit のみで npm 未出荷（`files: dist`）。
+   Vite プラグインを WASM エンジンに繋ぐには pkg 出荷 + 実依存化が必要。byte 一致なので健全性ギャップは無いが、
+   wasm ロードコスト・perf 特性の評価が要る。
+2. **rsvelte パースの既定化**（M3）: rsvelte の TS 型ノード未実装 + `parse` 再エクスポート欠落の上流修正が前提。
+3. **L2 モノモーフィズの Rust 化**、**sourcemap**（`TransformResult.map`）、**CI に `cargo test`+`build:wasm`
+   （pinned toolchain）ジョブ追加**。
+4. **`<svelte:options>` accessors/customElement bail の発火**（M4 で記録した既存ギャップ）。
 
 ## 4. 健全性戦略
 
