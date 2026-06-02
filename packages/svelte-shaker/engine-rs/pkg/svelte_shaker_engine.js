@@ -1,25 +1,29 @@
 /* @ts-self-types="./svelte_shaker_engine.d.ts" */
 
 /**
- * Analyze one component AST (JSON), returning the per-file model fields ported
- * so far: declared props, whether a `...rest` is present, the shadowed /
- * `{@debug}` names that block folding, and the whole-component bail reasons.
- * `{"error": "..."}` on malformed input.
+ * Analyze one component AST (JSON) given its resolved outgoing edges (JSON), and
+ * return the per-file model fields ported so far: declared props, `...rest`
+ * presence, shadowed / `{@debug}` fold-blocking names, the `<svelte:options>`
+ * bail, the rendered child calls, barrel-rendered children, and escaped
+ * components. `{"error": "..."}` on malformed input.
  * @param {string} ast_json
+ * @param {string} edges_json
  * @returns {string}
  */
-function analyze_component(ast_json) {
-    let deferred2_0;
-    let deferred2_1;
+function analyze_component(ast_json, edges_json) {
+    let deferred3_0;
+    let deferred3_1;
     try {
         const ptr0 = passStringToWasm0(ast_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.analyze_component(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
+        const ptr1 = passStringToWasm0(edges_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.analyze_component(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
 }
 exports.analyze_component = analyze_component;
