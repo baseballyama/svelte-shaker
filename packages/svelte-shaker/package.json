@@ -1,14 +1,37 @@
 {
   "name": "svelte-shaker",
+  "version": "0.0.1",
   "description": "Tree shaking for Svelte components",
   "author": "baseballyama",
+  "license": "MIT",
+  "keywords": [
+    "svelte",
+    "tree-shaking",
+    "tree-shaker",
+    "vite-plugin",
+    "rollup-plugin",
+    "dead-code-elimination"
+  ],
+  "homepage": "https://github.com/baseballyama/svelte-shaker#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baseballyama/svelte-shaker.git",
+    "directory": "packages/svelte-shaker"
+  },
+  "bugs": {
+    "url": "https://github.com/baseballyama/svelte-shaker/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/types/src/index.d.ts",
   "files": [
-    "src",
-    "types"
+    "dist/*.js",
+    "dist/*.cjs",
+    "dist/types/src"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/types/src/index.d.ts",
@@ -27,6 +50,7 @@
   },
   "scripts": {
     "build": "rollup -c",
+    "prepack": "rollup -c",
     "dev": "rollup -cw",
     "test:watch": "vitest",
     "test": "vitest run"
