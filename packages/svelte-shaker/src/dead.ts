@@ -19,7 +19,7 @@ import { evaluateWithSets } from './eval';
 export type Span = [number, number];
 
 /** One arm of an `{#if}` / `{:else if}` chain in source order. */
-export interface ChainArm {
+interface ChainArm {
   block: AnyNode; // the IfBlock for this arm (`{#if}` or `{:else if}`)
   test: AnyNode | undefined;
   consequent: AnyNode | undefined;

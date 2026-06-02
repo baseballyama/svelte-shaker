@@ -874,6 +874,19 @@ function literalAttrValue(
 }
 
 /** Decide what to fold for one component from its global usage. */
+/**
+ * Whether a declared prop name is unsafe to fold/narrow/drop because it is also
+ * bound elsewhere: shadowed by a local `let`/`function` or a template binder
+ * (`{#each as}`, snippet params, `{#await then}`, `let:`, `{@const}`), or used as
+ * a `{@debug}` argument (Svelte forbids a literal there). In those scopes the
+ * name is a different entity, so folding it would corrupt the binding (often
+ * invalid Svelte). Both L1 planning ({@link buildPlan}) and L2 specialization
+ * (mono.ts) must honor this identically.
+ */
+export function isFoldBlockedName(model: FileModel, name: string): boolean {
+  return model.shadowedNames.has(name) || model.debugNames.has(name);
+}
+
 function buildPlan(model: FileModel, u: Usage | undefined): ComponentPlan {
   const plan = emptyPlan(model.id);
 
@@ -890,14 +903,9 @@ function buildPlan(model: FileModel, u: Usage | undefined): ComponentPlan {
   if (sites.length === 0) return plan; // entry / unused: leave as-is
 
   for (const decl of model.props) {
-    // Shadowed by a local `let`/`function` OR by a template binder
-    // (`{#each as}`, snippet params, `{#await then}`, `let:`, `{@const}`): the
-    // name is a different entity in that scope, so folding/substituting/dropping
-    // it would corrupt the binding (often invalid Svelte). Leave it untouched.
-    if (model.shadowedNames.has(decl.name)) continue;
-    // Used as a `{@debug}` argument: Svelte forbids a literal there and the
-    // prop cannot be dropped without dangling — never fold it.
-    if (model.debugNames.has(decl.name)) continue;
+    // A name also bound elsewhere is a different entity — folding it corrupts
+    // that binding. L2 specialization honors the SAME predicate (see mono.ts).
+    if (isFoldBlockedName(model, decl.name)) continue;
 
     const set = valueSetFor(decl, sites);
     plan.valueSets.set(decl.name, set);

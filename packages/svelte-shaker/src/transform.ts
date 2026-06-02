@@ -18,6 +18,19 @@ export function transformAll(
   models: Map<ComponentId, FileModel>,
   plans: Map<ComponentId, ComponentPlan>,
 ): Record<ComponentId, string> {
+  return emit(models, runBasePhases(models, plans));
+}
+
+/**
+ * Phases 1–2, shared by {@link transformAll} and {@link transformAllWithMono}:
+ * fold each component body and drop its folded props (phase 1), then strip the
+ * now-pointless attribute at every call site of a dropped prop (phase 2).
+ * Returns the per-file MagicStrings, ready for the optional L2 phase 3.
+ */
+function runBasePhases(
+  models: Map<ComponentId, FileModel>,
+  plans: Map<ComponentId, ComponentPlan>,
+): Map<ComponentId, MagicString> {
   const strings = new Map<ComponentId, MagicString>();
   const dropped = new Map<ComponentId, Set<string>>();
 
@@ -31,12 +44,18 @@ export function transformAll(
       plan.bail ? new Set() : transformBody(model, plan, s),
     );
   }
-
   // Phase 2 — call sites: remove attributes for props the child actually dropped.
   for (const model of models.values()) {
     removeCallSiteAttributes(model, dropped, strings.get(model.id)!);
   }
+  return strings;
+}
 
+/** Stringify every model's MagicString into the output record. */
+function emit(
+  models: Map<ComponentId, FileModel>,
+  strings: Map<ComponentId, MagicString>,
+): Record<ComponentId, string> {
   const out: Record<ComponentId, string> = {};
   for (const model of models.values())
     out[model.id] = strings.get(model.id)!.toString();
@@ -61,29 +80,10 @@ export function transformAllWithMono(
   bindings: MonoBinding[],
   variantImport: (variantId: string) => string,
 ): Record<ComponentId, string> {
-  const strings = new Map<ComponentId, MagicString>();
-  const dropped = new Map<ComponentId, Set<string>>();
-
-  for (const model of models.values()) {
-    const s = new MagicString(model.code);
-    strings.set(model.id, s);
-    const plan = plans.get(model.id)!;
-    dropped.set(
-      model.id,
-      plan.bail ? new Set() : transformBody(model, plan, s),
-    );
-  }
-  for (const model of models.values()) {
-    removeCallSiteAttributes(model, dropped, strings.get(model.id)!);
-  }
-
+  const strings = runBasePhases(models, plans);
   // Phase 3 — L2: rewrite each bound `<Child …>` site to a specialized variant.
   rewriteBoundCallSites(models, bindings, variantImport, strings);
-
-  const out: Record<ComponentId, string> = {};
-  for (const model of models.values())
-    out[model.id] = strings.get(model.id)!.toString();
-  return out;
+  return emit(models, strings);
 }
 
 /** Minimal binding shape the rewrite needs (matches `mono.ts` CallSiteBinding). */
@@ -171,10 +171,19 @@ function rewriteOneSite(
   for (const attr of node.attributes ?? []) {
     if (attr.type !== 'Attribute' || !attr.name || !frozen.has(attr.name))
       continue;
-    let start = attr.start;
-    if (code[start - 1] === ' ' || code[start - 1] === '\t') start -= 1;
-    s.remove(start, attr.end);
+    removeAttrWithSpace(code, attr, s);
   }
+}
+
+/** Delete an attribute's span plus one preceding space/tab, keeping the tag tidy. */
+function removeAttrWithSpace(
+  code: string,
+  attr: AnyNode,
+  s: MagicString,
+): void {
+  let start = attr.start;
+  if (code[start - 1] === ' ' || code[start - 1] === '\t') start -= 1;
+  s.remove(start, attr.end);
 }
 
 /**
@@ -484,8 +493,6 @@ function collectPropRefs(
   dead: Span[],
 ): Map<string, Span[]> {
   const refs = new Map<string, Span[]>();
-  const inDead = (n: AnyNode) =>
-    dead.some(([a, b]) => n.start >= a && n.end <= b);
 
   const scan = (root: AnyNode | null | undefined) => {
     if (!root) return;
@@ -498,7 +505,7 @@ function collectPropRefs(
             node.type === 'Identifier' &&
             node.name &&
             env.has(node.name) &&
-            !inDead(node) &&
+            !inSpans(node, dead) &&
             node !== model.propsPattern &&
             !isNonReference(node, state.parent)
           ) {
@@ -614,10 +621,7 @@ function removeCallSiteAttributes(
           if (attr.type !== 'Attribute' || !attr.name || !drop.has(attr.name))
             continue;
           if (!isSideEffectFree(attr.value)) continue;
-          let start = attr.start;
-          if (model.code[start - 1] === ' ' || model.code[start - 1] === '\t')
-            start -= 1;
-          s.remove(start, attr.end);
+          removeAttrWithSpace(model.code, attr, s);
         }
       }
       next();
