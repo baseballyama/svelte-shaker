@@ -143,9 +143,10 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
     **commit**（CI はツールチェーン不要で committed wasm をロード）。
   - **段階検証**: 解析は `plans`（§5.1 IR）を出すので **Rust plans == TS plans を差分比較**できる。スライスごとに
     移植 → TS と差分比較 → 緑、を繰り返す（M3 と同じオラクル手法）。
-  - **bootstrap（実装済み）**: 最初のスライスとして prop 宣言抽出 + options bail を Rust→WASM 化し、全フィクスチャ
-    コンポーネントで **Rust 抽出 == TS 抽出** を担保（`tests/wasm-m4.test.ts`）。残りの解析（値集合束・fixpoint・
-    部分 bail・shadow・dead span）を順次移植。
+  - **実装済みスライス**（全フィクスチャ + 実 Svelte 構文で **Rust == TS** を `tests/wasm-m4.test.ts` が担保）:
+    (1) prop 宣言抽出 + options bail、(2) `hasRestProp` + `collectTemplateBindings`（shadowedNames/debugNames =
+    fold-blocked 名の集合、`addPatternNames` 再帰含む）。残り（per-file の childCalls/escape/barrel → whole-program
+    値集合束・fixpoint・部分 bail・dead span）を順次移植。
   - **既知の付随発見**: svelte/compiler の `<svelte:options>` は `root.options`（type 無し・`fragment` 外）に入るため、
     `analyze.ts` の `fragment` を `SvelteOptions` で walk する accessors/customElement bail は現状の AST では発火
     しない可能性がある（既存ギャップ。Rust は analyze.ts を忠実移植したので両者一致＝consistent）。別途
