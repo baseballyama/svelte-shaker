@@ -21,8 +21,7 @@ const IF_MACHINERY = /\bif_block\b|\$\.if\(/;
 beforeAll(() => {
   rmSync(APP, { recursive: true, force: true });
   mkdirSync(APP, { recursive: true });
-  for (const [name, content] of Object.entries(FILES))
-    writeFileSync(join(APP, name), content);
+  for (const [name, content] of Object.entries(FILES)) writeFileSync(join(APP, name), content);
 });
 
 afterAll(() => rmSync(APP, { recursive: true, force: true }));

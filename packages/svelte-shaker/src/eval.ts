@@ -14,10 +14,7 @@ const UNKNOWN: EvalResult = { known: false };
  * docs/ARCHITECTURE.md §13 — same contract (sound over-approximation, falls to
  * unknown on non-distributive ops), just without the interprocedural lattice.
  */
-export function evaluate(
-  node: AnyNode | null | undefined,
-  env: Map<string, Literal>,
-): EvalResult {
+export function evaluate(node: AnyNode | null | undefined, env: Map<string, Literal>): EvalResult {
   if (!node) return UNKNOWN;
   switch (node.type) {
     case 'Literal':
@@ -59,9 +56,7 @@ export function evaluate(
         case '||':
           return left.value ? left : evaluate(node.right, env);
         case '??':
-          return left.value === null || left.value === undefined
-            ? evaluate(node.right, env)
-            : left;
+          return left.value === null || left.value === undefined ? evaluate(node.right, env) : left;
         default:
           return UNKNOWN;
       }
@@ -154,8 +149,7 @@ function evalTri(
   if (!node) return 'unknown';
   switch (node.type) {
     case 'UnaryExpression':
-      if (node.operator === '!')
-        return notTri(evalTri(node.argument, constEnv, setEnv));
+      if (node.operator === '!') return notTri(evalTri(node.argument, constEnv, setEnv));
       return 'unknown';
 
     case 'LogicalExpression': {
@@ -214,17 +208,13 @@ function equalityTri(
 
   // Both sides constant-foldable -> exact answer (covers literal vs literal),
   // honoring the operator's own equality semantics (strict vs loose).
-  if (llit.known && rlit.known)
-    return loose ? llit.value == rlit.value : llit.value === rlit.value;
+  if (llit.known && rlit.known) return loose ? llit.value == rlit.value : llit.value === rlit.value;
 
   return 'unknown';
 }
 
 /** The reachable value set for `node` if it is a bare set-var identifier. */
-function setVar(
-  node: AnyNode | undefined,
-  setEnv: Map<string, Literal[]>,
-): Literal[] | null {
+function setVar(node: AnyNode | undefined, setEnv: Map<string, Literal[]>): Literal[] | null {
   if (node?.type === 'Identifier' && node.name && setEnv.has(node.name))
     return setEnv.get(node.name)!;
   return null;

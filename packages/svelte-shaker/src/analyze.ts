@@ -130,8 +130,7 @@ const ESCAPE_REASON = 'escapes as value (e.g. <svelte:component this={X}>)';
 
 /** Bail reason for a child rendered through an unobservable barrel/named import
  * (docs §4.2 — its `<Comp/>` sites cannot be attributed to the value set). */
-const BARREL_REASON =
-  'rendered through a barrel/named import (call sites unobservable)';
+const BARREL_REASON = 'rendered through a barrel/named import (call sites unobservable)';
 
 /**
  * Crawl the component graph from `entries` and compute a plan per component,
@@ -158,12 +157,10 @@ export async function analyze(
   // every file and stamp a bail reason on each escaped component's model BEFORE
   // planning, so `buildPlan` bails it and the fixpoint never folds it.
   const escaped = new Set<ComponentId>();
-  for (const model of models.values())
-    for (const id of model.escapedComponents) escaped.add(id);
+  for (const model of models.values()) for (const id of model.escapedComponents) escaped.add(id);
   for (const id of escaped) {
     const model = models.get(id);
-    if (model && !model.bailReasons.includes(ESCAPE_REASON))
-      model.bailReasons.push(ESCAPE_REASON);
+    if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
   }
 
   // Barrel bail (docs §4.2): a child rendered through a barrel/named import has
@@ -172,12 +169,10 @@ export async function analyze(
   // unsound — the hidden site might pass a different value — so we bail every
   // such child completely, exactly like an escape.
   const barreled = new Set<ComponentId>();
-  for (const model of models.values())
-    for (const id of model.barrelChildIds) barreled.add(id);
+  for (const model of models.values()) for (const id of model.barrelChildIds) barreled.add(id);
   for (const id of barreled) {
     const model = models.get(id);
-    if (model && !model.bailReasons.includes(BARREL_REASON))
-      model.bailReasons.push(BARREL_REASON);
+    if (model && !model.bailReasons.includes(BARREL_REASON)) model.bailReasons.push(BARREL_REASON);
   }
 
   // Round 0: every call site counts (no dead spans yet) — the plain, non-cascade
@@ -209,9 +204,7 @@ async function crawl(
   readFile: ReadFile,
 ): Promise<Map<ComponentId, FileModel>> {
   const models = new Map<ComponentId, FileModel>();
-  const queue: ComponentId[] = Array.isArray(entries)
-    ? [...entries]
-    : [entries];
+  const queue: ComponentId[] = Array.isArray(entries) ? [...entries] : [entries];
   const seen = new Set<ComponentId>(queue);
 
   while (queue.length > 0) {
@@ -222,10 +215,7 @@ async function crawl(
     // Crawl both directly-imported children and any child reached through a
     // barrel/named import: the latter must enter `models` so `analyze` can bail
     // it (its prop profile is unobservable from the visible `<Child/>` sites).
-    for (const childId of [
-      ...model.imports.values(),
-      ...model.barrelChildIds,
-    ]) {
+    for (const childId of [...model.imports.values(), ...model.barrelChildIds]) {
       if (!seen.has(childId)) {
         seen.add(childId);
         queue.push(childId);
@@ -301,10 +291,7 @@ function plansEqual(
   return true;
 }
 
-function literalMapEqual(
-  a: Map<string, Literal>,
-  b: Map<string, Literal>,
-): boolean {
+function literalMapEqual(a: Map<string, Literal>, b: Map<string, Literal>): boolean {
   if (a.size !== b.size) return false;
   for (const [k, v] of a) {
     if (!b.has(k) || !Object.is(b.get(k), v)) return false;
@@ -312,10 +299,7 @@ function literalMapEqual(
   return true;
 }
 
-function literalArrayMapEqual(
-  a: Map<string, Literal[]>,
-  b: Map<string, Literal[]>,
-): boolean {
+function literalArrayMapEqual(a: Map<string, Literal[]>, b: Map<string, Literal[]>): boolean {
   if (a.size !== b.size) return false;
   for (const [k, va] of a) {
     const vb = b.get(k);
@@ -342,11 +326,7 @@ export function deadSpansForPlans(
   for (const model of models.values()) {
     const plan = plans.get(model.id)!;
     if (plan.bail) continue;
-    const spans = computeDeadSpans(
-      model.ast.fragment,
-      plan.constFold,
-      plan.narrow,
-    );
+    const spans = computeDeadSpans(model.ast.fragment, plan.constFold, plan.narrow);
     if (spans.length > 0) out.set(model.id, spans);
   }
   return out;
@@ -369,10 +349,7 @@ async function buildModel(
   walk<null>(ast.fragment, null, {
     SvelteOptions(node, { next }) {
       for (const a of node.attributes ?? []) {
-        if (
-          a.type === 'Attribute' &&
-          (a.name === 'accessors' || a.name === 'customElement')
-        ) {
+        if (a.type === 'Attribute' && (a.name === 'accessors' || a.name === 'customElement')) {
           bailReasons.push(`<svelte:options ${a.name}>`);
         }
       }
@@ -404,13 +381,7 @@ async function buildModel(
       // that re-exports a `.svelte` default.  Resolve through the barrel; if it
       // lands on a `.svelte` file, record it so `analyze` bails that child (its
       // `<Comp/>` sites are invisible to the value-set scan — docs §4.2).
-      const childId = await resolveThroughBarrel(
-        imp.value,
-        imp.imported,
-        id,
-        resolve,
-        readFile,
-      );
+      const childId = await resolveThroughBarrel(imp.value, imp.imported, id, resolve, readFile);
       if (childId) barrelLocals.set(imp.local, childId);
     }
 
@@ -426,8 +397,7 @@ async function buildModel(
       // than risk corrupting sibling declarations (docs §4.1: when unsure, leave
       // it).  The empty `dropped` set then also leaves call-site attributes in
       // place.
-      if (found.sharesStatement)
-        bailReasons.push('$props() shares a multi-declarator statement');
+      if (found.sharesStatement) bailReasons.push('$props() shares a multi-declarator statement');
       props = [];
       for (const p of found.pattern.properties ?? []) {
         if (p.type === 'RestElement') {
@@ -438,8 +408,7 @@ async function buildModel(
         const key = p.key;
         if (key?.type !== 'Identifier' || !key.name) continue;
         const value = p.value as AnyNode | undefined;
-        const defaultExpr =
-          value?.type === 'AssignmentPattern' ? value.right : undefined;
+        const defaultExpr = value?.type === 'AssignmentPattern' ? value.right : undefined;
         props.push({ name: key.name, property: p, defaultExpr });
       }
     }
@@ -451,22 +420,14 @@ async function buildModel(
   // sites we genuinely cannot attribute — a barrel import that is never rendered
   // is harmless.
   const barrelChildIds = collectBarrelChildIds(ast, barrelLocals);
-  const { shadowedNames, debugNames } = collectTemplateBindings(
-    ast,
-    instance,
-    propsDeclaration,
-  );
+  const { shadowedNames, debugNames } = collectTemplateBindings(ast, instance, propsDeclaration);
 
   // Escape detection (docs §4.1): an imported component referenced as a *value*
   // (most notably `<svelte:component this={X}>`, but also assigned / passed /
   // stored) leaks to a use we cannot follow, so its prop profile is incomplete.
   // We surface that to the OWNING component of the escaped child via
   // `escapedComponents`; `analyze` turns it into a complete bail for that child.
-  const escapedComponents = collectEscapedComponents(
-    ast,
-    imports,
-    importedLocals,
-  );
+  const escapedComponents = collectEscapedComponents(ast, imports, importedLocals);
 
   return {
     id,
@@ -512,8 +473,7 @@ function collectTemplateBindings(
     walk<null>(instance, null, {
       _(node, { next }) {
         if (
-          (node.type === 'VariableDeclarator' ||
-            node.type === 'FunctionDeclaration') &&
+          (node.type === 'VariableDeclarator' || node.type === 'FunctionDeclaration') &&
           node !== propsDeclaration &&
           node.id?.type === 'Identifier' &&
           node.id.name
@@ -531,8 +491,7 @@ function collectTemplateBindings(
           node.type === 'FunctionExpression' ||
           node.type === 'ArrowFunctionExpression'
         ) {
-          for (const param of node.params ?? [])
-            addPatternNames(param, shadowedNames);
+          for (const param of node.params ?? []) addPatternNames(param, shadowedNames);
         }
         next();
       },
@@ -565,14 +524,12 @@ function collectTemplateBindings(
     },
     ConstTag(node, { next }) {
       // `{@const x = …}` binds `x`; treat it as a shadow too.
-      for (const d of node.declaration?.declarations ?? [])
-        addPatternNames(d.id, shadowedNames);
+      for (const d of node.declaration?.declarations ?? []) addPatternNames(d.id, shadowedNames);
       next();
     },
     DebugTag(node, { next }) {
       for (const ident of node.identifiers ?? [])
-        if (ident.type === 'Identifier' && ident.name)
-          debugNames.add(ident.name);
+        if (ident.type === 'Identifier' && ident.name) debugNames.add(ident.name);
       next();
     },
   });
@@ -584,10 +541,7 @@ function collectTemplateBindings(
  * Add every identifier bound by a (possibly destructuring) pattern to `out`.
  * Handles bare identifiers, object/array destructuring, defaults and rest.
  */
-function addPatternNames(
-  pattern: AnyNode | null | undefined,
-  out: Set<string>,
-): void {
+function addPatternNames(pattern: AnyNode | null | undefined, out: Set<string>): void {
   if (!pattern) return;
   switch (pattern.type) {
     case 'Identifier':
@@ -689,11 +643,7 @@ function collectEscapedComponents(
  */
 function isValueUse(node: AnyNode, parent: AnyNode | null): boolean {
   if (!parent) return false;
-  if (
-    parent.type === 'MemberExpression' &&
-    parent.property === node &&
-    !parent.computed
-  )
+  if (parent.type === 'MemberExpression' && parent.property === node && !parent.computed)
     return false;
   if (
     parent.type === 'Property' &&
@@ -717,10 +667,7 @@ function isImportSpecifierPosition(parent: AnyNode | null): boolean {
 }
 
 /** Every `<Child .../>` this component renders, paired with its resolved id. */
-function collectChildCalls(
-  ast: Root,
-  imports: Map<string, ComponentId>,
-): ChildCall[] {
+function collectChildCalls(ast: Root, imports: Map<string, ComponentId>): ChildCall[] {
   const calls: ChildCall[] = [];
   walk<null>(ast.fragment, null, {
     Component(node, { next }) {
@@ -848,9 +795,7 @@ function dynamicWrite(index: number, lastSpreadIndex: number): ExplicitProp {
 }
 
 /** Extract a literal from an attribute value, or `{ known:false }`. */
-function literalAttrValue(
-  value: unknown,
-): { known: true; value: Literal } | { known: false } {
+function literalAttrValue(value: unknown): { known: true; value: Literal } | { known: false } {
   if (value === true) return { known: true, value: true }; // boolean shorthand
   if (value == null) return { known: false };
 
@@ -972,8 +917,7 @@ function literalDefault(
   expr: AnyNode | undefined,
 ): { known: true; value: Literal } | { known: false } {
   if (!expr) return { known: true, value: undefined }; // omitted default -> undefined
-  if (expr.type === 'Literal')
-    return { known: true, value: expr.value as Literal };
+  if (expr.type === 'Literal') return { known: true, value: expr.value as Literal };
   if (expr.type === 'Identifier' && expr.name === 'undefined')
     return { known: true, value: undefined };
   return { known: false };
@@ -998,10 +942,8 @@ function* importSources(instance: AnyNode): Generator<ImportInfo> {
     for (const spec of stmt.specifiers ?? []) {
       const local = spec.local?.name;
       if (!local) continue;
-      if (spec.type === 'ImportDefaultSpecifier')
-        yield { value, local, imported: 'default' };
-      else if (spec.type === 'ImportNamespaceSpecifier')
-        yield { value, local, imported: '*' };
+      if (spec.type === 'ImportDefaultSpecifier') yield { value, local, imported: 'default' };
+      else if (spec.type === 'ImportNamespaceSpecifier') yield { value, local, imported: '*' };
       else if (spec.type === 'ImportSpecifier')
         // `import { Child as ChildB }` — `imported` is the source's export name.
         yield {
@@ -1019,16 +961,14 @@ function importedName(spec: AnyNode): string | undefined {
   const imported = spec.imported;
   if (imported?.type === 'Identifier' && imported.name) return imported.name;
   // Some parsers expose a string-literal `imported` (`import { "x" as y }`).
-  if (imported?.type === 'Literal' && typeof imported.value === 'string')
-    return imported.value;
+  if (imported?.type === 'Literal' && typeof imported.value === 'string') return imported.value;
   return undefined;
 }
 
 /** The local/exported name strings of an Export/Import specifier. */
 function specName(node: AnyNode | undefined): string | undefined {
   if (node?.type === 'Identifier' && node.name) return node.name;
-  if (node?.type === 'Literal' && typeof node.value === 'string')
-    return node.value;
+  if (node?.type === 'Literal' && typeof node.value === 'string') return node.value;
   return undefined;
 }
 
@@ -1141,10 +1081,8 @@ function followLocalImport(
     if (typeof value !== 'string') continue;
     for (const spec of stmt.specifiers ?? []) {
       if (spec.local?.name !== localName) continue;
-      if (spec.type === 'ImportDefaultSpecifier')
-        return { value, imported: 'default' };
-      if (spec.type === 'ImportNamespaceSpecifier')
-        return { value, imported: '*' };
+      if (spec.type === 'ImportDefaultSpecifier') return { value, imported: 'default' };
+      if (spec.type === 'ImportNamespaceSpecifier') return { value, imported: '*' };
       if (spec.type === 'ImportSpecifier')
         return { value, imported: importedName(spec) ?? localName };
     }

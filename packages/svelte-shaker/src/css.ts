@@ -46,10 +46,7 @@ const MAX_CLASS_COMBOS = 64;
  *  - ANY unbounded source (`class={nonFoldable}`, or a `{...spread}` that could
  *    carry `class`) -> the whole set is unbounded.
  */
-export function computePossibleClasses(
-  model: FileModel,
-  plan: ComponentPlan,
-): PossibleClasses {
+export function computePossibleClasses(model: FileModel, plan: ComponentPlan): PossibleClasses {
   const classes = new Set<string>();
   let unbounded = false;
   const env = plan.constFold;
@@ -122,8 +119,7 @@ function classTokensFromAttr(
   }
 
   const tokens = new Set<string>();
-  for (const combo of combos)
-    for (const tok of combo.split(/\s+/)) if (tok) tokens.add(tok);
+  for (const combo of combos) for (const tok of combo.split(/\s+/)) if (tok) tokens.add(tok);
   return tokens;
 }
 
@@ -200,11 +196,7 @@ function isElementLike(type: string): boolean {
  * the possible set (so no selector in the list can match any element this
  * component can render).  Anything else is KEPT.  Returns the number removed.
  */
-export function shakeCss(
-  model: FileModel,
-  plan: ComponentPlan,
-  s: MagicString,
-): number {
+export function shakeCss(model: FileModel, plan: ComponentPlan, s: MagicString): number {
   const css = model.ast.css;
   if (!css || !css.children) return 0;
 
@@ -269,8 +261,7 @@ function hasGlobal(rule: AnyNode): boolean {
   let found = false;
   walk<null>(rule, null, {
     _(node, { next }) {
-      if (node.type === 'PseudoClassSelector' && node.name === 'global')
-        found = true;
+      if (node.type === 'PseudoClassSelector' && node.name === 'global') found = true;
       next();
     },
   });
@@ -281,12 +272,7 @@ function hasGlobal(rule: AnyNode): boolean {
  * Remove a rule's source span, eating the run of whitespace before it so the
  * `<style>` body stays tidy and Svelte still parses what remains.
  */
-function removeRule(
-  code: string,
-  rule: AnyNode,
-  siblings: AnyNode[],
-  s: MagicString,
-): void {
+function removeRule(code: string, rule: AnyNode, siblings: AnyNode[], s: MagicString): void {
   const i = siblings.indexOf(rule);
   const prev = siblings[i - 1];
   // Start just after the previous sibling (or after the leading whitespace at

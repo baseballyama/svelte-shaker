@@ -4,13 +4,7 @@ import resolve from '@rollup/plugin-node-resolve';
 import terser from '@rollup/plugin-terser';
 import { defineConfig } from 'rollup';
 
-const external = [
-  /^svelte($|\/)/,
-  /^node:/,
-  'vite',
-  'magic-string',
-  'zimmerframe',
-];
+const external = [/^svelte($|\/)/, /^node:/, 'vite', 'magic-string', 'zimmerframe'];
 
 export default defineConfig([
   {
@@ -20,12 +14,7 @@ export default defineConfig([
       { file: 'dist/index.cjs', format: 'cjs', name: 'svelteShaker' },
     ],
     external,
-    plugins: [
-      resolve(),
-      commonjs(),
-      typescript({ tsconfig: 'tsconfig.json' }),
-      terser(),
-    ],
+    plugins: [resolve(), commonjs(), typescript({ tsconfig: 'tsconfig.json' }), terser()],
   },
   {
     // The Vite plugin entry — self-contained (the engine is bundled in) so the
@@ -33,23 +22,13 @@ export default defineConfig([
     input: 'src/vite.ts',
     output: [{ file: 'dist/vite.js', format: 'esm' }],
     external,
-    plugins: [
-      resolve(),
-      commonjs(),
-      typescript({ tsconfig: 'tsconfig.json' }),
-      terser(),
-    ],
+    plugins: [resolve(), commonjs(), typescript({ tsconfig: 'tsconfig.json' }), terser()],
   },
   {
     // Node-only glue (`fsResolve`, `collectSvelteFiles`) — the `./node` entry.
     input: 'src/scan.ts',
     output: [{ file: 'dist/scan.js', format: 'esm' }],
     external,
-    plugins: [
-      resolve(),
-      commonjs(),
-      typescript({ tsconfig: 'tsconfig.json' }),
-      terser(),
-    ],
+    plugins: [resolve(), commonjs(), typescript({ tsconfig: 'tsconfig.json' }), terser()],
   },
 ]);

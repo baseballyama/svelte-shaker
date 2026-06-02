@@ -153,10 +153,7 @@ export function decideChain(
   // the first surviving arm from `{:else if …}` to `{#if …}`.  The promoted arm
   // is re-emitted verbatim, so we do not recurse into it.
   const kept = arms[firstKept]!.block;
-  const removed: Span[] = [
-    [span[0], kept.start],
-    ...deadTail(arms, truth, firstKept),
-  ];
+  const removed: Span[] = [[span[0], kept.start], ...deadTail(arms, truth, firstKept)];
   return {
     span,
     kept: undefined,
@@ -200,19 +197,14 @@ function deadTail(
     if (!(t.known && !t.value)) continue; // not provably dead -> keep
     const arm = arms[i]!;
     const nextBlock = arms[i + 1]?.block;
-    const end = nextBlock
-      ? nextBlock.start
-      : consequentEnd(arm.consequent, arm.block.end);
+    const end = nextBlock ? nextBlock.start : consequentEnd(arm.consequent, arm.block.end);
     removed.push([arm.block.start, end]);
   }
   return removed;
 }
 
 /** End offset of a consequent fragment (its last node), or a fallback. */
-export function consequentEnd(
-  fragment: AnyNode | undefined,
-  fallback: number,
-): number {
+export function consequentEnd(fragment: AnyNode | undefined, fallback: number): number {
   const nodes = fragment?.nodes ?? [];
   return nodes.length ? nodes[nodes.length - 1]!.end : fallback;
 }

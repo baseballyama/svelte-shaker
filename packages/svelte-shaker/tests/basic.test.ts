@@ -93,10 +93,7 @@ describe('svelte-shaker / soundness (differential SSR)', () => {
     const { plans } = await analyze(entry, fsResolve, readFile);
     const plan = plans.get(join(dir, 'input', 'Btn.svelte'))!;
     expect(plan.constFold.has('variant')).toBe(false); // not a single constant
-    expect([...(plan.narrow.get('variant') ?? [])].sort()).toEqual([
-      'primary',
-      'secondary',
-    ]);
+    expect([...(plan.narrow.get('variant') ?? [])].sort()).toEqual(['primary', 'secondary']);
 
     const out = await svelteShaker(entry, fsResolve, readFile);
     const shaken = out[join(dir, 'input', 'Btn.svelte')]!;
@@ -118,12 +115,10 @@ describe('svelte-shaker / soundness (differential SSR)', () => {
       expect(after, variant).toBe(before);
     }
     // The two occurring values render the two surviving arms, never `danger`.
-    expect(
-      await renderHtml(shaken, { variant: 'primary' }, 'Btn.svelte'),
-    ).toContain('<b>P</b>');
-    expect(
-      await renderHtml(shaken, { variant: 'secondary' }, 'Btn.svelte'),
-    ).toContain('<i>other</i>');
+    expect(await renderHtml(shaken, { variant: 'primary' }, 'Btn.svelte')).toContain('<b>P</b>');
+    expect(await renderHtml(shaken, { variant: 'secondary' }, 'Btn.svelte')).toContain(
+      '<i>other</i>',
+    );
   });
 
   it('rest-prop: a declared prop folds & drops despite the callee reading `...rest`', async () => {
@@ -153,11 +148,7 @@ describe('svelte-shaker / soundness (differential SSR)', () => {
       { hidden: true, id: 'x', class: 'box' },
       'Box.svelte',
     );
-    const after = await renderHtml(
-      shaken,
-      { id: 'x', class: 'box' },
-      'Box.svelte',
-    );
+    const after = await renderHtml(shaken, { id: 'x', class: 'box' }, 'Box.svelte');
     expect(after).toBe(before);
     expect(before).toContain('hidden flag is set'); // true branch is live
     expect(before).toContain('id="x"'); // rest-forwarded attribute preserved
@@ -223,11 +214,7 @@ describe('svelte-shaker / soundness (differential SSR)', () => {
     // Soundness: the shaken component takes NO props, yet renders identically to
     // the original under the props that actually occur (flag=true, text='hi').
     const original = readFileSync(join(dir, 'input', 'Label.svelte'), 'utf-8');
-    const before = await renderHtml(
-      original,
-      { flag: true, text: 'hi' },
-      'Label.svelte',
-    );
+    const before = await renderHtml(original, { flag: true, text: 'hi' }, 'Label.svelte');
     const after = await renderHtml(shaken, {}, 'Label.svelte');
     expect(after).toBe(before);
     expect(before).toContain('hi');
@@ -305,16 +292,12 @@ describe('svelte-shaker / soundness (differential SSR)', () => {
     const originalMid = readFileSync(join(dir, 'input', 'Mid.svelte'), 'utf-8');
     const heavySrc = readFileSync(join(dir, 'input', 'Heavy.svelte'), 'utf-8');
     const deps = { './Heavy.svelte': heavySrc };
-    const before = await renderGraphHtml(
-      { specifier: './Mid.svelte', source: originalMid },
-      deps,
-      { show: false },
-    );
-    const after = await renderGraphHtml(
-      { specifier: './Mid.svelte', source: mid },
-      deps,
-      { show: false },
-    );
+    const before = await renderGraphHtml({ specifier: './Mid.svelte', source: originalMid }, deps, {
+      show: false,
+    });
+    const after = await renderGraphHtml({ specifier: './Mid.svelte', source: mid }, deps, {
+      show: false,
+    });
     expect(after).toBe(before);
     expect(before).toContain('mid');
     expect(before).not.toContain('<p>x</p>'); // the dead branch never rendered

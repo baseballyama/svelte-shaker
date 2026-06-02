@@ -1,5 +1,6 @@
 {
   "name": "rollup-plugin-svelte-shaker",
+  "private": true,
   "description": "Tree shaking for Svelte components",
   "author": "baseballyama",
   "type": "module",

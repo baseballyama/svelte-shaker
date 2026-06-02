@@ -35,8 +35,7 @@ const FILES: Record<string, string> = {
 beforeAll(() => {
   rmSync(APP, { recursive: true, force: true });
   mkdirSync(APP, { recursive: true });
-  for (const [name, content] of Object.entries(FILES))
-    writeFileSync(join(APP, name), content);
+  for (const [name, content] of Object.entries(FILES)) writeFileSync(join(APP, name), content);
 });
 
 afterAll(() => {
@@ -98,11 +97,7 @@ describe('vite-plugin-svelte-shaker / CSS rule removal (end-to-end build)', () =
 
 describe('svelte-shaker / CSS rule removal (engine)', () => {
   const readFile = (id: string) => readFileSync(id, 'utf-8');
-  const FIXTURE = join(
-    dirname(fileURLToPath(import.meta.url)),
-    'fixtures',
-    'css-variant',
-  );
+  const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'css-variant');
 
   it('possible class set is bounded and excludes danger/ghost', async () => {
     const entry = join(FIXTURE, 'input', 'App.svelte');
@@ -112,18 +107,11 @@ describe('svelte-shaker / CSS rule removal (engine)', () => {
     const plan = plans.get(btnId)!;
 
     // The narrowed value set is what makes the class set enumerable.
-    expect([...(plan.narrow.get('variant') ?? [])].sort()).toEqual([
-      'primary',
-      'secondary',
-    ]);
+    expect([...(plan.narrow.get('variant') ?? [])].sort()).toEqual(['primary', 'secondary']);
 
     const possible = computePossibleClasses(model, plan);
     expect(possible.unbounded).toBe(false);
-    expect([...possible.classes].sort()).toEqual([
-      'btn',
-      'btn-primary',
-      'btn-secondary',
-    ]);
+    expect([...possible.classes].sort()).toEqual(['btn', 'btn-primary', 'btn-secondary']);
   });
 
   it('drops only the unreachable rules and the result still compiles', async () => {
@@ -150,10 +138,7 @@ describe('svelte-shaker / CSS rule removal (engine)', () => {
     // element that actually occurs.  The HTML the user sees is unchanged for both
     // values that this app passes.
     const entry = join(FIXTURE, 'input', 'App.svelte');
-    const original = readFileSync(
-      join(FIXTURE, 'input', 'Btn.svelte'),
-      'utf-8',
-    );
+    const original = readFileSync(join(FIXTURE, 'input', 'Btn.svelte'), 'utf-8');
     const out = await svelteShaker(entry, fsResolve, readFile);
     const shaken = out[join(FIXTURE, 'input', 'Btn.svelte')]!;
 
@@ -178,11 +163,7 @@ describe('svelte-shaker / CSS rule removal (engine)', () => {
       join(dir, 'Btn.svelte'),
       `<script lang="ts">\n  let { variant, cls }: { variant: 'primary' | 'secondary'; cls: string } = $props();\n</script>\n<button class="btn btn-{variant}">x</button>\n<span class={cls}>y</span>\n<style>\n  .btn { color: blue }\n  .btn-danger { color: red }\n  .btn-primary { color: green }\n</style>\n`,
     );
-    const out = await svelteShaker(
-      join(dir, 'App.svelte'),
-      fsResolve,
-      readFile,
-    );
+    const out = await svelteShaker(join(dir, 'App.svelte'), fsResolve, readFile);
     const shaken = out[join(dir, 'Btn.svelte')]!;
     // `cls` is dynamic -> unbounded -> nothing removed, danger survives.
     expect(shaken).toContain('.btn-danger');

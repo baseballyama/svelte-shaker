@@ -37,8 +37,7 @@ const VARIANT_QUERY = 'shaker_variant';
 /** Resolve {@link MonomorphizeOptions} from the public surface (OFF unless opted in). */
 function resolveMono(options: Options): MonomorphizeOptions {
   if (options.level !== 2 || !options.monomorphize) return DEFAULT_MONO_OPTIONS;
-  const overrides =
-    typeof options.monomorphize === 'object' ? options.monomorphize : {};
+  const overrides = typeof options.monomorphize === 'object' ? options.monomorphize : {};
   return { ...DEFAULT_MONO_OPTIONS, enabled: true, ...overrides };
 }
 
@@ -68,9 +67,7 @@ export default function rollupPluginSvelteShaker(options: Options): Plugin {
   return {
     name: 'svelte-shaker',
     async buildStart() {
-      const entries = options.include.flatMap((p) =>
-        collectSvelteFiles(path.resolve(base, p)),
-      );
+      const entries = options.include.flatMap((p) => collectSvelteFiles(path.resolve(base, p)));
       const read = (id: string) => fs.readFileSync(id, 'utf-8');
       if (entries.length === 0) {
         shaken = {};
@@ -82,13 +79,7 @@ export default function rollupPluginSvelteShaker(options: Options): Plugin {
         variantSources = new Map();
         return;
       }
-      const result = await svelteShakerWithMono(
-        entries,
-        fsResolve,
-        read,
-        mono,
-        variantSpecifier,
-      );
+      const result = await svelteShakerWithMono(entries, fsResolve, read, mono, variantSpecifier);
       shaken = result.files;
       variantSources = new Map();
       for (const v of result.mono.variants.values())

@@ -39,10 +39,7 @@ function runBasePhases(
     const s = new MagicString(model.code);
     strings.set(model.id, s);
     const plan = plans.get(model.id)!;
-    dropped.set(
-      model.id,
-      plan.bail ? new Set() : transformBody(model, plan, s),
-    );
+    dropped.set(model.id, plan.bail ? new Set() : transformBody(model, plan, s));
   }
   // Phase 2 — call sites: remove attributes for props the child actually dropped.
   for (const model of models.values()) {
@@ -57,8 +54,7 @@ function emit(
   strings: Map<ComponentId, MagicString>,
 ): Record<ComponentId, string> {
   const out: Record<ComponentId, string> = {};
-  for (const model of models.values())
-    out[model.id] = strings.get(model.id)!.toString();
+  for (const model of models.values()) out[model.id] = strings.get(model.id)!.toString();
   return out;
 }
 
@@ -169,18 +165,13 @@ function rewriteOneSite(
   // static `Attribute`s are frozen (mono required `!dynamic`), so this never
   // drops a side-effecting expression.
   for (const attr of node.attributes ?? []) {
-    if (attr.type !== 'Attribute' || !attr.name || !frozen.has(attr.name))
-      continue;
+    if (attr.type !== 'Attribute' || !attr.name || !frozen.has(attr.name)) continue;
     removeAttrWithSpace(code, attr, s);
   }
 }
 
 /** Delete an attribute's span plus one preceding space/tab, keeping the tag tidy. */
-function removeAttrWithSpace(
-  code: string,
-  attr: AnyNode,
-  s: MagicString,
-): void {
+function removeAttrWithSpace(code: string, attr: AnyNode, s: MagicString): void {
   let start = attr.start;
   if (code[start - 1] === ' ' || code[start - 1] === '\t') start -= 1;
   s.remove(start, attr.end);
@@ -215,11 +206,7 @@ function injectImports(
   s.prepend(`<script>\n${lines}\n</script>\n`);
 }
 
-function transformBody(
-  model: FileModel,
-  plan: ComponentPlan,
-  s: MagicString,
-): Set<string> {
+function transformBody(model: FileModel, plan: ComponentPlan, s: MagicString): Set<string> {
   return shakeBody(model, plan.constFold, plan.narrow, plan, s);
 }
 
@@ -267,8 +254,7 @@ export function shakeBody(
   // are removed), so a constFold prop used inside a surviving arm is handled.
   const refs = collectPropRefs(model, env, dead);
   for (const [name, value] of env) {
-    for (const ref of refs.get(name) ?? [])
-      s.overwrite(ref[0], ref[1], literalSource(value));
+    for (const ref of refs.get(name) ?? []) s.overwrite(ref[0], ref[1], literalSource(value));
   }
 
   // (3) Drop only the folded (constFold) props from the `$props()` signature.
@@ -346,11 +332,7 @@ function applyChain(
     // props are about to be dropped from the signature — so we must substitute
     // them into the emitted text HERE, or they would become dangling
     // references.  {@link substitutedSlice} does exactly that.
-    s.overwrite(
-      decision.span[0],
-      decision.span[1],
-      fragmentSource(decision.kept, env, code),
-    );
+    s.overwrite(decision.span[0], decision.span[1], fragmentSource(decision.kept, env, code));
     return;
   }
   // Otherwise the `{#if}` structure is kept: delete the dead regions in place.
@@ -424,13 +406,7 @@ function fragmentSource(
 ): string {
   const nodes = fragment?.nodes ?? [];
   if (nodes.length === 0) return '';
-  return substitutedSlice(
-    nodes[0]!.start,
-    nodes[nodes.length - 1]!.end,
-    nodes,
-    env,
-    code,
-  );
+  return substitutedSlice(nodes[0]!.start, nodes[nodes.length - 1]!.end, nodes, env, code);
 }
 
 /**
@@ -509,10 +485,7 @@ function collectPropRefs(
             node !== model.propsPattern &&
             !isNonReference(node, state.parent)
           ) {
-            (refs.get(node.name) ?? setDefault(refs, node.name)).push([
-              node.start,
-              node.end,
-            ]);
+            (refs.get(node.name) ?? setDefault(refs, node.name)).push([node.start, node.end]);
           }
           next({ parent: node });
         },
@@ -528,11 +501,7 @@ function collectPropRefs(
 /** True when an Identifier is a property key / member name, not a value read. */
 function isNonReference(node: AnyNode, parent: AnyNode | null): boolean {
   if (!parent) return false;
-  if (
-    parent.type === 'MemberExpression' &&
-    parent.property === node &&
-    !parent.computed
-  )
+  if (parent.type === 'MemberExpression' && parent.property === node && !parent.computed)
     return true;
   if (
     parent.type === 'Property' &&
@@ -573,11 +542,7 @@ function dropProps(model: FileModel, drop: Set<string>, s: MagicString): void {
   }
 }
 
-function removePatternProperty(
-  properties: AnyNode[],
-  property: AnyNode,
-  s: MagicString,
-): void {
+function removePatternProperty(properties: AnyNode[], property: AnyNode, s: MagicString): void {
   const i = properties.indexOf(property);
   const next = properties[i + 1];
   const prev = properties[i - 1];
@@ -588,15 +553,9 @@ function removePatternProperty(
   else s.remove(property.start, property.end);
 }
 
-function removeTypeMember(
-  pattern: AnyNode,
-  name: string,
-  s: MagicString,
-): void {
+function removeTypeMember(pattern: AnyNode, name: string, s: MagicString): void {
   const members = pattern.typeAnnotation?.typeAnnotation?.members ?? [];
-  const i = members.findIndex(
-    (m) => m.key?.type === 'Identifier' && m.key.name === name,
-  );
+  const i = members.findIndex((m) => m.key?.type === 'Identifier' && m.key.name === name);
   if (i === -1) return;
   const member = members[i]!;
   const next = members[i + 1];
@@ -618,8 +577,7 @@ function removeCallSiteAttributes(
       const drop = childId ? dropped.get(childId) : undefined;
       if (drop && drop.size > 0) {
         for (const attr of node.attributes ?? []) {
-          if (attr.type !== 'Attribute' || !attr.name || !drop.has(attr.name))
-            continue;
+          if (attr.type !== 'Attribute' || !attr.name || !drop.has(attr.name)) continue;
           if (!isSideEffectFree(attr.value)) continue;
           removeAttrWithSpace(model.code, attr, s);
         }
@@ -635,8 +593,7 @@ function isSideEffectFree(value: unknown): boolean {
   const parts = (Array.isArray(value) ? value : [value]) as AnyNode[];
   return parts.every((part) => {
     if (part.type === 'Text') return true;
-    if (part.type === 'ExpressionTag')
-      return part.expression?.type === 'Literal';
+    if (part.type === 'ExpressionTag') return part.expression?.type === 'Literal';
     return false;
   });
 }
