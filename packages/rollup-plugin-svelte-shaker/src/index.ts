@@ -4,11 +4,10 @@ import type { Plugin } from 'rollup';
 import {
   svelteShaker,
   svelteShakerWithMono,
-  fsResolve,
-  collectSvelteFiles,
   DEFAULT_MONO_OPTIONS,
   type MonomorphizeOptions,
 } from 'svelte-shaker';
+import { fsResolve, collectSvelteFiles } from 'svelte-shaker/node';
 
 export interface Options {
   /**

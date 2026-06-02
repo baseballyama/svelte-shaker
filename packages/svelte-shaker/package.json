@@ -19,6 +19,10 @@
       "types": "./dist/types/src/vite.d.ts",
       "import": "./dist/vite.js"
     },
+    "./node": {
+      "types": "./dist/types/src/scan.d.ts",
+      "import": "./dist/scan.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

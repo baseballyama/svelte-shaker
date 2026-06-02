@@ -1,8 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plugin } from 'vite';
-import { svelteShaker, svelteShakerWithMono, fsResolve } from './index';
-import { collectSvelteFiles } from './scan';
+import { svelteShaker, svelteShakerWithMono } from './index';
+import { collectSvelteFiles, fsResolve } from './scan';
 import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono';
 import type { ComponentId } from './ir';
 

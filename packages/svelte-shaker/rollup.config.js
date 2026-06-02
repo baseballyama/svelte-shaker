@@ -40,4 +40,16 @@ export default defineConfig([
       terser(),
     ],
   },
+  {
+    // Node-only glue (`fsResolve`, `collectSvelteFiles`) — the `./node` entry.
+    input: 'src/scan.ts',
+    output: [{ file: 'dist/scan.js', format: 'esm' }],
+    external,
+    plugins: [
+      resolve(),
+      commonjs(),
+      typescript({ tsconfig: 'tsconfig.json' }),
+      terser(),
+    ],
+  },
 ]);

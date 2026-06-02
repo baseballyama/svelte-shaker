@@ -1,5 +1,3 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { analyze, type ReadFile, type Resolve } from './analyze';
 import { transformAll, transformAllWithMono } from './transform';
 import {
@@ -14,7 +12,6 @@ export type { ComponentId } from './ir';
 export type { Resolve, ReadFile } from './analyze';
 export { analyze } from './analyze';
 export { transformAll, transformAllWithMono } from './transform';
-export { collectSvelteFiles } from './scan';
 export {
   monomorphize,
   DEFAULT_MONO_OPTIONS,
@@ -28,14 +25,16 @@ export {
  * Whole-program shake: crawl the component graph from `entry`, decide what to
  * fold, and return the shaken source for every reachable `.svelte` file.
  *
- * `resolve` / `readFile` are injected so the engine stays environment-free
- * (a Vite plugin passes `this.resolve`; tests pass node:fs). See
- * docs/ARCHITECTURE.md §5 — this is the Engine; the Shell owns resolution.
+ * `resolve` / `readFile` are injected so the engine stays environment-free —
+ * it has NO `node:*` imports, so it runs unchanged in the browser (the
+ * playground passes an in-memory file map). A Vite plugin passes `this.resolve`;
+ * Node callers use `fsResolve` / `fs.readFileSync` from `svelte-shaker/node`.
+ * See docs/ARCHITECTURE.md §5 — this is the Engine; the Shell owns resolution.
  */
 export async function svelteShaker(
   entries: ComponentId | ComponentId[],
   resolve: Resolve,
-  readFile: ReadFile = (id) => fs.readFileSync(id, 'utf-8'),
+  readFile: ReadFile,
 ): Promise<Record<ComponentId, string>> {
   const { models, plans } = await analyze(entries, resolve, readFile);
   return transformAll(models, plans);
@@ -70,7 +69,7 @@ export type VariantSpecifier = (variantId: string) => string;
 export async function svelteShakerWithMono(
   entries: ComponentId | ComponentId[],
   resolve: Resolve,
-  readFile: ReadFile = (id) => fs.readFileSync(id, 'utf-8'),
+  readFile: ReadFile,
   mono: MonomorphizeOptions = DEFAULT_MONO_OPTIONS,
   variantSpecifier: VariantSpecifier = (id) => id,
 ): Promise<ShakeResult> {
@@ -96,9 +95,3 @@ export async function svelteShakerWithMono(
         );
   return { files, mono: result };
 }
-
-/** Default filesystem resolver: resolve `source` relative to its importer. */
-export const fsResolve: Resolve = (source, importer) => {
-  if (!source.startsWith('.')) return null; // bare imports aren't local components
-  return path.resolve(path.dirname(importer), source);
-};
