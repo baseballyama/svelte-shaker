@@ -5,7 +5,8 @@
     "**/node_modules/**",
     "**/.shaker-tmp*/**",
     "**/tests/fixtures/**/actual/**",
-    "packages/site/**"
+    "packages/site/**",
+    "packages/svelte-shaker/engine-rs/**"
   ],
   "compilerOptions": {
     "module": "esnext",

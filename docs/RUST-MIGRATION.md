@@ -135,9 +135,24 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
        raw-transfer 経路は現状 raw binding 経由でしか使えない。WASM 経路（`@rsvelte/compiler`）は parse 可。
   - **ゲート**: 差分オラクル緑（7 byte 一致 + 2 既知差分が SSR 等価）。既存テスト全緑・`dev:false` 挙動不変。
 
-- **M4（Rust ②）解析（クエリグラフ）を Rust + 本物の Salsa db へ** — `program_plans` fixpoint・`plan(id)`
-  射影・`importers_of` 派生。AST ノードは安定 id（`SyntaxNodePtr` 方式）で interning。
-  **ゲート**: Rust 解析 → TS 変換で byte 一致。TS エンジンを恒久差分オラクルとして残す（Rust == TS）。
+- **M4（Rust ②）解析を Rust → WASM へ（差分オラクルで段階検証）**
+  - **配布形態 = WASM（決定済み）**: `@rsvelte/compiler` と同方式。Rust エンジンは **rsvelte_core 非依存・自己完結**
+    （JS が parse → AST JSON を WASM に渡す → Rust は `serde_json` で解析）。重いコンパイラ crate 依存・git dep・
+    ネイティブ prebuild infra を回避し、クロスプラットフォーム単一 `.wasm`。`wasm-pack --target nodejs`
+    （Node ビルド時に同期ロード、init 不要）。crate は `packages/svelte-shaker/engine-rs/`、成果物 `pkg/` は
+    **commit**（CI はツールチェーン不要で committed wasm をロード）。
+  - **段階検証**: 解析は `plans`（§5.1 IR）を出すので **Rust plans == TS plans を差分比較**できる。スライスごとに
+    移植 → TS と差分比較 → 緑、を繰り返す（M3 と同じオラクル手法）。
+  - **bootstrap（実装済み）**: 最初のスライスとして prop 宣言抽出 + options bail を Rust→WASM 化し、全フィクスチャ
+    コンポーネントで **Rust 抽出 == TS 抽出** を担保（`tests/wasm-m4.test.ts`）。残りの解析（値集合束・fixpoint・
+    部分 bail・shadow・dead span）を順次移植。
+  - **既知の付随発見**: svelte/compiler の `<svelte:options>` は `root.options`（type 無し・`fragment` 外）に入るため、
+    `analyze.ts` の `fragment` を `SvelteOptions` で walk する accessors/customElement bail は現状の AST では発火
+    しない可能性がある（既存ギャップ。Rust は analyze.ts を忠実移植したので両者一致＝consistent）。別途
+    failing test 先行で扱う。
+  - **将来**: 解析全体が揃ったら Salsa db 化（`program_plans` fixpoint・`plan(id)` 射影・`importers_of` 派生、
+    AST ノードは安定 id で interning）。**ゲート**: Rust plans == TS plans（全フィクスチャ）。TS エンジンを恒久差分
+    オラクルとして残す。CI に `cargo test` + `build:wasm`（pinned toolchain）ジョブ追加は follow-up。
 
 - **M5（Rust ③）変換 + emit を Rust へ** — `oxc_ecmascript`(畳み込み) + minifier(DCE) + `rsvelte_formatter`。
   `magic-string` サージカル削除 → AST 変換 + printer。`TransformResult.map` を実体化。

@@ -13,6 +13,7 @@
     "**/dist/**",
     "**/.shaker-tmp*/**",
     "packages/site/**",
-    "packages/svelte-shaker/tests/fixtures/**"
+    "packages/svelte-shaker/tests/fixtures/**",
+    "packages/svelte-shaker/engine-rs/**"
   ]
 }
