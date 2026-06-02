@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/logo.png" alt="svelte-shaker" width="190" />
+  <img src="https://raw.githubusercontent.com/baseballyama/svelte-shaker/main/assets/logo.png" alt="svelte-shaker" width="190" />
 </p>
 
 <h1 align="center">svelte-shaker</h1>
@@ -21,7 +21,7 @@ code your app can actually reach.
 It is **sound first**: it never changes what the user sees. When it cannot prove
 a transform is safe, it leaves the code untouched (bails).
 
-See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design.
+See [`docs/ARCHITECTURE.md`](https://github.com/baseballyama/svelte-shaker/blob/main/docs/ARCHITECTURE.md) for the full design.
 
 ## Why this exists (and why a JS bundler can't do it)
 
@@ -191,7 +191,7 @@ The engine is split into an environment-free **Engine** (Svelte-aware analysis +
 transform) behind a stable IR, and a thin **Shell** (the Vite/Rollup plugin) that
 owns file IO and module resolution — so the core can later be ported to Rust
 (rsvelte / OXC). The current implementation status (what's done vs. remaining) is
-tracked in [`docs/ARCHITECTURE.md` §11](./docs/ARCHITECTURE.md#11-実装状況implementation-status).
+tracked in [`docs/ARCHITECTURE.md` §11](https://github.com/baseballyama/svelte-shaker/blob/main/docs/ARCHITECTURE.md#11-実装状況implementation-status).
 
 ## License
 

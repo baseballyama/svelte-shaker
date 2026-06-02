@@ -21,7 +21,7 @@
 
 <header class="site-head">
   <a class="wordmark" href="{base}/">
-    <span class="glyph" aria-hidden="true"></span>
+    <img class="mark" src="{base}/logo.png" alt="" aria-hidden="true" />
     svelte&#8209;shaker
   </a>
   <nav>
@@ -99,18 +99,12 @@
   .wordmark:hover {
     text-decoration: none;
   }
-  .glyph {
-    width: 12px;
-    height: 12px;
-    border-radius: 3px;
-    background:
-      linear-gradient(
-        135deg,
-        transparent 46%,
-        var(--bg) 46% 54%,
-        transparent 54%
-      ),
-      var(--accent);
+  .mark {
+    width: 26px;
+    height: 26px;
+    object-fit: contain;
+    /* nudge so the tilted mascot sits optically centered on the baseline */
+    margin-top: -2px;
   }
   nav {
     display: flex;
