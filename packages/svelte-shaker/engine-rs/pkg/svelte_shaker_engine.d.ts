@@ -9,3 +9,10 @@
  * components. `{"error": "..."}` on malformed input.
  */
 export function analyze_component(ast_json: string, edges_json: string): string;
+
+/**
+ * Whole-program analysis entry: `input` is `{ files: [{id, ast}], edges:
+ * [{from, local, to, kind}], entries }` (the AST is parsed on the JS side).
+ * Returns `{ id: plan }` for every component.
+ */
+export function analyze_program(input_json: string): string;

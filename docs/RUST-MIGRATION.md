@@ -147,16 +147,14 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
     `tests/wasm-m4.test.ts` が担保）: 宣言 props、`hasRestProp`、`collectTemplateBindings`（shadowed/debug =
     fold-blocked 名、`addPatternNames` 再帰）、`<svelte:options>` bail、`collectChildCalls`（解決済み edge から
     imports 再構築 + span）、`collectBarrelChildIds`、`collectEscapedComponents`（`isValueUse` の parent 文脈含む）。
-    残り: **whole-program 集約**（call-site 値集合束 join・fixpoint カスケード・部分 bail・dead span）→ `plans` 全体を
-    TS と差分比較。これは小分けしにくい **cohesive な大スライス**（`readCallSite` + `valueSetFor` + `buildPlan` +
-    `buildUsage`/fixpoint + `computeDeadSpans`/`decideChain` + `eval`）。実装上の要点:
-    - **`Literal` は Rust enum**（`Str`/`Num`/`Bool`/`Null`/**`Undefined`**）にする必要がある。`undefined` は JSON で
-      保持できず（prop default の `undefined` と `null` を区別する）、env は **Rust 内部で構築**される（call-site +
-      default の join）ので serde_json::Value では表現不能。
-    - **`eval` は JS 演算子セマンティクスの忠実エミュレーション**が健全性の核心（`==`/`!=` の型強制、`+` の
-      string/number 分岐、strict/loose 等価、Kleene 三値の `evaluateWithSets`）。`eval.test.ts` で単体検証可能だが
-      env を Rust 内部で組むため、検証は whole-program 一体で「`plans` == TS plans」を見るのが素直。
-    - fixpoint は単調収束（既存 `analyze.ts` の `MAX_FIXPOINT_ITERATIONS` ループをそのまま移植）。
+  - **実装済み: whole-program 集約も完全移植**。`eval.rs`（`Literal` enum `Str`/`Num`/`Bool`/`Null`/`Undefined` +
+    JS 演算子セマンティクスの `evaluate` + Kleene 三値の `evaluate_with_sets`、`eval.test.ts` 相当を cargo で担保）と、
+    `readCallSite`/`valueSetFor`/`buildPlan`/`buildUsage`+fixpoint/`decideChain`+`computeDeadSpans`/`plansEqual` を移植。
+    `analyze_program(input with ASTs) → plans JSON`。**全 9 フィクスチャの実グラフで full `plans`（constFold/narrow/
+    valueSets/bail/reasons）== TS plans** を `tests/wasm-program.test.ts` が担保（cascade の fixpoint・spread の top・
+    narrow 値集合・dead-span 込み）。`undefined` は `{$undefined:true}` センチネルで JSON 境界を越える。
+    → **M4（解析）の Rust 移植は完了**。
+  - 残り: 次は **M5 変換+emit を Rust へ**（fold/DCE/CSS/属性除去/再印字）。出力 byte 一致 + 差分 SSR で検証。
   - **既知の付随発見**: svelte/compiler の `<svelte:options>` は `root.options`（type 無し・`fragment` 外）に入るため、
     `analyze.ts` の `fragment` を `SvelteOptions` で walk する accessors/customElement bail は現状の AST では発火
     しない可能性がある（既存ギャップ。Rust は analyze.ts を忠実移植したので両者一致＝consistent）。別途

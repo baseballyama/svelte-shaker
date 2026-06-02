@@ -11,6 +11,9 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use wasm_bindgen::prelude::*;
 
+mod eval;
+use eval::{evaluate_with_sets, Env, Literal, SetEnv};
+
 const NULL: Value = Value::Null;
 
 /// `node[key] === val` for a string field, false if absent or non-string.
@@ -455,6 +458,753 @@ pub fn analyze_component(ast_json: &str, edges_json: &str) -> String {
         "escaped": escaped_components(&ast, &imports, &imported_locals(&ast)),
     })
     .to_string()
+}
+
+// ======================================================================
+// Whole-program analysis (docs/RUST-MIGRATION.md M4): aggregate every call site
+// into per-prop value sets, decide a plan per component, and iterate to a
+// fixpoint — the Rust port of analyze.ts's buildUsage/buildPlan/valueSetFor +
+// dead.ts's decideChain/computeDeadSpans.  Validated by `plans == TS plans`.
+// ======================================================================
+
+const ESCAPE_REASON: &str = "escapes as value (e.g. <svelte:component this={X}>)";
+const BARREL_REASON: &str = "rendered through a barrel/named import (call sites unobservable)";
+const MAX_FIXPOINT_ITERATIONS: usize = 10;
+
+type Span = (i64, i64);
+
+fn off(node: &Value, key: &str) -> i64 {
+    node.get(key).and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn in_spans(node: &Value, spans: &[Span]) -> bool {
+    let (s, e) = (off(node, "start"), off(node, "end"));
+    spans.iter().any(|&(a, b)| s >= a && e <= b)
+}
+
+/// `SameValue` dedup (JS `Object.is`): NaN == NaN, +0 != -0.
+fn object_is(a: &Literal, b: &Literal) -> bool {
+    match (a, b) {
+        (Literal::Num(x), Literal::Num(y)) => {
+            if x.is_nan() && y.is_nan() {
+                true
+            } else {
+                x.to_bits() == y.to_bits()
+            }
+        }
+        _ => a == b,
+    }
+}
+
+fn push_literal_unique(values: &mut Vec<Literal>, v: Literal) {
+    if !values.iter().any(|x| object_is(x, &v)) {
+        values.push(v);
+    }
+}
+
+// ---- prop declarations with defaults --------------------------------------
+
+struct PropDecl {
+    name: String,
+    /// The default-value expression node, or `Null` when omitted.
+    default: Value,
+}
+
+/// `findPropsDeclaration` + the prop loop: returns the declared props (None when
+/// the component has no `$props()` destructuring), `hasRestProp`, and whether the
+/// `$props()` shares a multi-declarator statement (a conservative bail in analyze.ts).
+fn declared_props_full(ast: &Value) -> (Option<Vec<PropDecl>>, bool, bool) {
+    let body = match ast
+        .get("instance")
+        .and_then(|i| i.get("content"))
+        .and_then(|c| c.get("body"))
+        .and_then(Value::as_array)
+    {
+        Some(b) => b,
+        None => return (None, false, false),
+    };
+    for stmt in body {
+        if !str_eq(stmt, "type", "VariableDeclaration") {
+            continue;
+        }
+        let decls = arr(stmt, "declarations");
+        for decl in decls {
+            let init = get(decl, "init");
+            let id = get(decl, "id");
+            let is_props_call = str_eq(init, "type", "CallExpression")
+                && str_eq(get(init, "callee"), "type", "Identifier")
+                && str_eq(get(init, "callee"), "name", "$props");
+            if !is_props_call || !str_eq(id, "type", "ObjectPattern") {
+                continue;
+            }
+            let mut props = Vec::new();
+            let mut has_rest = false;
+            for p in arr(id, "properties") {
+                match type_of(p) {
+                    Some("RestElement") => has_rest = true,
+                    Some("Property") => {
+                        let key = get(p, "key");
+                        if str_eq(key, "type", "Identifier") {
+                            if let Some(name) = key.get("name").and_then(Value::as_str) {
+                                // `name = <default>` -> the value is an AssignmentPattern.
+                                let value = get(p, "value");
+                                let default = if str_eq(value, "type", "AssignmentPattern") {
+                                    get(value, "right").clone()
+                                } else {
+                                    Value::Null
+                                };
+                                props.push(PropDecl { name: name.to_string(), default });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let shares_statement = decls.len() > 1;
+            return (Some(props), has_rest, shares_statement);
+        }
+    }
+    (None, false, false)
+}
+
+// ---- call-site reading -----------------------------------------------------
+
+struct ExplicitProp {
+    value: Option<Literal>, // None when `dynamic`
+    dynamic: bool,
+    after_last_spread: bool,
+}
+
+struct CallSite {
+    had_spread: bool,
+    explicit: HashMap<String, ExplicitProp>,
+}
+
+fn dynamic_write(index: i64, last_spread: i64) -> ExplicitProp {
+    ExplicitProp { value: None, dynamic: true, after_last_spread: index > last_spread }
+}
+
+/// Read a literal off an attribute `value` (true | node | node[]); `None` => not
+/// statically known. Mirrors `literalAttrValue`.
+fn literal_attr_value(value: &Value) -> Option<Literal> {
+    if value == &Value::Bool(true) {
+        return Some(Literal::Bool(true)); // boolean shorthand
+    }
+    if value.is_null() {
+        return None;
+    }
+    let single;
+    let parts: &[Value] = match value.as_array() {
+        Some(a) => a,
+        None => {
+            single = [value.clone()];
+            &single
+        }
+    };
+    if parts.len() == 1 {
+        let part = &parts[0];
+        return match type_of(part) {
+            Some("Text") => Some(Literal::Str(text_data(part))),
+            Some("ExpressionTag") if str_eq(get(part, "expression"), "type", "Literal") => {
+                Literal::from_node_value(get(part, "expression").get("value")?)
+            }
+            _ => None,
+        };
+    }
+    // Multiple parts: fold only when every part is static text.
+    let mut text = String::new();
+    for part in parts {
+        if type_of(part) != Some("Text") {
+            return None;
+        }
+        text.push_str(&text_data(part));
+    }
+    Some(Literal::Str(text))
+}
+
+fn text_data(node: &Value) -> String {
+    node.get("data")
+        .or_else(|| node.get("raw"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Props supplied through a `<Child>…</Child>` body: `children` for any
+/// renderable content + one per named `{#snippet}`. Mirrors `synthesizedBodyProps`.
+fn synthesized_body_props(component: &Value) -> Vec<String> {
+    let nodes = get(component, "fragment").get("nodes").and_then(Value::as_array);
+    let nodes = match nodes {
+        Some(n) => n,
+        None => return Vec::new(),
+    };
+    let mut names = Vec::new();
+    let mut has_children = false;
+    for node in nodes {
+        match type_of(node) {
+            Some("SnippetBlock") => {
+                let expr = get(node, "expression");
+                if str_eq(expr, "type", "Identifier") {
+                    if let Some(n) = expr.get("name").and_then(Value::as_str) {
+                        names.push(n.to_string());
+                    }
+                }
+            }
+            Some("Comment") => {}
+            Some("Text") => {
+                if !text_data(node).trim().is_empty() {
+                    has_children = true;
+                }
+            }
+            _ => has_children = true,
+        }
+    }
+    if has_children {
+        names.push("children".to_string());
+    }
+    names
+}
+
+/// Read one `<Child .../>` into a {@link CallSite} (last-write-wins + spread
+/// tracking + synthesized body props). Mirrors `readCallSite`.
+fn read_call_site(component: &Value) -> CallSite {
+    let attrs = arr(component, "attributes");
+    let mut last_spread: i64 = -1;
+    for (i, a) in attrs.iter().enumerate() {
+        if type_of(a) == Some("SpreadAttribute") {
+            last_spread = i as i64;
+        }
+    }
+    let mut explicit: HashMap<String, ExplicitProp> = HashMap::new();
+    for (i, attr) in attrs.iter().enumerate() {
+        let i = i as i64;
+        let name = attr.get("name").and_then(Value::as_str);
+        if type_of(attr) == Some("BindDirective") {
+            if let Some(n) = name {
+                explicit.insert(n.to_string(), dynamic_write(i, last_spread));
+            }
+            continue;
+        }
+        if type_of(attr) != Some("Attribute") {
+            continue;
+        }
+        let name = match name {
+            Some(n) => n,
+            None => continue,
+        };
+        match literal_attr_value(get(attr, "value")) {
+            Some(v) => {
+                explicit.insert(
+                    name.to_string(),
+                    ExplicitProp { value: Some(v), dynamic: false, after_last_spread: i > last_spread },
+                );
+            }
+            None => {
+                explicit.insert(name.to_string(), dynamic_write(i, last_spread));
+            }
+        }
+    }
+    for name in synthesized_body_props(component) {
+        explicit.insert(name, dynamic_write(attrs.len() as i64, last_spread));
+    }
+    CallSite { had_spread: last_spread >= 0, explicit }
+}
+
+// ---- value-set join + plan -------------------------------------------------
+
+struct PropValueSet {
+    values: Vec<Literal>,
+    dynamic: bool,
+    top: bool,
+}
+
+fn literal_default(expr: &Value) -> Option<Literal> {
+    if expr.is_null() {
+        return Some(Literal::Undefined); // omitted default -> undefined
+    }
+    match type_of(expr) {
+        Some("Literal") => Literal::from_node_value(expr.get("value")?),
+        Some("Identifier") if expr.get("name").and_then(Value::as_str) == Some("undefined") => {
+            Some(Literal::Undefined)
+        }
+        _ => None,
+    }
+}
+
+fn value_set_for(decl: &PropDecl, sites: &[CallSite]) -> PropValueSet {
+    let mut values = Vec::new();
+    let mut dynamic = false;
+    let mut top = false;
+    for site in sites {
+        match site.explicit.get(&decl.name) {
+            Some(e) if e.after_last_spread => {
+                if e.dynamic {
+                    dynamic = true;
+                } else if let Some(v) = &e.value {
+                    push_literal_unique(&mut values, v.clone());
+                }
+            }
+            _ => {
+                if site.had_spread {
+                    top = true; // a spread may set it -> Unknown
+                } else {
+                    match literal_default(&decl.default) {
+                        Some(v) => push_literal_unique(&mut values, v),
+                        None => dynamic = true,
+                    }
+                }
+            }
+        }
+    }
+    PropValueSet { values, dynamic, top }
+}
+
+struct ComponentPlan {
+    id: String,
+    bail: bool,
+    reasons: Vec<String>,
+    const_fold: Vec<(String, Literal)>,
+    narrow: Vec<(String, Vec<Literal>)>,
+    value_sets: Vec<(String, PropValueSet)>,
+}
+
+impl ComponentPlan {
+    fn empty(id: &str) -> ComponentPlan {
+        ComponentPlan {
+            id: id.to_string(),
+            bail: false,
+            reasons: Vec::new(),
+            const_fold: Vec::new(),
+            narrow: Vec::new(),
+            value_sets: Vec::new(),
+        }
+    }
+    fn const_env(&self) -> Env {
+        self.const_fold.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+    fn set_env(&self) -> SetEnv {
+        self.narrow.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+}
+
+fn is_fold_blocked(model: &Model, name: &str) -> bool {
+    model.shadowed.contains(name) || model.debug.contains(name)
+}
+
+fn build_plan(model: &Model, sites: Option<&Vec<CallSite>>) -> ComponentPlan {
+    let mut plan = ComponentPlan::empty(&model.id);
+    if !model.bail_reasons.is_empty() {
+        plan.bail = true;
+        plan.reasons = model.bail_reasons.clone();
+        return plan;
+    }
+    let props = match &model.props {
+        Some(p) if !p.is_empty() => p,
+        _ => return plan,
+    };
+    let sites = match sites {
+        Some(s) if !s.is_empty() => s,
+        _ => return plan,
+    };
+    for decl in props {
+        if is_fold_blocked(model, &decl.name) {
+            continue;
+        }
+        let set = value_set_for(decl, sites);
+        let (dynamic, top) = (set.dynamic, set.top);
+        let len = set.values.len();
+        plan.value_sets.push((decl.name.clone(), set));
+        if dynamic || top {
+            continue;
+        }
+        if len == 1 {
+            let v = plan.value_sets.last().unwrap().1.values[0].clone();
+            plan.const_fold.push((decl.name.clone(), v));
+        } else if len >= 2 {
+            let vs = plan.value_sets.last().unwrap().1.values.clone();
+            plan.narrow.push((decl.name.clone(), vs));
+        }
+    }
+    plan
+}
+
+// ---- dead-span folding (decideChain) ---------------------------------------
+
+struct ChainArm {
+    block: Value,
+    test: Value,
+    consequent: Value,
+}
+
+fn collect_chain(top: &Value) -> (Vec<ChainArm>, Option<Value>) {
+    let mut arms = Vec::new();
+    let mut cur = Some(top.clone());
+    let mut else_frag = None;
+    while let Some(c) = cur {
+        arms.push(ChainArm {
+            block: c.clone(),
+            test: get(&c, "test").clone(),
+            consequent: get(&c, "consequent").clone(),
+        });
+        let alt = get(&c, "alternate").clone();
+        // `{:else if}` = an alternate Fragment whose only node is an elseif IfBlock.
+        let elseif = if str_eq(&alt, "type", "Fragment") {
+            let nodes = arr(&alt, "nodes");
+            if nodes.len() == 1 && str_eq(&nodes[0], "type", "IfBlock") && nodes[0].get("elseif") == Some(&Value::Bool(true)) {
+                Some(nodes[0].clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(e) = elseif {
+            cur = Some(e);
+        } else {
+            if str_eq(&alt, "type", "Fragment") {
+                else_frag = Some(alt);
+            }
+            cur = None;
+        }
+    }
+    (arms, else_frag)
+}
+
+fn fragment_span(fragment: &Value) -> Option<Span> {
+    let nodes = fragment.get("nodes").and_then(Value::as_array)?;
+    if nodes.is_empty() {
+        return None;
+    }
+    Some((off(&nodes[0], "start"), off(&nodes[nodes.len() - 1], "end")))
+}
+
+fn around_kept(span: Span, inner: Option<Span>) -> Vec<Span> {
+    match inner {
+        None => vec![span],
+        Some((is, ie)) => {
+            let mut out = Vec::new();
+            if span.0 < is {
+                out.push((span.0, is));
+            }
+            if ie < span.1 {
+                out.push((ie, span.1));
+            }
+            out
+        }
+    }
+}
+
+fn consequent_end(consequent: &Value, fallback: i64) -> i64 {
+    match consequent.get("nodes").and_then(Value::as_array) {
+        Some(n) if !n.is_empty() => off(&n[n.len() - 1], "end"),
+        _ => fallback,
+    }
+}
+
+fn dead_tail(arms: &[ChainArm], truth: &[Option<bool>], from: usize) -> Vec<Span> {
+    let mut removed = Vec::new();
+    for i in (from + 1)..arms.len() {
+        if truth[i] != Some(false) {
+            continue;
+        }
+        let arm = &arms[i];
+        let end = if i + 1 < arms.len() {
+            off(&arms[i + 1].block, "start")
+        } else {
+            consequent_end(&arm.consequent, off(&arm.block, "end"))
+        };
+        removed.push((off(&arm.block, "start"), end));
+    }
+    removed
+}
+
+/// The dead-span view of decideChain: the removed ranges + whether to recurse.
+fn decide_chain_dead(top: &Value, env: &Env, set_env: &SetEnv) -> (Vec<Span>, bool) {
+    let (arms, else_frag) = collect_chain(top);
+    let span: Span = (off(top, "start"), off(top, "end"));
+    let truth: Vec<Option<bool>> = arms
+        .iter()
+        .map(|a| evaluate_with_sets(&a.test, env, set_env).map(|lit| lit.is_truthy()))
+        .collect();
+    let is_true = |t: Option<bool>| t == Some(true);
+    let is_false = |t: Option<bool>| t == Some(false);
+
+    // (a) first provably-true arm with all earlier provably-false -> collapse.
+    let mut all_earlier_false = true;
+    for i in 0..arms.len() {
+        if is_true(truth[i]) && all_earlier_false {
+            return (around_kept(span, fragment_span(&arms[i].consequent)), false);
+        }
+        if !is_false(truth[i]) {
+            all_earlier_false = false;
+        }
+    }
+
+    // (b) keep arms not provably false.
+    let first_kept = truth.iter().position(|t| !is_false(*t));
+    match first_kept {
+        None => {
+            if let Some(ef) = else_frag {
+                (around_kept(span, fragment_span(&ef)), false)
+            } else {
+                (vec![span], false)
+            }
+        }
+        Some(0) => (dead_tail(&arms, &truth, 0), true),
+        Some(k) => {
+            let kept_start = off(&arms[k].block, "start");
+            let mut removed = vec![(span.0, kept_start)];
+            removed.extend(dead_tail(&arms, &truth, k));
+            (removed, false)
+        }
+    }
+}
+
+fn compute_dead_spans(fragment: &Value, env: &Env, set_env: &SetEnv) -> Vec<Span> {
+    if env.is_empty() && set_env.is_empty() {
+        return Vec::new();
+    }
+    let mut dead = Vec::new();
+    collect_dead(fragment, env, set_env, &mut dead);
+    dead
+}
+
+fn collect_dead(node: &Value, env: &Env, set_env: &SetEnv, dead: &mut Vec<Span>) {
+    match node {
+        Value::Array(items) => {
+            for v in items {
+                collect_dead(v, env, set_env, dead);
+            }
+        }
+        Value::Object(map) => {
+            if type_of(node) == Some("IfBlock") {
+                // elseif continuations are owned by their head; skip removed regions.
+                if node.get("elseif") == Some(&Value::Bool(true)) || in_spans(node, dead) {
+                    return;
+                }
+                let (removed, recurse) = decide_chain_dead(node, env, set_env);
+                dead.extend(removed);
+                if recurse {
+                    for v in map.values() {
+                        collect_dead(v, env, set_env, dead);
+                    }
+                }
+                return;
+            }
+            for v in map.values() {
+                collect_dead(v, env, set_env, dead);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---- model + fixpoint ------------------------------------------------------
+
+struct Model {
+    id: String,
+    ast: Value,
+    props: Option<Vec<PropDecl>>,
+    shadowed: HashSet<String>,
+    debug: HashSet<String>,
+    /// (childId, the `<Child/>` Component node) for every rendered direct child.
+    child_calls: Vec<(String, Value)>,
+    escaped: Vec<String>,
+    barrel: Vec<String>,
+    bail_reasons: Vec<String>,
+}
+
+fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
+    let (imports, barrel_locals) = edge_maps(&Value::Array(edges.to_vec()));
+    let (props, _has_rest, shares_statement) = declared_props_full(&ast);
+    let (shadowed_vec, debug_vec) = template_bindings(&ast);
+    let mut bail_reasons = component_bail(&ast);
+    if shares_statement {
+        bail_reasons.push("$props() shares a multi-declarator statement".to_string());
+    }
+    let mut child_calls = Vec::new();
+    walk(get(&ast, "fragment"), &mut |n| {
+        if str_eq(n, "type", "Component") {
+            if let Some(cid) = n.get("name").and_then(Value::as_str).and_then(|nm| imports.get(nm)) {
+                child_calls.push((cid.clone(), n.clone()));
+            }
+        }
+    });
+    let imported = imported_locals(&ast);
+    let escaped = escaped_components(&ast, &imports, &imported);
+    let barrel = barrel_child_ids(&ast, &barrel_locals);
+    Model {
+        id: id.to_string(),
+        ast,
+        props,
+        shadowed: shadowed_vec.into_iter().collect(),
+        debug: debug_vec.into_iter().collect(),
+        child_calls,
+        escaped,
+        barrel,
+        bail_reasons,
+    }
+}
+
+type Plans = HashMap<String, ComponentPlan>;
+
+fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -> HashMap<String, Vec<CallSite>> {
+    let mut usage: HashMap<String, Vec<CallSite>> = HashMap::new();
+    for model in models {
+        let empty = Vec::new();
+        let spans = dead.get(&model.id).unwrap_or(&empty);
+        for (child_id, node) in &model.child_calls {
+            if !spans.is_empty() && in_spans(node, spans) {
+                continue; // folded-away call site: excluded from the child's profile
+            }
+            usage.entry(child_id.clone()).or_default().push(read_call_site(node));
+        }
+    }
+    usage
+}
+
+fn build_plans(models: &[Model], usage: &HashMap<String, Vec<CallSite>>) -> Plans {
+    models.iter().map(|m| (m.id.clone(), build_plan(m, usage.get(&m.id)))).collect()
+}
+
+fn dead_spans_for_plans(models: &[Model], plans: &Plans) -> HashMap<String, Vec<Span>> {
+    let mut out = HashMap::new();
+    for model in models {
+        let plan = &plans[&model.id];
+        if plan.bail {
+            continue;
+        }
+        let spans = compute_dead_spans(get(&model.ast, "fragment"), &plan.const_env(), &plan.set_env());
+        if !spans.is_empty() {
+            out.insert(model.id.clone(), spans);
+        }
+    }
+    out
+}
+
+fn plans_equal(a: &Plans, b: &Plans) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    for (id, pa) in a {
+        let pb = match b.get(id) {
+            Some(p) => p,
+            None => return false,
+        };
+        if pa.bail != pb.bail || pa.const_fold != pb.const_fold || pa.narrow != pb.narrow {
+            return false;
+        }
+    }
+    true
+}
+
+fn run_fixpoint(models: &[Model]) -> Plans {
+    let mut plans = build_plans(models, &build_usage(models, &HashMap::new()));
+    for _ in 0..MAX_FIXPOINT_ITERATIONS {
+        let dead = dead_spans_for_plans(models, &plans);
+        let next = build_plans(models, &build_usage(models, &dead));
+        if plans_equal(&plans, &next) {
+            plans = next;
+            break;
+        }
+        plans = next;
+    }
+    plans
+}
+
+/// Encode a literal for the plan JSON; `undefined` uses a sentinel object so it
+/// stays distinct from `null` across the boundary (the differential test mirrors it).
+fn literal_to_plan_json(v: &Literal) -> Value {
+    match v {
+        Literal::Undefined => json!({ "$undefined": true }),
+        other => other.to_json(),
+    }
+}
+
+fn plan_to_json(plan: &ComponentPlan) -> Value {
+    let const_fold: serde_json::Map<String, Value> =
+        plan.const_fold.iter().map(|(k, v)| (k.clone(), literal_to_plan_json(v))).collect();
+    let narrow: serde_json::Map<String, Value> = plan
+        .narrow
+        .iter()
+        .map(|(k, vs)| (k.clone(), Value::Array(vs.iter().map(literal_to_plan_json).collect())))
+        .collect();
+    let value_sets: serde_json::Map<String, Value> = plan
+        .value_sets
+        .iter()
+        .map(|(k, s)| {
+            (
+                k.clone(),
+                json!({
+                    "values": s.values.iter().map(literal_to_plan_json).collect::<Vec<_>>(),
+                    "dynamic": s.dynamic,
+                    "top": s.top,
+                }),
+            )
+        })
+        .collect();
+    json!({
+        "id": plan.id,
+        "bail": plan.bail,
+        "reasons": plan.reasons,
+        "constFold": const_fold,
+        "narrow": narrow,
+        "valueSets": value_sets,
+    })
+}
+
+/// Whole-program analysis entry: `input` is `{ files: [{id, ast}], edges:
+/// [{from, local, to, kind}], entries }` (the AST is parsed on the JS side).
+/// Returns `{ id: plan }` for every component.
+#[wasm_bindgen]
+pub fn analyze_program(input_json: &str) -> String {
+    let input: Value = match serde_json::from_str(input_json) {
+        Ok(v) => v,
+        Err(e) => return json!({ "error": e.to_string() }).to_string(),
+    };
+    // Group resolved edges by their owning file.
+    let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
+    for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        if let Some(from) = e.get("from").and_then(Value::as_str) {
+            edges_by_from.entry(from.to_string()).or_default().push(e.clone());
+        }
+    }
+    let mut models: Vec<Model> = Vec::new();
+    for f in input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        let id = match f.get("id").and_then(Value::as_str) {
+            Some(i) => i.to_string(),
+            None => continue,
+        };
+        let ast = f.get("ast").cloned().unwrap_or(Value::Null);
+        let empty = Vec::new();
+        let edges = edges_by_from.get(&id).unwrap_or(&empty);
+        models.push(build_model_full(&id, ast, edges));
+    }
+
+    // Program-wide escape/barrel bail (analyze.ts §4.1/§4.2).
+    let mut escaped = HashSet::new();
+    let mut barreled = HashSet::new();
+    for m in &models {
+        for id in &m.escaped {
+            escaped.insert(id.clone());
+        }
+        for id in &m.barrel {
+            barreled.insert(id.clone());
+        }
+    }
+    for m in &mut models {
+        if escaped.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == ESCAPE_REASON) {
+            m.bail_reasons.push(ESCAPE_REASON.to_string());
+        }
+        if barreled.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == BARREL_REASON) {
+            m.bail_reasons.push(BARREL_REASON.to_string());
+        }
+    }
+
+    let plans = run_fixpoint(&models);
+    let out: serde_json::Map<String, Value> =
+        plans.iter().map(|(id, plan)| (id.clone(), plan_to_json(plan))).collect();
+    Value::Object(out).to_string()
 }
 
 #[cfg(test)]

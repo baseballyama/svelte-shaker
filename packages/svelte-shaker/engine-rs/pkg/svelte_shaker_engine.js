@@ -27,6 +27,29 @@ function analyze_component(ast_json, edges_json) {
     }
 }
 exports.analyze_component = analyze_component;
+
+/**
+ * Whole-program analysis entry: `input` is `{ files: [{id, ast}], edges:
+ * [{from, local, to, kind}], entries }` (the AST is parsed on the JS side).
+ * Returns `{ id: plan }` for every component.
+ * @param {string} input_json
+ * @returns {string}
+ */
+function analyze_program(input_json) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(input_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.analyze_program(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+exports.analyze_program = analyze_program;
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
