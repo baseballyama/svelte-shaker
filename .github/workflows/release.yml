@@ -54,7 +54,7 @@ jobs:
 
       # Node 24: `changeset publish` shells out to `npm publish`, and OIDC
       # Trusted Publishers require npm CLI >= 11.5.1, which ships with Node 24.
-      # CI keeps testing the full Node 20/22/24 matrix; only publish needs the
+      # CI keeps testing the full Node 22/24/26 matrix; only publish needs the
       # newer npm.
       #
       # Do NOT set `registry-url` here — it would have setup-node write
