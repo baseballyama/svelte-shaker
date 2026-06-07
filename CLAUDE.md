@@ -18,7 +18,7 @@ a transform is safe, it leaves the code untouched (bails). See
 ## Tech stack
 
 - **Language**: TypeScript (ESM, `strict` via `@tsconfig/strictest`).
-- **Repo**: pnpm workspace monorepo (`pnpm@9`, Node `>=18`).
+- **Repo**: pnpm workspace monorepo (`pnpm@9`, Node `>=22`).
 - **Engine runtime deps**: `magic-string`, `zimmerframe`. Peer: `svelte@^5`.
 - **Build**: Rollup. **Test**: Vitest. **Lint**: oxlint. **Format**: oxfmt.
   **Types**: `tsc --noEmit`.
