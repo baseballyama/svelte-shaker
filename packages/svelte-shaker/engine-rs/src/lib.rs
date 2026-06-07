@@ -275,6 +275,31 @@ fn walk_parented<'a, F: FnMut(&Value, Option<&Value>)>(
     }
 }
 
+/// Like `walk_parented`, but also threads the grandparent (the nearest object
+/// ancestor of the parent).  Arrays are not nodes, so they pass parent and
+/// grandparent through unchanged — matching `walk_parented`'s parent semantics.
+fn walk_grandparented<'a, F: FnMut(&Value, Option<&Value>, Option<&Value>)>(
+    node: &'a Value,
+    parent: Option<&'a Value>,
+    grandparent: Option<&'a Value>,
+    f: &mut F,
+) {
+    match node {
+        Value::Object(map) => {
+            f(node, parent, grandparent);
+            for v in map.values() {
+                walk_grandparented(v, Some(node), parent, f);
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                walk_grandparented(v, parent, grandparent, f);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn bool_field(node: &Value, key: &str) -> bool {
     node.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
@@ -1302,28 +1327,25 @@ fn substituted_slice(edits: &MagicEdit, from: i64, to: i64, roots: &[&Value], en
     if env.is_empty() {
         return edits.slice(from as usize, to as usize);
     }
-    let mut refs: Vec<(i64, i64, String)> = Vec::new();
-    for root in roots {
-        walk_parented(root, None, &mut |node, parent| {
-            if str_eq(node, "type", "Identifier") {
-                if let Some(name) = node.get("name").and_then(Value::as_str) {
-                    if env.contains_key(name) && !is_non_reference(node, parent) {
-                        refs.push((off(node, "start"), off(node, "end"), name.to_string()));
-                    }
-                }
-            }
-        });
+    let mut refs: Vec<FoldRef> = Vec::new();
+    {
+        let mut emit = |r: FoldRef, _node: &Value| refs.push(r);
+        for root in roots {
+            collect_fold_refs(root, env, edits, &mut emit);
+        }
     }
     if refs.is_empty() {
         return edits.slice(from as usize, to as usize);
     }
-    refs.sort_by_key(|r| r.0);
+    refs.sort_by_key(|r| r.start);
     let mut out = String::new();
     let mut cursor = from;
-    for (s, e, name) in refs {
-        out.push_str(&edits.slice(cursor as usize, s as usize));
-        out.push_str(&env[&name].to_source());
-        cursor = e;
+    for r in refs {
+        out.push_str(&edits.slice(cursor as usize, r.start as usize));
+        out.push_str(&r.head);
+        out.push_str(&env[&r.name].to_source());
+        out.push_str(&r.tail);
+        cursor = r.end;
     }
     out.push_str(&edits.slice(cursor as usize, to as usize));
     out
@@ -1430,19 +1452,103 @@ fn fold_ternaries(node: &Value, env: &Env, edits: &mut MagicEdit, dead: &mut Vec
     }
 }
 
-fn collect_prop_refs(model: &Model, env: &Env, dead: &[Span]) -> Vec<(i64, i64, String)> {
-    let mut refs = Vec::new();
-    let mut collect = |node: &Value, parent: Option<&Value>| {
-        if str_eq(node, "type", "Identifier") {
+/// One folded-prop edit: overwrite `[start,end)` with `head + <literal> + tail`.
+/// A plain read has empty head/tail and the identifier's own span; a SHORTHAND
+/// position wraps the literal back into explicit `name={…}` form (see
+/// `fold_ref_for` / `collect_fold_refs`).  Mirrors `FoldRef` in transform.ts.
+struct FoldRef {
+    start: i64,
+    end: i64,
+    head: String,
+    tail: String,
+    name: String,
+}
+
+/// `collectFoldRefs`: visit every folded-prop reference in `root` — plain reads,
+/// the `class:`/`{…}` shorthands `fold_ref_for` expands, and `style:NAME`
+/// shorthands (no expression node) — calling `emit` with each edit and its node
+/// (so callers can filter on position).  Shared by the live pass and
+/// `substituted_slice` so both fold shorthands identically.
+fn collect_fold_refs<F: FnMut(FoldRef, &Value)>(root: &Value, env: &Env, edits: &MagicEdit, emit: &mut F) {
+    walk_grandparented(root, None, None, &mut |node, parent, grandparent| {
+        // `style:NAME` shorthand carries no expression node (its `value` is the
+        // boolean `true` marker); expand it to `style:NAME={lit}` or the dropped
+        // prop dangles.  Trim trailing whitespace some parsers fold into `end`.
+        if str_eq(node, "type", "StyleDirective") && node.get("value") == Some(&Value::Bool(true)) {
             if let Some(name) = node.get("name").and_then(Value::as_str) {
-                if env.contains_key(name) && !in_spans(node, dead) && !is_non_reference(node, parent) {
-                    refs.push((off(node, "start"), off(node, "end"), name.to_string()));
+                if env.contains_key(name) {
+                    let start = off(node, "start");
+                    let mut end = off(node, "end");
+                    while end > start && edits.unit_at((end - 1) as usize).map(is_ws_u16) == Some(true) {
+                        end -= 1;
+                    }
+                    let src = edits.slice(start as usize, end as usize); // `style:NAME`
+                    emit(
+                        FoldRef { start, end, head: format!("{src}={{"), tail: "}".to_string(), name: name.to_string() },
+                        node,
+                    );
+                }
+            }
+        } else if str_eq(node, "type", "Identifier") {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                if env.contains_key(name) && !is_non_reference(node, parent) {
+                    emit(fold_ref_for(node, parent, grandparent, edits, name), node);
                 }
             }
         }
-    };
-    walk_parented(get(&model.ast, "instance"), None, &mut collect);
-    walk_parented(get(&model.ast, "fragment"), None, &mut collect);
+    });
+}
+
+/// `foldRefFor`: the edit to substitute a folded prop at `node`.  A plain read
+/// overwrites just the identifier; a SHORTHAND position expands to the explicit
+/// `name={value}` form (`class:compact` -> `class:compact={false}`, `{compact}`
+/// -> `compact={false}`) so the rewrite stays valid Svelte.
+fn fold_ref_for(node: &Value, parent: Option<&Value>, grandparent: Option<&Value>, edits: &MagicEdit, name: &str) -> FoldRef {
+    let start = off(node, "start");
+    let end = off(node, "end");
+    // `class:NAME` shorthand: the identifier sits in the directive-name slot, right
+    // after the `:` (the long form puts it inside `={…}`, where the char is `{`).
+    if let Some(p) = parent {
+        if str_eq(p, "type", "ClassDirective")
+            && same_node(get(p, "expression"), node)
+            && start > 0
+            && edits.unit_at((start - 1) as usize) == Some(b':' as u16)
+        {
+            return FoldRef { start, end, head: format!("{name}={{"), tail: "}".to_string(), name: name.to_string() };
+        }
+    }
+    // `{NAME}` attribute shorthand: the braces belong to the Attribute, not the
+    // ExpressionTag, so overwrite the whole attribute (`{NAME}` -> `NAME={lit}`).
+    if let (Some(p), Some(gp)) = (parent, grandparent) {
+        if str_eq(p, "type", "ExpressionTag")
+            && str_eq(gp, "type", "Attribute")
+            && edits.unit_at(off(gp, "start") as usize) == Some(b'{' as u16)
+        {
+            if let Some(attr_name) = gp.get("name").and_then(Value::as_str) {
+                return FoldRef {
+                    start: off(gp, "start"),
+                    end: off(gp, "end"),
+                    head: format!("{attr_name}={{"),
+                    tail: "}".to_string(),
+                    name: name.to_string(),
+                };
+            }
+        }
+    }
+    FoldRef { start, end, head: String::new(), tail: String::new(), name: name.to_string() }
+}
+
+fn collect_prop_refs(model: &Model, env: &Env, dead: &[Span], edits: &MagicEdit) -> Vec<FoldRef> {
+    let mut refs = Vec::new();
+    {
+        let mut emit = |r: FoldRef, node: &Value| {
+            if !in_spans(node, dead) {
+                refs.push(r);
+            }
+        };
+        collect_fold_refs(get(&model.ast, "instance"), env, edits, &mut emit);
+        collect_fold_refs(get(&model.ast, "fragment"), env, edits, &mut emit);
+    }
     refs
 }
 
@@ -1780,8 +1886,9 @@ fn shake_body(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit)
     if !env.is_empty() {
         fold_ternaries(fragment, env, edits, &mut dead);
     }
-    for (s, e, name) in collect_prop_refs(model, env, &dead) {
-        edits.overwrite(s as usize, e as usize, &env[&name].to_source());
+    for r in collect_prop_refs(model, env, &dead, edits) {
+        let text = format!("{}{}{}", r.head, env[&r.name].to_source(), r.tail);
+        edits.overwrite(r.start as usize, r.end as usize, &text);
     }
     let droppable: HashSet<String> = env.keys().cloned().collect();
     drop_props(model, &droppable, edits);

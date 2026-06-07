@@ -254,7 +254,9 @@ export function shakeBody(
   // are removed), so a constFold prop used inside a surviving arm is handled.
   const refs = collectPropRefs(model, env, dead);
   for (const [name, value] of env) {
-    for (const ref of refs.get(name) ?? []) s.overwrite(ref[0], ref[1], literalSource(value));
+    const lit = literalSource(value);
+    for (const ref of refs.get(name) ?? [])
+      s.overwrite(ref.start, ref.end, ref.head + lit + ref.tail);
   }
 
   // (3) Drop only the folded (constFold) props from the `$props()` signature.
@@ -427,26 +429,11 @@ function substitutedSlice(
 ): string {
   if (env.size === 0) return code.slice(from, to);
 
-  // Collect [start,end) of every genuine folded-prop value read in source order.
-  const refs: Array<{ start: number; end: number; name: string }> = [];
+  // Collect every folded-prop edit in source order (shorthand-aware, see
+  // {@link collectFoldRefs}); each is an `[start,end)` overwrite with wrapping.
+  const refs: Array<FoldRef & { name: string }> = [];
   for (const root of roots) {
-    walk<{ parent: AnyNode | null }>(
-      root,
-      { parent: null },
-      {
-        _(node, { state, next }) {
-          if (
-            node.type === 'Identifier' &&
-            node.name &&
-            env.has(node.name) &&
-            !isNonReference(node, state.parent)
-          ) {
-            refs.push({ start: node.start, end: node.end, name: node.name });
-          }
-          next({ parent: node });
-        },
-      },
-    );
+    collectFoldRefs(root, env, code, (name, ref) => refs.push({ ...ref, name }));
   }
   if (refs.length === 0) return code.slice(from, to);
 
@@ -455,47 +442,142 @@ function substitutedSlice(
   let cursor = from;
   for (const ref of refs) {
     out += code.slice(cursor, ref.start);
-    out += literalSource(env.get(ref.name)!);
+    out += ref.head + literalSource(env.get(ref.name)!) + ref.tail;
     cursor = ref.end;
   }
   out += code.slice(cursor, to);
   return out;
 }
 
-/** Find expression-position references to each folded prop, outside dead spans. */
+/**
+ * One folded-prop edit: overwrite source `[start, end)` with
+ * `head + <literal> + tail`.  For a plain expression read `head`/`tail` are empty
+ * and `[start, end)` is the identifier itself; for a SHORTHAND position they wrap
+ * the literal back into the explicit `name={…}` form (see {@link foldRefFor}).
+ */
+interface FoldRef {
+  start: number;
+  end: number;
+  head: string;
+  tail: string;
+}
+
+/** Find every folded-prop reference in `model`, outside dead spans, by name. */
 function collectPropRefs(
   model: FileModel,
   env: Map<string, Literal>,
   dead: Span[],
-): Map<string, Span[]> {
-  const refs = new Map<string, Span[]>();
+): Map<string, FoldRef[]> {
+  const refs = new Map<string, FoldRef[]>();
 
   const scan = (root: AnyNode | null | undefined) => {
     if (!root) return;
-    walk<{ parent: AnyNode | null }>(
-      root,
-      { parent: null },
-      {
-        _(node, { state, next }) {
-          if (
-            node.type === 'Identifier' &&
-            node.name &&
-            env.has(node.name) &&
-            !inSpans(node, dead) &&
-            node !== model.propsPattern &&
-            !isNonReference(node, state.parent)
-          ) {
-            (refs.get(node.name) ?? setDefault(refs, node.name)).push([node.start, node.end]);
-          }
-          next({ parent: node });
-        },
-      },
-    );
+    collectFoldRefs(root, env, model.code, (name, ref, node) => {
+      if (inSpans(node, dead) || node === model.propsPattern) return;
+      (refs.get(name) ?? setDefault(refs, name)).push(ref);
+    });
   };
 
   scan(model.ast.instance); // only the instance script can reference props
   scan(model.ast.fragment);
   return refs;
+}
+
+/**
+ * Walk `root` and `emit` an edit for every folded-prop reference — both plain
+ * expression reads AND the shorthand positions {@link foldRefFor} expands, plus
+ * `style:NAME` shorthands (which have no expression node and so are invisible to
+ * an identifier walk).  `emit` receives the originating node so callers can
+ * filter by position (e.g. skip dead spans).  Shared by the live substitution
+ * pass and the verbatim re-emit ({@link substitutedSlice}) so both fold
+ * shorthands identically.
+ */
+function collectFoldRefs(
+  root: AnyNode,
+  env: Map<string, Literal>,
+  code: string,
+  emit: (name: string, ref: FoldRef, node: AnyNode) => void,
+): void {
+  walk<{ parent: AnyNode | null; grandparent: AnyNode | null }>(
+    root,
+    { parent: null, grandparent: null },
+    {
+      _(node, { state, next }) {
+        // `style:NAME` shorthand carries no expression node (its `value` is the
+        // boolean `true` marker), so an identifier walk never sees it; expand it
+        // to `style:NAME={lit}` or the dropped prop would dangle.  Trim trailing
+        // whitespace from the span: some parsers (rsvelte) fold the gap before the
+        // next attribute into the directive's `end`, and overwriting that gap
+        // would glue the expansion onto the next attribute.
+        if (
+          node.type === 'StyleDirective' &&
+          node.value === true &&
+          node.name &&
+          env.has(node.name)
+        ) {
+          let end = node.end;
+          while (end > node.start && isSpace(code[end - 1]!)) end -= 1;
+          const src = code.slice(node.start, end); // `style:NAME`
+          emit(node.name, { start: node.start, end, head: `${src}={`, tail: '}' }, node);
+        } else if (
+          node.type === 'Identifier' &&
+          node.name &&
+          env.has(node.name) &&
+          !isNonReference(node, state.parent)
+        ) {
+          emit(node.name, foldRefFor(node, state.parent, state.grandparent, code), node);
+        }
+        next({ parent: node, grandparent: state.parent });
+      },
+    },
+  );
+}
+
+/**
+ * The edit to substitute a folded prop at the given identifier.  A plain
+ * expression read overwrites just the identifier (no wrapping).  A SHORTHAND
+ * syntactic position is expanded to the explicit `name={value}` the long form
+ * uses, because overwriting the bare identifier there corrupts the syntax:
+ *
+ *   class:compact   ->  class:compact={false}   (`class:false` is a *different* class)
+ *   {compact}       ->  compact={false}         (`{false}` is a reserved word)
+ *
+ * The full forms (`class:compact={compact}`, `compact={compact}`) already place
+ * the identifier inside an expression slot, so they fall through to the plain
+ * overwrite and are unaffected.
+ */
+function foldRefFor(
+  node: AnyNode,
+  parent: AnyNode | null,
+  grandparent: AnyNode | null,
+  code: string,
+): FoldRef {
+  // `class:NAME` shorthand: the identifier sits in the directive-name slot, right
+  // after the `:` (the long form puts it inside `={…}`, where the char is `{`).
+  if (
+    parent?.type === 'ClassDirective' &&
+    parent.expression === node &&
+    code[node.start - 1] === ':'
+  ) {
+    const name = code.slice(node.start, node.end);
+    return { start: node.start, end: node.end, head: `${name}={`, tail: '}' };
+  }
+  // `{NAME}` attribute shorthand: the braces belong to the Attribute, not the
+  // ExpressionTag, so overwrite the whole attribute (`{NAME}` -> `NAME={lit}`).
+  if (
+    parent?.type === 'ExpressionTag' &&
+    grandparent?.type === 'Attribute' &&
+    grandparent.name &&
+    code[grandparent.start] === '{'
+  ) {
+    return {
+      start: grandparent.start,
+      end: grandparent.end,
+      head: `${grandparent.name}={`,
+      tail: '}',
+    };
+  }
+  return { start: node.start, end: node.end, head: '', tail: '' };
 }
 
 /** True when an Identifier is a property key / member name, not a value read. */
@@ -626,6 +708,10 @@ function setDefault<K, V>(map: Map<K, V[]>, key: K): V[] {
   const arr: V[] = [];
   map.set(key, arr);
   return arr;
+}
+
+function isSpace(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
 }
 
 function literalSource(value: Literal): string {
