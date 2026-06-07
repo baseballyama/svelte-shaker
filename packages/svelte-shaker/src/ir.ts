@@ -18,10 +18,16 @@ export type Literal = string | number | boolean | null | undefined;
 // Rust process behind napi — only source strings + this resolved graph cross.
 // ----------------------------------------------------------------------
 
-/** How an imported local name binds to a child `.svelte` component. */
+/**
+ * How an imported local name binds to a child `.svelte` component.  All three
+ * kinds are attributable — the `local` they carry is the exact tag name a call
+ * site renders (`Child` for the first two, the dotted `ns.Child` for the third),
+ * so {@link AnalyzeInput} drives the child's value set off every one of them.
+ */
 export type EdgeKind =
-  | 'default-svelte' // `import Child from './Child.svelte'` — drives the value sets
-  | 'barrel'; // reached through a named/namespace or `.js`/`.ts` barrel re-export
+  | 'default-svelte' // `import Child from './Child.svelte'` — a direct default import
+  | 'barrel' // a simple local (named specifier, or default of a `.js`/`.ts` barrel) resolved to a `.svelte`
+  | 'namespace'; // a `<ns.Child/>` member tag where `ns` is `import * as ns` of a barrel
 
 /** One reachable `.svelte` source the engine will model. */
 export interface InputFile {
@@ -29,7 +35,12 @@ export interface InputFile {
   code: string;
 }
 
-/** One resolved import edge: `from` binds `local` to the child `.svelte` `to`. */
+/**
+ * One resolved import edge: in `from`, the tag name `local` renders the child
+ * `.svelte` `to`.  `local` is the literal tag a call site uses — a bare name for
+ * `default-svelte`/`barrel` (`<Child/>`) or a dotted member for `namespace`
+ * (`<ns.Child/>`) — so the engine attributes `<local .../>` sites by name lookup.
+ */
 export interface ResolvedEdge {
   from: ComponentId;
   local: string;

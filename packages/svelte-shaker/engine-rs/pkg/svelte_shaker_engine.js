@@ -4,8 +4,8 @@
  * Analyze one component AST (JSON) given its resolved outgoing edges (JSON), and
  * return the per-file model fields ported so far: declared props, `...rest`
  * presence, shadowed / `{@debug}` fold-blocking names, the `<svelte:options>`
- * bail, the rendered child calls, barrel-rendered children, and escaped
- * components. `{"error": "..."}` on malformed input.
+ * bail, the rendered child calls, and escaped components. `{"error": "..."}` on
+ * malformed input.
  * @param {string} ast_json
  * @param {string} edges_json
  * @returns {string}
