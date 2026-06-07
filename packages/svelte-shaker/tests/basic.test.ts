@@ -251,6 +251,66 @@ describe('svelte-shaker / soundness (differential SSR)', () => {
     expect(before).not.toContain('never shown');
   });
 
+  it('fold-shorthand (issue #21): a folded prop in a shorthand position expands, not corrupts', async () => {
+    // `class:compact` is sugar for `class:compact={compact}`. Folding `compact`
+    // to its constant must keep the class NAME (`class:compact={false}`); the bug
+    // overwrote the shared identifier, emitting `class:false` — a *different*
+    // class. The same hazard hits `{compact}` (-> reserved word `{false}`) and
+    // `style:compact` (-> a dangling reference once the prop is dropped).
+    const dir = join(FIXTURES, 'fold-shorthand');
+    const entry = join(dir, 'input', 'App.svelte');
+    const out = await svelteShaker(entry, fsResolve, readFile);
+    const shaken = out[join(dir, 'input', 'Button.svelte')]!;
+
+    expect(shaken).toContain('class:compact={false}');
+    expect(shaken).toContain('style:compact={false}');
+    expect(shaken).toContain('compact={false} class="btn"');
+    expect(shaken).not.toContain('class:false'); // the reported corruption
+    expect(shaken).not.toContain(' {false}'); // the reserved-word attr-shorthand bug
+    expect(shaken).not.toMatch(/let \{ compact/); // prop dropped from the signature
+
+    // Soundness for the value that actually occurs (compact=false): identical HTML.
+    const original = readFileSync(join(dir, 'input', 'Button.svelte'), 'utf-8');
+    const before = await renderHtml(original, { compact: false }, 'Button.svelte');
+    const after = await renderHtml(shaken, {}, 'Button.svelte');
+    expect(after).toBe(before);
+  });
+
+  it('fold-shorthand (issue #21): a TRUTHY fold keeps the class name (real soundness)', async () => {
+    // The cosmetic-looking `class:false` is only observably equivalent when the
+    // value is falsy. If the sole call site folds `compact` to `true`, the buggy
+    // `class:true` would toggle a class literally named "true" instead of
+    // "compact" — an observable difference. Pin that the name survives.
+    const files = new Map<string, string>([
+      [
+        '/Button.svelte',
+        `<script>let { compact = false } = $props();</script>\n` +
+          `<button class:compact class="btn">click</button>`,
+      ],
+      [
+        '/App.svelte',
+        `<script>import Button from './Button.svelte';</script>\n<Button compact={true} />`,
+      ],
+    ]);
+    const memResolve = (source: string, importer: string) =>
+      source.startsWith('.') ? new URL(source, `file://${importer}`).pathname : null;
+    const memRead = (id: string) => files.get(id) ?? '';
+
+    const out = await svelteShaker(['/Button.svelte', '/App.svelte'], memResolve, memRead);
+    const shaken = out['/Button.svelte']!;
+    expect(shaken).toContain('class:compact={true}');
+    expect(shaken).not.toContain('class:true');
+
+    const before = await renderHtml(
+      files.get('/Button.svelte')!,
+      { compact: true },
+      'Button.svelte',
+    );
+    const after = await renderHtml(shaken, {}, 'Button.svelte');
+    expect(after).toBe(before);
+    expect(before).toContain('compact'); // the class name is part of the output
+  });
+
   it("cascade (fixpoint): folding Mid's dead branch removes Heavy's only call site", async () => {
     // App -> Mid -> Heavy. `<Mid show={false}/>` folds Mid's `{#if show}` block,
     // which CONTAINS `<Heavy label="x"/>`. Without the fixpoint, that call site
