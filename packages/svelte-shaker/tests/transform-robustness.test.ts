@@ -95,6 +95,47 @@ describe('transform robustness', () => {
     expect(child).toContain('base');
   });
 
+  it('does NOT fold a same-named prop into a TS interface/type member KEY', async () => {
+    // `width`/`height` are never passed, so they fold to 36/20 and the body refs
+    // become `{36}`/`{20}`. But the `interface Props { width?: number }` member KEY
+    // is a TYPE-position name, not a value read — folding it would corrupt the type
+    // to `36?: number`. (Pre-existing bug; the type is compile-erased so it was
+    // byte-wrong but not a runtime fault.)
+    const files: Record<string, string> = {
+      '/App.svelte': `<script lang="ts">
+  import Child from './Child.svelte';
+</script>
+<Child />`,
+      '/Child.svelte': `<script lang="ts">
+  interface Props {
+    variant: string;
+    width?: number;
+    height?: number;
+  }
+  const { variant = 'a', width = 36, height = 20 }: Props = $props();
+</script>
+<p>{variant}{width}{height}</p>`,
+    };
+    const { resolve, readFile } = memGraph(files);
+    const out = await svelteShaker('/App.svelte', resolve, readFile);
+    const child = out['/Child.svelte']!;
+    // Body reads fold; interface member keys are preserved (NOT rewritten to literals).
+    expect(child).toContain('{36}');
+    expect(child).toContain('width?: number');
+    expect(child).toContain('height?: number');
+    expect(child).not.toContain('36?: number');
+    expect(child).not.toContain('20?: number');
+    expect(child).not.toContain('"a": string'); // `variant` key must stay `variant`
+    assertCompiles(child, '/Child.svelte');
+    expect(await renderHtml(child, {}, '/Child.svelte')).toBe(
+      await renderHtml(
+        files['/Child.svelte']!,
+        { variant: 'a', width: 36, height: 20 },
+        '/Child.svelte',
+      ),
+    );
+  });
+
   it('expands an object SHORTHAND when substituting a folded prop', async () => {
     // `label` folds to "hi"; used as `{ label }` shorthand it must expand to
     // `{ label: "hi" }`, not collapse to `{ "hi" }` (invalid).

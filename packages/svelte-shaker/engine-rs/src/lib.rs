@@ -1319,6 +1319,17 @@ fn is_non_reference(node: &Value, parent: Option<&Value>) -> bool {
     {
         return true;
     }
+    // TS type-member name (`interface Props { NAME?: T }` / a `{ NAME: T }` type
+    // literal / a method signature): the key is a member NAME in a type position,
+    // not a value read of a prop, so folding a same-named prop's literal into it
+    // would corrupt the type (`width?: number` -> `36?: number`). Mirror of the TS
+    // engine's `isNonReference` guard.
+    if (str_eq(p, "type", "TSPropertySignature") || str_eq(p, "type", "TSMethodSignature"))
+        && !bool_field(p, "computed")
+        && same_node(get(p, "key"), node)
+    {
+        return true;
+    }
     is_import_specifier_position(p)
 }
 
