@@ -1536,6 +1536,23 @@ fn fold_ref_for(node: &Value, parent: Option<&Value>, grandparent: Option<&Value
             }
         }
     }
+    // Object shorthand `{ NAME }`: a `Property` with `shorthand: true` whose single
+    // identifier is BOTH key and value.  Expand to `NAME: lit` (a plain replace would
+    // yield `{ "lit" }`, invalid).
+    if let Some(p) = parent {
+        if str_eq(p, "type", "Property")
+            && p.get("shorthand") == Some(&Value::Bool(true))
+            && same_node(get(p, "value"), node)
+        {
+            return FoldRef {
+                start,
+                end,
+                head: format!("{name}: "),
+                tail: String::new(),
+                name: name.to_string(),
+            };
+        }
+    }
     FoldRef { start, end, head: String::new(), tail: String::new(), name: name.to_string() }
 }
 
@@ -1553,18 +1570,32 @@ fn collect_prop_refs(model: &Model, env: &Env, dead: &[Span], edits: &MagicEdit)
     refs
 }
 
-fn remove_pattern_property(properties: &[Value], property: &Value, edits: &mut MagicEdit) {
-    let i = match properties.iter().position(|p| same_node(p, property)) {
-        Some(i) => i,
-        None => return,
-    };
-    if let Some(next) = properties.get(i + 1) {
-        edits.remove(off(property, "start") as usize, off(next, "start") as usize);
-    } else if i > 0 {
-        edits.remove(off(&properties[i - 1], "end") as usize, off(property, "end") as usize);
-    } else {
-        edits.remove(off(property, "start") as usize, off(property, "end") as usize);
+/// Delete the run of dropped destructuring properties `properties[lo..=hi]` together,
+/// absorbing the commas/whitespace so the result stays valid: eat forward to the next
+/// survivor when one follows; otherwise the run reaches the end, so include a trailing
+/// comma (but not the whitespace before `}`) and reach back to the previous survivor.
+fn remove_property_run(properties: &[Value], lo: usize, hi: usize, edits: &mut MagicEdit) {
+    let first = &properties[lo];
+    let last = &properties[hi];
+    if let Some(kept_after) = properties.get(hi + 1) {
+        edits.remove(off(first, "start") as usize, off(kept_after, "start") as usize);
+        return;
     }
+    let mut end = off(last, "end") as usize;
+    let len = edits.len();
+    let mut j = end;
+    while j < len && edits.unit_at(j).map(is_ws_u16) == Some(true) {
+        j += 1;
+    }
+    if edits.unit_at(j) == Some(b',' as u16) {
+        end = j + 1;
+    }
+    let start = if lo > 0 {
+        off(&properties[lo - 1], "end") as usize
+    } else {
+        off(first, "start") as usize
+    };
+    edits.remove(start, end);
 }
 
 fn remove_type_member(pattern: &Value, name: &str, edits: &mut MagicEdit) {
@@ -1627,12 +1658,30 @@ fn drop_props(model: &Model, drop: &HashSet<String>, edits: &mut MagicEdit) {
         return;
     }
     let properties = arr(&pi.pattern, "properties");
-    for decl in &pi.props {
-        if !drop.contains(&decl.name) {
+    // Remove each maximal RUN of consecutive dropped properties as one range so the
+    // separating commas tile cleanly (a per-property removal mishandles a trailing
+    // comma on the last property and overlaps on consecutive drops -> dangling `,`).
+    let dropped_flags: Vec<bool> = properties
+        .iter()
+        .map(|p| pi.props.iter().any(|d| same_node(&d.property, p) && drop.contains(&d.name)))
+        .collect();
+    let mut i = 0;
+    while i < properties.len() {
+        if !dropped_flags[i] {
+            i += 1;
             continue;
         }
-        remove_pattern_property(properties, &decl.property, edits);
-        remove_type_member(&pi.pattern, &decl.name, edits);
+        let mut hi = i;
+        while hi + 1 < properties.len() && dropped_flags[hi + 1] {
+            hi += 1;
+        }
+        remove_property_run(properties, i, hi, edits);
+        i = hi + 1;
+    }
+    for decl in &pi.props {
+        if drop.contains(&decl.name) {
+            remove_type_member(&pi.pattern, &decl.name, edits);
+        }
     }
 }
 
@@ -1664,11 +1713,21 @@ fn remove_attr_with_space(attr: &Value, edits: &mut MagicEdit) {
     edits.remove(start, off(attr, "end") as usize);
 }
 
-fn remove_call_site_attributes(model: &Model, dropped: &HashMap<String, HashSet<String>>, edits: &mut MagicEdit) {
+fn remove_call_site_attributes(
+    model: &Model,
+    dropped: &HashMap<String, HashSet<String>>,
+    edits: &mut MagicEdit,
+    edited_spans: &[Span],
+) {
     // Collect first (so we don't borrow the ast through `walk` while editing).
     let mut to_remove: Vec<Value> = Vec::new();
     walk(get(&model.ast, "fragment"), &mut |node| {
         if !str_eq(node, "type", "Component") {
+            return;
+        }
+        // Skip a `<Child/>` phase 1 folded away: its source (attributes included) is
+        // gone, so editing it now would overlap that edit.
+        if !edited_spans.is_empty() && in_spans(node, edited_spans) {
             return;
         }
         let drop = node
@@ -1877,7 +1936,13 @@ fn shake_css(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit) 
 
 /// Slim one component into `edits`, returning the props dropped from the
 /// `$props()` signature (mirrors `shakeBody`).
-fn shake_body(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit) -> HashSet<String> {
+fn shake_body(
+    model: &Model,
+    env: &Env,
+    set_env: &SetEnv,
+    edits: &mut MagicEdit,
+    out_dead: &mut Vec<Span>,
+) -> HashSet<String> {
     if env.is_empty() && set_env.is_empty() {
         return HashSet::new();
     }
@@ -1894,6 +1959,8 @@ fn shake_body(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit)
     let droppable: HashSet<String> = env.keys().cloned().collect();
     drop_props(model, &droppable, edits);
     shake_css(model, env, set_env, edits);
+    // Hand phase 2 the regions we edited so it never edits inside a folded-away branch.
+    out_dead.extend(dead.iter().copied());
     droppable
 }
 
@@ -1941,21 +2008,27 @@ pub fn shake_program(input_json: &str) -> String {
     // Phase 1: fold each body and drop its folded props.
     let mut edits_map: HashMap<String, MagicEdit> = HashMap::new();
     let mut dropped: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::new();
     for model in &models {
         let plan = &plans[&model.id];
         let mut edits = MagicEdit::new(code_by_id.get(&model.id).map(String::as_str).unwrap_or(""));
+        let mut dead: Vec<Span> = Vec::new();
         let d = if plan.bail {
             HashSet::new()
         } else {
-            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits)
+            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead)
         };
         dropped.insert(model.id.clone(), d);
+        edited_spans.insert(model.id.clone(), dead);
         edits_map.insert(model.id.clone(), edits);
     }
-    // Phase 2: remove call-site attributes for props the child actually dropped.
+    // Phase 2: remove call-site attributes for props the child actually dropped,
+    // skipping any call site phase 1 folded away (its attributes went with it).
     for model in &models {
         if let Some(edits) = edits_map.get_mut(&model.id) {
-            remove_call_site_attributes(model, &dropped, edits);
+            let empty = Vec::new();
+            let spans = edited_spans.get(&model.id).unwrap_or(&empty);
+            remove_call_site_attributes(model, &dropped, edits, spans);
         }
     }
 

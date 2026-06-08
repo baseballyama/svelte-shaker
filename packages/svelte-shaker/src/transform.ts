@@ -33,17 +33,31 @@ function runBasePhases(
 ): Map<ComponentId, MagicString> {
   const strings = new Map<ComponentId, MagicString>();
   const dropped = new Map<ComponentId, Set<string>>();
+  /** Regions phase 1 edited per component — phase 2 must not edit inside them. */
+  const editedSpans = new Map<ComponentId, Span[]>();
 
   // Phase 1 — component bodies: fold dead branches, drop folded props.
   for (const model of models.values()) {
     const s = new MagicString(model.code);
     strings.set(model.id, s);
     const plan = plans.get(model.id)!;
-    dropped.set(model.id, plan.bail ? new Set() : transformBody(model, plan, s));
+    if (plan.bail) {
+      dropped.set(model.id, new Set());
+      continue;
+    }
+    const result = transformBody(model, plan, s);
+    dropped.set(model.id, result.dropped);
+    editedSpans.set(model.id, result.dead);
   }
-  // Phase 2 — call sites: remove attributes for props the child actually dropped.
+  // Phase 2 — call sites: remove attributes for props the child actually dropped,
+  // skipping any call site phase 1 folded away (its attributes went with it).
   for (const model of models.values()) {
-    removeCallSiteAttributes(model, dropped, strings.get(model.id)!);
+    removeCallSiteAttributes(
+      model,
+      dropped,
+      strings.get(model.id)!,
+      editedSpans.get(model.id) ?? [],
+    );
   }
   return strings;
 }
@@ -206,8 +220,14 @@ function injectImports(
   s.prepend(`<script>\n${lines}\n</script>\n`);
 }
 
-function transformBody(model: FileModel, plan: ComponentPlan, s: MagicString): Set<string> {
-  return shakeBody(model, plan.constFold, plan.narrow, plan, s);
+function transformBody(
+  model: FileModel,
+  plan: ComponentPlan,
+  s: MagicString,
+): { dropped: Set<string>; dead: Span[] } {
+  const dead: Span[] = [];
+  const dropped = shakeBody(model, plan.constFold, plan.narrow, plan, s, dead);
+  return { dropped, dead };
 }
 
 /**
@@ -226,6 +246,15 @@ export function shakeBody(
   setEnv: Map<string, Literal[]>,
   cssPlan: ComponentPlan,
   s: MagicString,
+  /**
+   * If provided, receives every region this body EDITED (dead `{#if}`/ternary arms
+   * removed, and collapse spans overwritten whole).  Phase 2 (call-site attribute
+   * removal) needs these so it never edits inside a region we already changed — a
+   * `<Child dropped={…}/>` sitting in a folded-away branch would otherwise produce
+   * an overlapping MagicString edit ("Cannot split a chunk that has already been
+   * edited").  Mono (L2) does not pass it; it edits fresh strings.
+   */
+  outDead?: Span[],
 ): Set<string> {
   // Nothing to fold (L1) and nothing to narrow (L1.5): no branch/prop edits.
   // CSS removal still depends only on the value sets the plan carries, so a
@@ -281,6 +310,7 @@ export function shakeBody(
   };
   shakeCss(model, cssView, s);
 
+  if (outDead) outDead.push(...dead);
   return droppable;
 }
 
@@ -577,6 +607,13 @@ function foldRefFor(
       tail: '}',
     };
   }
+  // Object shorthand `{ NAME }`: a `Property` with `shorthand: true` whose single
+  // identifier is BOTH key and value.  A plain replace yields `{ "lit" }` (invalid);
+  // expand to `NAME: lit`.
+  if (parent?.type === 'Property' && parent.shorthand === true && parent.value === node) {
+    const name = code.slice(node.start, node.end);
+    return { start: node.start, end: node.end, head: `${name}: `, tail: '' };
+  }
   return { start: node.start, end: node.end, head: '', tail: '' };
 }
 
@@ -617,22 +654,61 @@ function dropProps(model: FileModel, drop: Set<string>, s: MagicString): void {
     return;
   }
   const properties = model.propsPattern?.properties ?? [];
-  for (const decl of model.props) {
-    if (!drop.has(decl.name)) continue;
-    removePatternProperty(properties, decl.property, s);
-    if (model.propsPattern) removeTypeMember(model.propsPattern, decl.name, s);
+  // Remove each MAXIMAL RUN of consecutive dropped properties as a single range so
+  // the separating commas tile cleanly.  A per-property removal mishandles a
+  // trailing comma on the last property and overlaps on consecutive drops, leaving
+  // a dangling `,` (invalid `$props()` destructuring).
+  const droppedNodes = new Set(model.props.filter((p) => drop.has(p.name)).map((p) => p.property));
+  let i = 0;
+  while (i < properties.length) {
+    if (!droppedNodes.has(properties[i]!)) {
+      i++;
+      continue;
+    }
+    let hi = i;
+    while (hi + 1 < properties.length && droppedNodes.has(properties[hi + 1]!)) hi++;
+    removePropertyRun(model.code, properties, i, hi, s);
+    i = hi + 1;
+  }
+  // Type members live in the disjoint `}: { … }` annotation; remove them per-prop.
+  if (model.propsPattern) {
+    for (const decl of model.props) {
+      if (drop.has(decl.name)) removeTypeMember(model.propsPattern, decl.name, s);
+    }
   }
 }
 
-function removePatternProperty(properties: AnyNode[], property: AnyNode, s: MagicString): void {
-  const i = properties.indexOf(property);
-  const next = properties[i + 1];
-  const prev = properties[i - 1];
-  if (next)
-    s.remove(property.start, next.start); // eat trailing comma + whitespace
-  else if (prev)
-    s.remove(prev.end, property.end); // eat leading comma + whitespace
-  else s.remove(property.start, property.end);
+/**
+ * Delete the run of dropped destructuring properties `properties[lo..hi]` together,
+ * absorbing the commas/whitespace so the result stays valid.  When a surviving
+ * property follows the run we eat forward to it; otherwise the run reaches the end,
+ * so we eat any trailing comma and reach back to the previous surviving property's
+ * separator (leaving it with no dangling comma).
+ */
+function removePropertyRun(
+  code: string,
+  properties: AnyNode[],
+  lo: number,
+  hi: number,
+  s: MagicString,
+): void {
+  const first = properties[lo]!;
+  const last = properties[hi]!;
+  const keptAfter = properties[hi + 1];
+  if (keptAfter) {
+    s.remove(first.start, keptAfter.start); // run + commas + ws up to the next survivor
+    return;
+  }
+  // Run reaches the end of the pattern: include a trailing comma after the last
+  // dropped property if present (so it does not dangle), but NOT the whitespace
+  // before `}` when there is none — keep `{ a }` from becoming `{ a}`.  Then drop
+  // back to the previous survivor's separator.
+  let end = last.end;
+  let j = end;
+  while (j < code.length && /\s/.test(code[j]!)) j++;
+  if (code[j] === ',') end = j + 1;
+  const keptBefore = properties[lo - 1];
+  s.remove(keptBefore ? keptBefore.end : first.start, end);
 }
 
 function removeTypeMember(pattern: AnyNode, name: string, s: MagicString): void {
@@ -652,9 +728,15 @@ function removeCallSiteAttributes(
   model: FileModel,
   dropped: Map<ComponentId, Set<string>>,
   s: MagicString,
+  editedSpans: Span[],
 ): void {
   walk<null>(model.ast.fragment, null, {
     Component(node, { next }) {
+      // This `<Child/>` sits inside a branch phase 1 already removed/overwrote;
+      // its source (attributes included) is gone, so editing it now would overlap
+      // that edit ("Cannot split a chunk that has already been edited").  Skip the
+      // whole subtree — every nested call site is in the same dead region.
+      if (editedSpans.length > 0 && inSpans(node, editedSpans)) return;
       const childId = node.name ? model.imports.get(node.name) : undefined;
       const drop = childId ? dropped.get(childId) : undefined;
       if (drop && drop.size > 0) {
