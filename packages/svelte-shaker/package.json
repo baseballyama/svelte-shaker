@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "magic-string": "0.30.21",
-    "zimmerframe": "1.1.2"
+    "zimmerframe": "1.1.4"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "25.0.8",
