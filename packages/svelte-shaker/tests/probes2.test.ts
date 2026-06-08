@@ -83,13 +83,15 @@ async function expectSound(
 
 // ----------------------------------------------------------------------
 // 1. barrel-import: a child reached BOTH via a direct default import AND via a
-//    `.js` barrel re-export.  The barrel `<Comp/>` site is invisible to the
-//    value-set scan, so folding/narrowing on the visible site alone is unsound.
-//    The engine must bail the child.
+//    `.js` barrel re-export.  The Shell resolves the barrel `<ChildB/>` to the
+//    same `.svelte`, so BOTH sites are attributed to the child's value set — the
+//    set is complete and folding/narrowing on it is sound.  (Before, the barrel
+//    site was treated as invisible and the child was conservatively bailed.)
+//    The SSR oracle (`expectSound`) is what guarantees each transform is safe.
 // ----------------------------------------------------------------------
 
 describe('probe: barrel-import (mixed direct + barrel re-export)', () => {
-  it('mixed default+barrel narrowing: child is bailed, both variants render right', async () => {
+  it('mixed default+barrel narrowing: both sites attributed, dead arm narrowed away', async () => {
     const files = {
       '/App.svelte':
         `<script>\n` +
@@ -100,21 +102,22 @@ describe('probe: barrel-import (mixed direct + barrel re-export)', () => {
       '/lib.js': `export { default as Child } from "./Child.svelte";\n`,
       '/Child.svelte':
         `<script>\n  let { x = 0 } = $props();\n</script>\n` +
-        `{#if x === 1}<p>ONE</p>{:else if x === 2}<p>TWO</p>{:else}<p>?</p>{/if}\n`,
+        `{#if x === 1}<p>ONE</p>{:else if x === 2}<p>TWO</p>{:else if x === 3}<p>THREE</p>{:else}<p>?</p>{/if}\n`,
     };
     const { resolve, readFile } = memGraph(files);
     const { plans } = await analyze('/App.svelte', resolve, readFile);
     const plan = plans.get('/Child.svelte')!;
-    // The hidden barrel site makes the child unobservable -> full bail.
-    expect(plan.bail).toBe(true);
-    expect(plan.reasons.join()).toContain('barrel');
-    expect(plan.constFold.has('x')).toBe(false);
-    expect(plan.narrow.has('x')).toBe(false);
+    // The barrel `<ChildB x={2}/>` is now attributed, so x's full value set is
+    // {1, 2}: the child is NOT bailed and the `x === 3` arm narrows away.
+    expect(plan.bail).toBe(false);
+    expect(new Set(plan.narrow.get('x'))).toEqual(new Set([1, 2]));
 
     const out = await svelteShaker('/App.svelte', resolve, readFile);
-    // Both occurring values render the correct arm (x=2 must stay TWO).
+    // Both occurring values still render the correct arm; the unreachable
+    // `x === 3` arm is gone, while the `{:else}` stays (no exhaustiveness proof).
     await expectSound(out, readFile, '/Child.svelte', [{ x: 1 }, { x: 2 }]);
     expect(await renderHtml(out['/Child.svelte']!, { x: 2 }, 'Child.svelte')).toContain('TWO');
+    expect(out['/Child.svelte']!).not.toContain('THREE');
   });
 
   it('mixed default+barrel constFold+drop: barrel value keeps its branch', async () => {
@@ -138,7 +141,7 @@ describe('probe: barrel-import (mixed direct + barrel re-export)', () => {
     expect(shaken).toMatch(/let \{ label/);
   });
 
-  it('re-export of a local default import (`export { D as Child }`) also bails', async () => {
+  it('re-export of a local default import (`export { D as Child }`) is attributed and narrowed', async () => {
     const files = {
       '/App.svelte':
         `<script>\n` +
@@ -149,11 +152,13 @@ describe('probe: barrel-import (mixed direct + barrel re-export)', () => {
       '/lib.js': `import D from './Child.svelte';\nexport { D as Child };\n`,
       '/Child.svelte':
         `<script>\n  let { variant = 'primary' } = $props();\n</script>\n` +
-        `{#if variant === 'primary'}<b>P</b>{:else if variant === 'secondary'}<i>S</i>{:else}<u>O</u>{/if}\n`,
+        `{#if variant === 'primary'}<b>P</b>{:else if variant === 'secondary'}<i>S</i>{:else if variant === 'tertiary'}<u>T</u>{:else}<u>O</u>{/if}\n`,
     };
     const { resolve, readFile } = memGraph(files);
     const { plans } = await analyze('/App.svelte', resolve, readFile);
-    expect(plans.get('/Child.svelte')!.bail).toBe(true);
+    // The barrel re-export resolves to the same child, so both sites are seen and
+    // variant narrows to {primary, secondary}; the child is not bailed.
+    expect(plans.get('/Child.svelte')!.bail).toBe(false);
 
     const out = await svelteShaker('/App.svelte', resolve, readFile);
     await expectSound(out, readFile, '/Child.svelte', [
@@ -163,6 +168,8 @@ describe('probe: barrel-import (mixed direct + barrel re-export)', () => {
     expect(
       await renderHtml(out['/Child.svelte']!, { variant: 'secondary' }, 'Child.svelte'),
     ).toContain('S');
+    // The unreachable `variant === 'tertiary'` arm narrows away.
+    expect(out['/Child.svelte']!).not.toContain('>T<');
   });
 
   it('pure-barrel only (no direct import) still folds the directly-reached sibling', async () => {

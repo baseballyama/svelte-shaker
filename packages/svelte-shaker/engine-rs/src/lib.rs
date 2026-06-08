@@ -364,31 +364,21 @@ fn imported_locals(ast: &Value) -> HashSet<String> {
     set
 }
 
-/// Split the resolved outgoing edges of one component into the two local-name ->
-/// child-id maps the analysis reads: direct default-`.svelte` imports (which drive
-/// the value sets) and barrel/named imports (disjoint).
-fn edge_maps(edges: &Value) -> (HashMap<String, String>, HashMap<String, String>) {
+/// Build the tag-name -> child-id attribution map from a component's resolved
+/// outgoing edges.  Every edge kind (`default-svelte`, `barrel`, `namespace`) is
+/// attributable: its `local` is the exact tag a call site renders — a bare name
+/// (`Child`) or a dotted member (`ns.Child`) — so all of them feed the value sets.
+fn edge_imports(edges: &Value) -> HashMap<String, String> {
     let mut imports = HashMap::new();
-    let mut barrel = HashMap::new();
     for e in edges.as_array().map(Vec::as_slice).unwrap_or(&[]) {
-        let (local, to) = match (
+        if let (Some(l), Some(t)) = (
             e.get("local").and_then(Value::as_str),
             e.get("to").and_then(Value::as_str),
         ) {
-            (Some(l), Some(t)) => (l.to_string(), t.to_string()),
-            _ => continue,
-        };
-        match e.get("kind").and_then(Value::as_str) {
-            Some("default-svelte") => {
-                imports.insert(local, to);
-            }
-            Some("barrel") => {
-                barrel.insert(local, to);
-            }
-            _ => {}
+            imports.insert(l.to_string(), t.to_string());
         }
     }
-    (imports, barrel)
+    imports
 }
 
 /// Each `<Child .../>` this component renders that resolves to a default-`.svelte`
@@ -405,29 +395,54 @@ fn child_calls(ast: &Value, imports: &HashMap<String, String>) -> Vec<Value> {
     out
 }
 
-/// Barrel-resolved children this file actually RENDERS. Mirrors `collectBarrelChildIds`.
-fn barrel_child_ids(ast: &Value, barrel: &HashMap<String, String>) -> Vec<String> {
-    let mut out = Vec::new();
-    if barrel.is_empty() {
-        return out;
-    }
-    walk(get(ast, "fragment"), &mut |node| {
-        if str_eq(node, "type", "Component") {
-            if let Some(id) = node.get("name").and_then(Value::as_str).and_then(|n| barrel.get(n)) {
-                out.push(id.clone());
+/// Namespace import locals (`import * as ns`).  If `ns` is read as a value the
+/// whole namespace escapes, so every `ns.*` member must bail (see `flag_escape`).
+fn namespace_locals(ast: &Value) -> HashSet<String> {
+    let mut set = HashSet::new();
+    let body = get(get(ast, "instance"), "content");
+    for stmt in arr(body, "body") {
+        if str_eq(stmt, "type", "ImportDeclaration") {
+            for spec in arr(stmt, "specifiers") {
+                if str_eq(spec, "type", "ImportNamespaceSpecifier") {
+                    if let Some(n) = get(spec, "local").get("name").and_then(Value::as_str) {
+                        set.insert(n.to_string());
+                    }
+                }
             }
         }
-    });
-    sorted(out)
+    }
+    set
 }
 
-/// Imported components LEAKED as a value (escape, analyze.ts §4.1): a default-svelte
-/// import referenced as an ordinary value (e.g. `<svelte:component this={X}>` or
+/// Flag the component(s) a leaked local `name` escapes: the one it directly binds,
+/// plus — when `name` is a namespace object — every `ns.*` member it could render.
+fn flag_escape(
+    name: &str,
+    imports: &HashMap<String, String>,
+    namespace_locals: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    if let Some(id) = imports.get(name) {
+        push_unique(out, id);
+    }
+    if namespace_locals.contains(name) {
+        let prefix = format!("{name}.");
+        for (local, id) in imports {
+            if local.starts_with(&prefix) {
+                push_unique(out, id);
+            }
+        }
+    }
+}
+
+/// Imported components LEAKED as a value (escape, analyze.ts §4.1): an import
+/// referenced as an ordinary value (e.g. `<svelte:component this={X}>` or
 /// assigned/passed in the instance script) rather than only as a `<X .../>` tag.
 fn escaped_components(
     ast: &Value,
     imports: &HashMap<String, String>,
     imported: &HashSet<String>,
+    namespace_locals: &HashSet<String>,
 ) -> Vec<String> {
     let mut out = Vec::new();
     // Template: any imported local read as a value (the dominant `<svelte:component
@@ -436,9 +451,7 @@ fn escaped_components(
         if str_eq(node, "type", "Identifier") {
             if let Some(name) = node.get("name").and_then(Value::as_str) {
                 if imported.contains(name) && is_value_use(node, parent) {
-                    if let Some(id) = imports.get(name) {
-                        push_unique(&mut out, id);
-                    }
+                    flag_escape(name, imports, namespace_locals, &mut out);
                 }
             }
         }
@@ -448,10 +461,10 @@ fn escaped_components(
     walk_parented(get(ast, "instance"), None, &mut |node, parent| {
         if str_eq(node, "type", "Identifier") {
             if let Some(name) = node.get("name").and_then(Value::as_str) {
-                if imports.contains_key(name) && is_value_use(node, parent) {
-                    if let Some(id) = imports.get(name) {
-                        push_unique(&mut out, id);
-                    }
+                if (imports.contains_key(name) || namespace_locals.contains(name))
+                    && is_value_use(node, parent)
+                {
+                    flag_escape(name, imports, namespace_locals, &mut out);
                 }
             }
         }
@@ -462,8 +475,8 @@ fn escaped_components(
 /// Analyze one component AST (JSON) given its resolved outgoing edges (JSON), and
 /// return the per-file model fields ported so far: declared props, `...rest`
 /// presence, shadowed / `{@debug}` fold-blocking names, the `<svelte:options>`
-/// bail, the rendered child calls, barrel-rendered children, and escaped
-/// components. `{"error": "..."}` on malformed input.
+/// bail, the rendered child calls, and escaped components. `{"error": "..."}` on
+/// malformed input.
 #[wasm_bindgen]
 pub fn analyze_component(ast_json: &str, edges_json: &str) -> String {
     let ast: Value = match serde_json::from_str(ast_json) {
@@ -471,7 +484,7 @@ pub fn analyze_component(ast_json: &str, edges_json: &str) -> String {
         Err(e) => return json!({ "error": e.to_string() }).to_string(),
     };
     let edges: Value = serde_json::from_str(edges_json).unwrap_or(Value::Null);
-    let (imports, barrel) = edge_maps(&edges);
+    let imports = edge_imports(&edges);
     let (props, has_rest) = declared_props(&ast);
     let (shadowed, debug) = template_bindings(&ast);
     json!({
@@ -481,8 +494,7 @@ pub fn analyze_component(ast_json: &str, edges_json: &str) -> String {
         "debug": sorted(debug),
         "bail": component_bail(&ast),
         "childCalls": child_calls(&ast, &imports),
-        "barrelChildIds": barrel_child_ids(&ast, &barrel),
-        "escaped": escaped_components(&ast, &imports, &imported_locals(&ast)),
+        "escaped": escaped_components(&ast, &imports, &imported_locals(&ast), &namespace_locals(&ast)),
     })
     .to_string()
 }
@@ -495,7 +507,6 @@ pub fn analyze_component(ast_json: &str, edges_json: &str) -> String {
 // ======================================================================
 
 const ESCAPE_REASON: &str = "escapes as value (e.g. <svelte:component this={X}>)";
-const BARREL_REASON: &str = "rendered through a barrel/named import (call sites unobservable)";
 const MAX_FIXPOINT_ITERATIONS: usize = 10;
 
 type Span = (i64, i64);
@@ -1081,19 +1092,18 @@ fn collect_dead(node: &Value, env: &Env, set_env: &SetEnv, dead: &mut Vec<Span>)
 struct Model {
     id: String,
     ast: Value,
-    imports: HashMap<String, String>, // local -> childId (default-svelte), for call-site edits
+    imports: HashMap<String, String>, // tag name -> childId (all edge kinds), for call-site edits
     props_info: Option<PropsInfo>,
     shadowed: HashSet<String>,
     debug: HashSet<String>,
-    /// (childId, the `<Child/>` Component node) for every rendered direct child.
+    /// (childId, the `<Child/>` Component node) for every rendered child.
     child_calls: Vec<(String, Value)>,
     escaped: Vec<String>,
-    barrel: Vec<String>,
     bail_reasons: Vec<String>,
 }
 
 fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
-    let (imports, barrel_locals) = edge_maps(&Value::Array(edges.to_vec()));
+    let imports = edge_imports(&Value::Array(edges.to_vec()));
     let props_info = declared_props_full(&ast);
     let (shadowed_vec, debug_vec) = template_bindings(&ast);
     let mut bail_reasons = component_bail(&ast);
@@ -1109,8 +1119,7 @@ fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
         }
     });
     let imported = imported_locals(&ast);
-    let escaped = escaped_components(&ast, &imports, &imported);
-    let barrel = barrel_child_ids(&ast, &barrel_locals);
+    let escaped = escaped_components(&ast, &imports, &imported, &namespace_locals(&ast));
     Model {
         id: id.to_string(),
         ast,
@@ -1120,7 +1129,6 @@ fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
         debug: debug_vec.into_iter().collect(),
         child_calls,
         escaped,
-        barrel,
         bail_reasons,
     }
 }
@@ -1260,23 +1268,16 @@ pub fn analyze_program(input_json: &str) -> String {
         models.push(build_model_full(&id, ast, edges));
     }
 
-    // Program-wide escape/barrel bail (analyze.ts §4.1/§4.2).
+    // Program-wide escape bail (analyze.ts §4.1).
     let mut escaped = HashSet::new();
-    let mut barreled = HashSet::new();
     for m in &models {
         for id in &m.escaped {
             escaped.insert(id.clone());
-        }
-        for id in &m.barrel {
-            barreled.insert(id.clone());
         }
     }
     for m in &mut models {
         if escaped.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == ESCAPE_REASON) {
             m.bail_reasons.push(ESCAPE_REASON.to_string());
-        }
-        if barreled.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == BARREL_REASON) {
-            m.bail_reasons.push(BARREL_REASON.to_string());
         }
     }
 
@@ -1535,6 +1536,23 @@ fn fold_ref_for(node: &Value, parent: Option<&Value>, grandparent: Option<&Value
             }
         }
     }
+    // Object shorthand `{ NAME }`: a `Property` with `shorthand: true` whose single
+    // identifier is BOTH key and value.  Expand to `NAME: lit` (a plain replace would
+    // yield `{ "lit" }`, invalid).
+    if let Some(p) = parent {
+        if str_eq(p, "type", "Property")
+            && p.get("shorthand") == Some(&Value::Bool(true))
+            && same_node(get(p, "value"), node)
+        {
+            return FoldRef {
+                start,
+                end,
+                head: format!("{name}: "),
+                tail: String::new(),
+                name: name.to_string(),
+            };
+        }
+    }
     FoldRef { start, end, head: String::new(), tail: String::new(), name: name.to_string() }
 }
 
@@ -1552,18 +1570,32 @@ fn collect_prop_refs(model: &Model, env: &Env, dead: &[Span], edits: &MagicEdit)
     refs
 }
 
-fn remove_pattern_property(properties: &[Value], property: &Value, edits: &mut MagicEdit) {
-    let i = match properties.iter().position(|p| same_node(p, property)) {
-        Some(i) => i,
-        None => return,
-    };
-    if let Some(next) = properties.get(i + 1) {
-        edits.remove(off(property, "start") as usize, off(next, "start") as usize);
-    } else if i > 0 {
-        edits.remove(off(&properties[i - 1], "end") as usize, off(property, "end") as usize);
-    } else {
-        edits.remove(off(property, "start") as usize, off(property, "end") as usize);
+/// Delete the run of dropped destructuring properties `properties[lo..=hi]` together,
+/// absorbing the commas/whitespace so the result stays valid: eat forward to the next
+/// survivor when one follows; otherwise the run reaches the end, so include a trailing
+/// comma (but not the whitespace before `}`) and reach back to the previous survivor.
+fn remove_property_run(properties: &[Value], lo: usize, hi: usize, edits: &mut MagicEdit) {
+    let first = &properties[lo];
+    let last = &properties[hi];
+    if let Some(kept_after) = properties.get(hi + 1) {
+        edits.remove(off(first, "start") as usize, off(kept_after, "start") as usize);
+        return;
     }
+    let mut end = off(last, "end") as usize;
+    let len = edits.len();
+    let mut j = end;
+    while j < len && edits.unit_at(j).map(is_ws_u16) == Some(true) {
+        j += 1;
+    }
+    if edits.unit_at(j) == Some(b',' as u16) {
+        end = j + 1;
+    }
+    let start = if lo > 0 {
+        off(&properties[lo - 1], "end") as usize
+    } else {
+        off(first, "start") as usize
+    };
+    edits.remove(start, end);
 }
 
 fn remove_type_member(pattern: &Value, name: &str, edits: &mut MagicEdit) {
@@ -1626,12 +1658,30 @@ fn drop_props(model: &Model, drop: &HashSet<String>, edits: &mut MagicEdit) {
         return;
     }
     let properties = arr(&pi.pattern, "properties");
-    for decl in &pi.props {
-        if !drop.contains(&decl.name) {
+    // Remove each maximal RUN of consecutive dropped properties as one range so the
+    // separating commas tile cleanly (a per-property removal mishandles a trailing
+    // comma on the last property and overlaps on consecutive drops -> dangling `,`).
+    let dropped_flags: Vec<bool> = properties
+        .iter()
+        .map(|p| pi.props.iter().any(|d| same_node(&d.property, p) && drop.contains(&d.name)))
+        .collect();
+    let mut i = 0;
+    while i < properties.len() {
+        if !dropped_flags[i] {
+            i += 1;
             continue;
         }
-        remove_pattern_property(properties, &decl.property, edits);
-        remove_type_member(&pi.pattern, &decl.name, edits);
+        let mut hi = i;
+        while hi + 1 < properties.len() && dropped_flags[hi + 1] {
+            hi += 1;
+        }
+        remove_property_run(properties, i, hi, edits);
+        i = hi + 1;
+    }
+    for decl in &pi.props {
+        if drop.contains(&decl.name) {
+            remove_type_member(&pi.pattern, &decl.name, edits);
+        }
     }
 }
 
@@ -1663,11 +1713,21 @@ fn remove_attr_with_space(attr: &Value, edits: &mut MagicEdit) {
     edits.remove(start, off(attr, "end") as usize);
 }
 
-fn remove_call_site_attributes(model: &Model, dropped: &HashMap<String, HashSet<String>>, edits: &mut MagicEdit) {
+fn remove_call_site_attributes(
+    model: &Model,
+    dropped: &HashMap<String, HashSet<String>>,
+    edits: &mut MagicEdit,
+    edited_spans: &[Span],
+) {
     // Collect first (so we don't borrow the ast through `walk` while editing).
     let mut to_remove: Vec<Value> = Vec::new();
     walk(get(&model.ast, "fragment"), &mut |node| {
         if !str_eq(node, "type", "Component") {
+            return;
+        }
+        // Skip a `<Child/>` phase 1 folded away: its source (attributes included) is
+        // gone, so editing it now would overlap that edit.
+        if !edited_spans.is_empty() && in_spans(node, edited_spans) {
             return;
         }
         let drop = node
@@ -1876,7 +1936,13 @@ fn shake_css(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit) 
 
 /// Slim one component into `edits`, returning the props dropped from the
 /// `$props()` signature (mirrors `shakeBody`).
-fn shake_body(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit) -> HashSet<String> {
+fn shake_body(
+    model: &Model,
+    env: &Env,
+    set_env: &SetEnv,
+    edits: &mut MagicEdit,
+    out_dead: &mut Vec<Span>,
+) -> HashSet<String> {
     if env.is_empty() && set_env.is_empty() {
         return HashSet::new();
     }
@@ -1893,6 +1959,8 @@ fn shake_body(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit)
     let droppable: HashSet<String> = env.keys().cloned().collect();
     drop_props(model, &droppable, edits);
     shake_css(model, env, set_env, edits);
+    // Hand phase 2 the regions we edited so it never edits inside a folded-away branch.
+    out_dead.extend(dead.iter().copied());
     droppable
 }
 
@@ -1926,17 +1994,12 @@ pub fn shake_program(input_json: &str) -> String {
     }
 
     let mut escaped = HashSet::new();
-    let mut barreled = HashSet::new();
     for m in &models {
         escaped.extend(m.escaped.iter().cloned());
-        barreled.extend(m.barrel.iter().cloned());
     }
     for m in &mut models {
         if escaped.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == ESCAPE_REASON) {
             m.bail_reasons.push(ESCAPE_REASON.to_string());
-        }
-        if barreled.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == BARREL_REASON) {
-            m.bail_reasons.push(BARREL_REASON.to_string());
         }
     }
 
@@ -1945,21 +2008,27 @@ pub fn shake_program(input_json: &str) -> String {
     // Phase 1: fold each body and drop its folded props.
     let mut edits_map: HashMap<String, MagicEdit> = HashMap::new();
     let mut dropped: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::new();
     for model in &models {
         let plan = &plans[&model.id];
         let mut edits = MagicEdit::new(code_by_id.get(&model.id).map(String::as_str).unwrap_or(""));
+        let mut dead: Vec<Span> = Vec::new();
         let d = if plan.bail {
             HashSet::new()
         } else {
-            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits)
+            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead)
         };
         dropped.insert(model.id.clone(), d);
+        edited_spans.insert(model.id.clone(), dead);
         edits_map.insert(model.id.clone(), edits);
     }
-    // Phase 2: remove call-site attributes for props the child actually dropped.
+    // Phase 2: remove call-site attributes for props the child actually dropped,
+    // skipping any call site phase 1 folded away (its attributes went with it).
     for model in &models {
         if let Some(edits) = edits_map.get_mut(&model.id) {
-            remove_call_site_attributes(model, &dropped, edits);
+            let empty = Vec::new();
+            let spans = edited_spans.get(&model.id).unwrap_or(&empty);
+            remove_call_site_attributes(model, &dropped, edits, spans);
         }
     }
 
@@ -2063,7 +2132,7 @@ mod tests {
     }
 
     #[test]
-    fn barrel_child_only_when_rendered() {
+    fn barrel_rendered_child_is_attributed_as_a_call() {
         let ast = json!({
             "type": "Root", "instance": Value::Null,
             "fragment": { "type": "Fragment", "nodes": [
@@ -2071,6 +2140,28 @@ mod tests {
             ] }
         });
         let edges = r#"[{"local":"Lib","to":"/Lib.svelte","kind":"barrel"}]"#;
-        assert_eq!(analyze_edges(&ast, edges)["barrelChildIds"], json!(["/Lib.svelte"]));
+        // A barrel-imported `<Lib/>` is attributed as a normal child call now (so
+        // its value set is complete and it can fold), not bailed as unobservable.
+        assert_eq!(
+            analyze_edges(&ast, edges)["childCalls"],
+            json!([{ "childId": "/Lib.svelte", "start": 0, "end": 6 }])
+        );
+    }
+
+    #[test]
+    fn namespace_member_render_is_attributed_as_a_call() {
+        // `<ns.Lib/>` carries a dotted `name`; the Shell emits a `namespace` edge
+        // whose `local` is that exact tag, so the engine attributes it by lookup.
+        let ast = json!({
+            "type": "Root", "instance": Value::Null,
+            "fragment": { "type": "Fragment", "nodes": [
+                { "type": "Component", "name": "ns.Lib", "start": 0, "end": 9, "attributes": [], "fragment": { "nodes": [] } }
+            ] }
+        });
+        let edges = r#"[{"local":"ns.Lib","to":"/Lib.svelte","kind":"namespace"}]"#;
+        assert_eq!(
+            analyze_edges(&ast, edges)["childCalls"],
+            json!([{ "childId": "/Lib.svelte", "start": 0, "end": 9 }])
+        );
     }
 }

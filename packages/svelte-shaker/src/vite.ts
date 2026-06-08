@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plugin } from 'vite';
-import { svelteShaker, svelteShakerWithMono } from './index';
+import { svelteShaker, svelteShakerWithMono, type Resolve } from './index';
 import { DevShaker, type DevMode } from './engine';
 import { collectSvelteFiles, fsResolve } from './scan';
 import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono';
@@ -177,14 +177,35 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       }
       const read = (id: ComponentId) => fs.readFileSync(id, 'utf-8');
 
+      // Resolve relative imports straight off disk (fast, and the id matches what
+      // Vite hands `transform`), but send bare specifiers through Vite's resolver
+      // so a component library consumed as `@scope/ui` (the design-system shape) is
+      // crawled into the program and shaken instead of treated as an opaque
+      // external.  The arrow keeps `this` bound to the Rollup plugin context.
+      const resolve: Resolve = async (source, importer) => {
+        if (source.startsWith('.') || path.isAbsolute(source)) return fsResolve(source, importer);
+        // `this.resolve` THROWS for specifiers some plugin in the chain rejects
+        // (a types-only subpath like `svelte/elements`, a virtual id, etc.).  A
+        // specifier we cannot resolve is simply out of scope — never a build
+        // error — so swallow it and leave that barrel branch unfollowed.
+        let resolved: Awaited<ReturnType<typeof this.resolve>>;
+        try {
+          resolved = await this.resolve(source, importer);
+        } catch {
+          return null;
+        }
+        if (!resolved || resolved.external) return null;
+        return resolved.id.split('?')[0]!;
+      };
+
       if (!mono.enabled) {
         // Default path: byte-for-byte the L0/L1/L1.5 output (no L2 at all).
-        shaken = await svelteShaker(entries, fsResolve, read);
+        shaken = await svelteShaker(entries, resolve, read);
         variantSources = new Map();
         return;
       }
 
-      const result = await svelteShakerWithMono(entries, fsResolve, read, mono, variantSpecifier);
+      const result = await svelteShakerWithMono(entries, resolve, read, mono, variantSpecifier);
       shaken = result.files;
       variantSources = new Map();
       for (const v of result.mono.variants.values())

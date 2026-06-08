@@ -1,4 +1,5 @@
-import { analyze, type ReadFile, type Resolve } from './analyze';
+import { analyze, type FileModel, type ReadFile, type Resolve } from './analyze';
+import { parseSvelte } from './parse';
 import { transformAll, transformAllWithMono } from './transform';
 import {
   monomorphize,
@@ -45,7 +46,31 @@ export async function svelteShaker(
   readFile: ReadFile,
 ): Promise<Record<ComponentId, string>> {
   const { models, plans } = await analyze(entries, resolve, readFile);
-  return transformAll(models, plans);
+  return revertUnparseable(models, transformAll(models, plans));
+}
+
+/**
+ * Self-check the shaken output: if a component's slimmed source does not re-parse
+ * as valid Svelte, leave that file UNTOUCHED (revert to its original).  The engine
+ * aims to only ever emit valid, behavior-preserving source, so a parse failure is a
+ * transform bug — but this last line of defense keeps a single mishandled component
+ * shape from breaking the whole build, and reverting one file is always sound (it is
+ * just "did not shake this component").  Unchanged files are skipped (cheap).
+ */
+function revertUnparseable(
+  models: Map<ComponentId, FileModel>,
+  out: Record<ComponentId, string>,
+): Record<ComponentId, string> {
+  for (const [id, code] of Object.entries(out)) {
+    const model = models.get(id);
+    if (!model || code === model.code) continue;
+    try {
+      parseSvelte(code, id);
+    } catch {
+      out[id] = model.code;
+    }
+  }
+  return out;
 }
 
 /** The full output of a shake including L2 specialization. */
@@ -101,5 +126,5 @@ export async function svelteShakerWithMono(
           })),
           variantSpecifier,
         );
-  return { files, mono: result };
+  return { files: revertUnparseable(models, files), mono: result };
 }

@@ -41,7 +41,6 @@ interface ComponentFacts {
   debug: string[];
   bail: string[];
   childCalls: ChildCall[];
-  barrelChildIds: string[];
   escaped: string[];
 }
 
@@ -70,7 +69,6 @@ function tsFacts(
     childCalls: model.childCalls
       .map((c) => ({ childId: c.childId, start: c.node.start, end: c.node.end }))
       .sort(byStart),
-    barrelChildIds: [...model.barrelChildIds].sort(),
     escaped: [...model.escapedComponents].sort(),
   };
 }

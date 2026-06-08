@@ -31,7 +31,13 @@ export interface FileModel {
   id: ComponentId;
   code: string;
   ast: Root;
-  /** local import name (`Sub`) -> resolved child component id. */
+  /**
+   * Tag name a call site renders -> resolved child component id.  Holds every
+   * attributable edge into this file: a bare local for a direct `.svelte`
+   * default or a simple barrel/named import (`Sub`), and a dotted member for a
+   * namespace render (`ns.Sub`).  {@link collectChildCalls} keys `<Tag .../>`
+   * sites off this map, so every kind feeds the child's value set.
+   */
   imports: Map<string, ComponentId>;
   /** Declared props, or `null` if the component has no `$props()` pattern. */
   props: PropDecl[] | null;
@@ -68,17 +74,6 @@ export interface FileModel {
    * prop profile can no longer be observed from `<Child .../>` sites alone.
    */
   escapedComponents: Set<ComponentId>;
-  /**
-   * Resolved ids of CHILD components this file renders through an import we do
-   * NOT treat as a direct `.svelte` default (a named/namespace import, or a
-   * `.js`/`.ts` barrel re-exporting a `.svelte` default).  These `<Comp .../>`
-   * sites are invisible to {@link collectChildCalls} (whose attribution keys off
-   * the default-import `imports` map only), so the child's value set would omit
-   * them — folding/narrowing on a partial set is unsound (docs §4.2: every
-   * consumer must be enumerated).  `analyze` unions these across the program and
-   * bails every such child completely, just like an escape.
-   */
-  barrelChildIds: Set<ComponentId>;
   /** Reasons this whole component must be left untouched. */
   bailReasons: string[];
 }
@@ -131,10 +126,6 @@ const MAX_FIXPOINT_ITERATIONS = 10;
 /** Bail reason stamped on a component leaked as a value (docs §4.1 escape). */
 const ESCAPE_REASON = 'escapes as value (e.g. <svelte:component this={X}>)';
 
-/** Bail reason for a child rendered through an unobservable barrel/named import
- * (docs §4.2 — its `<Comp/>` sites cannot be attributed to the value set). */
-const BARREL_REASON = 'rendered through a barrel/named import (call sites unobservable)';
-
 /**
  * Crawl the component graph from `entries` and compute a plan per component,
  * iterating to a whole-program fixpoint (docs §2.1).
@@ -176,18 +167,6 @@ export function analyzeInput(input: AnalyzeInput, parseCache?: ParseCache): Anal
   for (const id of escaped) {
     const model = models.get(id);
     if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
-  }
-
-  // Barrel bail (docs §4.2): a child rendered through a barrel/named import has
-  // `<Comp/>` sites we cannot attribute to its value set (they key off the
-  // default-import map only).  Folding/narrowing on the visible sites alone is
-  // unsound — the hidden site might pass a different value — so we bail every
-  // such child completely, exactly like an escape.
-  const barreled = new Set<ComponentId>();
-  for (const model of models.values()) for (const id of model.barrelChildIds) barreled.add(id);
-  for (const id of barreled) {
-    const model = models.get(id);
-    if (model && !model.bailReasons.includes(BARREL_REASON)) model.bailReasons.push(BARREL_REASON);
   }
 
   // Round 0: every call site counts (no dead spans yet) — the plain, non-cascade
@@ -267,11 +246,18 @@ export async function buildAnalyzeInput(
     const instance = ast.instance;
     if (!instance) continue;
 
-    // Resolve this file's imports into default-`.svelte` edges and barrel edges,
-    // exactly as the old `buildModel` did inline.
+    // Resolve this file's imports into the three attributable edge kinds.  Direct
+    // default `.svelte` and simple barrel/named imports bind a bare local; a
+    // namespace import (`import * as ns`) binds no single component, so it is
+    // deferred to its rendered `<ns.X>` member tags below.
     const barrelLocals = new Map<string, ComponentId>();
+    const namespaceSources = new Map<string, string>();
     const directChildren: ComponentId[] = [];
     for (const imp of importSources(instance)) {
+      if (imp.imported === '*') {
+        namespaceSources.set(imp.local, imp.value);
+        continue;
+      }
       if (imp.imported === 'default' && isSvelte(imp.value)) {
         const childId = await resolve(imp.value, id);
         if (childId) {
@@ -287,10 +273,36 @@ export async function buildAnalyzeInput(
       }
     }
 
-    // Enqueue exactly the old crawl's set: every direct `.svelte` child, plus the
-    // barrel children this file renders.
+    // Namespace member renders (`<ns.X .../>`): resolve each `X` through the SAME
+    // barrel logic a named `import { X } from '@ui'` uses, so a member tag is
+    // attributed exactly when (and to the same component as) the equivalent named
+    // import would be — its success/failure is correlated, which is what keeps
+    // mixing the two forms sound.  The edge's `local` is the dotted tag the site
+    // renders, so the engine attributes `<ns.X .../>` by name lookup.
+    const nsChildren: ComponentId[] = [];
+    if (namespaceSources.size > 0) {
+      for (const tag of memberComponentTags(ast)) {
+        const dot = tag.indexOf('.');
+        const source = namespaceSources.get(tag.slice(0, dot));
+        if (source == null) continue;
+        const childId = await resolveThroughBarrel(
+          source,
+          tag.slice(dot + 1),
+          id,
+          resolve,
+          readFile,
+        );
+        if (childId) {
+          edges.push({ from: id, local: tag, to: childId, kind: 'namespace' });
+          nsChildren.push(childId);
+        }
+      }
+    }
+
+    // Enqueue every child this file renders: direct `.svelte`, the barrel children
+    // it renders, and the namespace members it renders.
     const rendered = collectBarrelChildIds(ast, barrelLocals);
-    for (const childId of [...directChildren, ...rendered]) {
+    for (const childId of [...directChildren, ...rendered, ...nsChildren]) {
       if (!seen.has(childId)) {
         seen.add(childId);
         queue.push(childId);
@@ -415,16 +427,14 @@ function buildModelFromInput(
 ): FileModel {
   const { id, code } = file;
   const ast = parseCached(id, code, parseCache);
-  // Reconstruct the import maps from the already-resolved edges (docs §2.1): the
-  // engine never resolves.  `default-svelte` edges drive the value sets; barrel
-  // edges (local -> child reached through a barrel/named import; disjoint from
-  // `imports`) exist only so a barrel-reached child can be bailed.
+  // Reconstruct the attribution map from the already-resolved edges (docs §2.1):
+  // the engine never resolves.  Every edge kind is attributable — its `local` is
+  // the exact tag a call site renders (a bare name for `default-svelte`/`barrel`,
+  // a dotted member for `namespace`) — so all of them feed the value sets through
+  // `collectChildCalls`.  The Shell already chased barrels/namespaces to the
+  // `.svelte` they render, so there is no per-edge resolution or bail left here.
   const imports = new Map<string, ComponentId>();
-  const barrelLocals = new Map<string, ComponentId>();
-  for (const edge of edges) {
-    if (edge.kind === 'default-svelte') imports.set(edge.local, edge.to);
-    else barrelLocals.set(edge.local, edge.to);
-  }
+  for (const edge of edges) imports.set(edge.local, edge.to);
   const bailReasons: string[] = [];
 
   // svelte:options accessors / customElement -> public props, never touchable.
@@ -448,9 +458,16 @@ function buildModelFromInput(
   // below.  Resolution already happened in the Shell ({@link buildAnalyzeInput});
   // here we only read names off the parse, no IO.
   const importedLocals = new Set<string>();
+  // Namespace import locals (`import * as ns`).  If `ns` itself is read as a value
+  // the whole namespace object escapes, so every `ns.*` component it could render
+  // must bail — `collectEscapedComponents` uses this to do so.
+  const namespaceLocals = new Set<string>();
   const instance = ast.instance;
   if (instance) {
-    for (const imp of importSources(instance)) importedLocals.add(imp.local);
+    for (const imp of importSources(instance)) {
+      importedLocals.add(imp.local);
+      if (imp.imported === '*') namespaceLocals.add(imp.local);
+    }
 
     const found = findPropsDeclaration(instance);
     if (found) {
@@ -482,11 +499,6 @@ function buildModelFromInput(
   }
 
   const childCalls = collectChildCalls(ast, imports);
-  // Barrel children actually RENDERED here (`<ChildB .../>` where `ChildB` is a
-  // barrel/named import resolving to a `.svelte`). We only taint a child whose
-  // sites we genuinely cannot attribute — a barrel import that is never rendered
-  // is harmless.
-  const barrelChildIds = collectBarrelChildIds(ast, barrelLocals);
   const { shadowedNames, debugNames } = collectTemplateBindings(ast, instance, propsDeclaration);
 
   // Escape detection (docs §4.1): an imported component referenced as a *value*
@@ -494,7 +506,7 @@ function buildModelFromInput(
   // stored) leaks to a use we cannot follow, so its prop profile is incomplete.
   // We surface that to the OWNING component of the escaped child via
   // `escapedComponents`; `analyze` turns it into a complete bail for that child.
-  const escapedComponents = collectEscapedComponents(ast, imports, importedLocals);
+  const escapedComponents = collectEscapedComponents(ast, imports, importedLocals, namespaceLocals);
 
   return {
     id,
@@ -509,7 +521,6 @@ function buildModelFromInput(
     shadowedNames,
     debugNames,
     escapedComponents,
-    barrelChildIds,
     bailReasons,
   };
 }
@@ -651,12 +662,19 @@ function collectEscapedComponents(
   ast: Root,
   imports: Map<string, ComponentId>,
   importedLocals: Set<string>,
+  namespaceLocals: Set<string>,
 ): Set<ComponentId> {
   const escaped = new Set<ComponentId>();
   const flag = (name: string | undefined) => {
     if (!name) return;
     const childId = imports.get(name);
     if (childId) escaped.add(childId);
+    // A namespace object (`import * as ns`) read as a value can render any of its
+    // members dynamically (`const C = ns.X; <svelte:component this={C}/>`), so
+    // every `ns.*` component we resolved must bail too.
+    if (namespaceLocals.has(name)) {
+      for (const [local, id] of imports) if (local.startsWith(`${name}.`)) escaped.add(id);
+    }
   };
 
   walk<{ parent: AnyNode | null }>(
@@ -688,7 +706,7 @@ function collectEscapedComponents(
           if (
             node.type === 'Identifier' &&
             node.name &&
-            imports.has(node.name) &&
+            (imports.has(node.name) || namespaceLocals.has(node.name)) &&
             isValueUse(node, state.parent) &&
             !isImportSpecifierPosition(state.parent)
           ) {
@@ -748,8 +766,9 @@ function collectChildCalls(ast: Root, imports: Map<string, ComponentId>): ChildC
 
 /**
  * The set of barrel-resolved children this file actually RENDERS as `<Comp/>`.
- * Only a rendered barrel local taints its child: an unused barrel import passes
- * nothing, so it cannot make a value set incomplete.
+ * Used by the Shell crawl to enqueue only the barrel children a file renders — an
+ * unused barrel import resolves to a component nothing instantiates, so following
+ * it would pull a never-rendered file into the program for no reason.
  */
 function collectBarrelChildIds(
   ast: Root,
@@ -765,6 +784,22 @@ function collectBarrelChildIds(
     },
   });
   return ids;
+}
+
+/**
+ * Every dotted component tag a file renders (`<ns.Child/>` -> `"ns.Child"`).  The
+ * Shell resolves each through its namespace import's barrel; bare `<Child/>` tags
+ * have no dot and are bound by the plain import maps instead.
+ */
+function memberComponentTags(ast: Root): Set<string> {
+  const tags = new Set<string>();
+  walk<null>(ast.fragment, null, {
+    Component(node, { next }) {
+      if (typeof node.name === 'string' && node.name.includes('.')) tags.add(node.name);
+      next();
+    },
+  });
+  return tags;
 }
 
 /**
@@ -1159,12 +1194,15 @@ function followLocalImport(
 
 /**
  * Parse a `.js`/`.ts` module's top-level body by reusing the Svelte parser via a
- * `<script module>` wrapper (the engine has no standalone JS parser).  Returns
+ * `<script module>` wrapper (the engine has no standalone JS parser).  `lang="ts"`
+ * is required so TypeScript barrels parse — `export type { … }`, type-only
+ * specifiers and annotations are the norm for a design-system's `index.ts`, and a
+ * plain JS parse throws on them, leaving the whole library unfollowed.  Returns
  * `null` if it cannot be parsed — callers then leave the barrel unfollowed.
  */
 function parseModuleBody(code: string, id: ComponentId): AnyNode[] | null {
   try {
-    const ast = parseSvelte(`<script module>\n${code}\n</script>`, id);
+    const ast = parseSvelte(`<script module lang="ts">\n${code}\n</script>`, id);
     return ast.module?.content?.body ?? null;
   } catch {
     return null;
