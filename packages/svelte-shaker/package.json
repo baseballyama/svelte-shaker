@@ -1,6 +1,6 @@
 {
   "name": "svelte-shaker",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Tree shaking for Svelte components",
   "keywords": [
     "dead-code-elimination",
