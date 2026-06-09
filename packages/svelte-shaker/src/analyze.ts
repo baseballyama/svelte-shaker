@@ -1,4 +1,12 @@
-import { parseCached, parseSvelte, walk, type AnyNode, type ParseCache, type Root } from './parse';
+import {
+  parseCached,
+  parseSvelte,
+  walk,
+  type AnyNode,
+  type Parse,
+  type ParseCache,
+  type Root,
+} from './parse';
 import {
   emptyPlan,
   type AnalyzeInput,
@@ -230,6 +238,7 @@ export async function buildAnalyzeInput(
   resolve: Resolve,
   readFile: ReadFile,
   parseCache?: ParseCache,
+  parse?: Parse,
 ): Promise<AnalyzeInput> {
   const entryList = Array.isArray(entries) ? [...entries] : [entries];
   const files: InputFile[] = [];
@@ -242,7 +251,7 @@ export async function buildAnalyzeInput(
     const code = await readFile(id);
     files.push({ id, code });
 
-    const ast = parseCached(id, code, parseCache);
+    const ast = parseCached(id, code, parseCache, parse);
     const instance = ast.instance;
     if (!instance) continue;
 

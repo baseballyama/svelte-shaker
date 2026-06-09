@@ -1,5 +1,12 @@
-import { analyze, type FileModel, type ReadFile, type Resolve } from './analyze';
-import { parseSvelte } from './parse';
+import {
+  analyze,
+  analyzeInput,
+  buildAnalyzeInput,
+  type FileModel,
+  type ReadFile,
+  type Resolve,
+} from './analyze';
+import { parseSvelte, type Parse, type ParseCache } from './parse';
 import { transformAll, transformAllWithMono } from './transform';
 import {
   monomorphize,
@@ -18,6 +25,7 @@ export type {
   EditResult,
 } from './ir';
 export type { Resolve, ReadFile } from './analyze';
+export type { Parse, Root } from './parse';
 export { analyze, analyzeInput, buildAnalyzeInput } from './analyze';
 export { DevShaker, type DevMode, type DevShakerChange } from './engine';
 export { transformAll, transformAllWithMono } from './transform';
@@ -44,9 +52,30 @@ export async function svelteShaker(
   entries: ComponentId | ComponentId[],
   resolve: Resolve,
   readFile: ReadFile,
+  parse?: Parse,
 ): Promise<Record<ComponentId, string>> {
-  const { models, plans } = await analyze(entries, resolve, readFile);
+  const { models, plans } = await analyzeWith(entries, resolve, readFile, parse);
   return revertUnparseable(models, transformAll(models, plans));
+}
+
+/**
+ * Crawl + analyze with an optional non-default parser ({@link Parse}).  When
+ * `parse` is given (the Vite plugin's `parser: 'rsvelte'` path), each file is
+ * parsed ONCE into a shared cache during the crawl and that cache is reused by the
+ * analysis — so the alternate parser drives the whole engine with no second parse.
+ * When omitted, this is exactly `analyze(entries, resolve, readFile)` (the default
+ * svelte/compiler path, byte-for-byte unchanged).
+ */
+async function analyzeWith(
+  entries: ComponentId | ComponentId[],
+  resolve: Resolve,
+  readFile: ReadFile,
+  parse: Parse | undefined,
+): ReturnType<typeof analyze> {
+  if (!parse) return analyze(entries, resolve, readFile);
+  const cache: ParseCache = new Map();
+  const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse);
+  return analyzeInput(input, cache);
 }
 
 /**
@@ -105,8 +134,9 @@ export async function svelteShakerWithMono(
   readFile: ReadFile,
   mono: MonomorphizeOptions = DEFAULT_MONO_OPTIONS,
   variantSpecifier: VariantSpecifier = (id) => id,
+  parse?: Parse,
 ): Promise<ShakeResult> {
-  const { models, plans } = await analyze(entries, resolve, readFile);
+  const { models, plans } = await analyzeWith(entries, resolve, readFile, parse);
   // Thread the shake entries through so the net-win gate can compute module
   // reachability from them (docs §3 L2, §13.2).
   const result = monomorphize(models, plans, mono, entries);

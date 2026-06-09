@@ -125,15 +125,28 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
     （下記）で、rsvelte 出力も compile 可・**SSR 等価**（`tests/rsvelte-diff.test.ts`）。
   - **既定は svelte/compiler のまま**。rsvelte は差分オラクルで検証する Rust 経路として導入し、default flip は
     下記ブロッカー解消後（M4/M5 で恒久差分オラクルとして常設）。
-  - **default flip のブロッカー（rsvelte 上流の小修正 2 件）**:
-    1. **TS 型ノード未実装** — rsvelte@0.6.1 は inline 型注釈（`{ x: boolean }`）を `members` の無い
-       `TSUnknownKeyword` stub で出すため、落とした prop の型メンバ除去（`transform.ts removeTypeMember`）が
-       no-op になり死んだ型テキストが残る（compile で消えるので挙動は健全、byte のみ差分）。rsvelte が完全な
-       TS 型ノードを出せば解消（M4/M5 でも同じ gap を踏むので上流で直すのが二度手間回避）。
-    2. **`parse` の wrapper 再エクスポート欠落** — `@rsvelte/vite-plugin-svelte-native@0.2.1`（native）は
-       `index.cjs` から `parse`/`parseEnvelope` を再エクスポートしておらず（型定義にはある）、native の高速
-       raw-transfer 経路は現状 raw binding 経由でしか使えない。WASM 経路（`@rsvelte/compiler`）は parse 可。
-  - **ゲート**: 差分オラクル緑（7 byte 一致 + 2 既知差分が SSR 等価）。既存テスト全緑・`dev:false` 挙動不変。
+  - **default flip のブロッカー（rsvelte 上流修正 3 件 → 全て✅解決済み。compiler 0.7.6 / native 0.2.3。
+    実速度は §6「上流修正後の再検証」: skipExpressionLoc 経路で実フル 1.46x）**:
+    0. ✅**【最重要・健全性】AST span が UTF-8 バイトオフセット**（[rsvelte#793](https://github.com/baseballyama/rsvelte/issues/793)・**修正済**）—
+       rsvelte は node の `start`/`end` を **UTF-8 バイト**で出すが、svelte/compiler・magic-string・JS エンジン全体は
+       **UTF-16 コードユニット**。ASCII のみなら一致するので**フィクスチャ（全 ASCII）では露見しない**が、非 ASCII
+       （日本語 UI 文字列＝nexus 全域）を含む実ファイルでは以降の span が全てズレ、誤った置換 or
+       `MagicString end is out of bounds` で**ハードクラッシュ**（実コーパス 474 ファイルで即発生）。**WASM・native 両方**。
+       ①②と違いこれは**正しさのバグ**（サイレント破損）。UTF-16 への remap が必須（OXC は内部 byte → svelte は出力時に
+       UTF-16 変換している。rsvelte も同じ remap が要る）。**これが解けない限り rsvelte parse は実コーパスで使えない**。
+    1. ✅**TS 型ノード未実装**（[rsvelte#791](https://github.com/baseballyama/rsvelte/issues/791)・**修正済**）— rsvelte@0.6.1 は
+       inline 型注釈（`{ x: boolean }`）を `members` の無い `TSUnknownKeyword` stub で出すため、落とした prop の
+       型メンバ除去（`transform.ts removeTypeMember`）が no-op になり死んだ型テキストが残る（compile で消えるので
+       挙動は健全、byte のみ差分）。**WASM `parse_svelte`・native `parse` の両方**が同じ stub を出す（共有エミッタ）。
+       rsvelte が完全な TS 型ノードを出せば解消（M4/M5 でも同じ gap を踏むので上流で直すのが二度手間回避）。
+    2. ✅**`parse` の wrapper 再エクスポート欠落**（[rsvelte#792](https://github.com/baseballyama/rsvelte/issues/792)・**修正済**）—
+       0.2.1 では `index.cjs` から `parse`/`parseEnvelope` が再エクスポートされておらず `parse-envelope.js`
+       （`decodeParseEnvelope`）も未出荷だった。0.2.3 で両方 export + decoder 出荷済み。
+  - **残課題（新規・envelope 経路のみ）**: [rsvelte#908](https://github.com/baseballyama/rsvelte/issues/908) — `decodeParseEnvelope`
+    が **typed-arrow body のサブツリーで byte offset のまま**（#793 の envelope 取りこぼし）。非 ASCII + 型付き arrow で破損
+    （318/474 file）。**JSON 経路（`parse`）は正常**なので実用上は JSON + skipExpressionLoc で 1.46x が得られる。envelope は
+    #908 解決後の上積み。
+  - **ゲート**: 差分オラクル緑（408/474 byte 一致 + 66 は SSR 等価な AST パリティ差）。既存テスト全緑・`dev:false` 挙動不変。
 
 - **M4（Rust ②）解析を Rust → WASM へ（差分オラクルで段階検証）**
   - **配布形態 = WASM（決定済み）**: `@rsvelte/compiler` と同方式。Rust エンジンは **rsvelte_core 非依存・自己完結**
@@ -198,9 +211,20 @@ rsvelte_core 非依存・serde_json + wasm-bindgen）、`@rsvelte/compiler`(WASM
 検証は完了したが、Rust エンジンを**出荷経路**にするのは別判断（後戻りしにくい）:
 
 1. **WASM 成果物の出荷 + 既定エンジンの切替**: 現状 `engine-rs/pkg` は commit のみで npm 未出荷（`files: dist`）。
-   Vite プラグインを WASM エンジンに繋ぐには pkg 出荷 + 実依存化が必要。byte 一致なので健全性ギャップは無いが、
-   wasm ロードコスト・perf 特性の評価が要る。
-2. **rsvelte パースの既定化**（M3）: rsvelte の TS 型ノード未実装 + `parse` 再エクスポート欠落の上流修正が前提。
+   byte 一致なので健全性ギャップは無いが、**速度目的では非推奨**：エンジン本体は全体の ~15%（183ms）に過ぎず、
+   WASM 化は境界マーシャリングで逆に遅くなる（§6）。Rust エンジンは「TS との恒久差分オラクル＝健全性の二重化」
+   としての価値に留める。
+2. ✅**rsvelte パース（native）の採用**（M3）— **実装済み（opt-in）**。上流修正 **4 件（#791/#792/#793/#916）は全て解決済み**
+   （compiler 0.7.8 / native 0.2.4）。実測で **native `parse({skipExpressionLoc:true})` + `JSON.parse` がフル 1.46x**（§6）。
+   - **opt-in `parser: 'rsvelte'`（既定 `svelte`）** を Vite プラグインに追加。`Parse` 注入を `parseCached`→`buildAnalyzeInput`
+     →`svelteShaker`/`svelteShakerWithMono`/`DevShaker` に通し、crawl と analysis で**共有 cache に 1 parse/file**。
+   - **必ず `skipExpressionLoc: true`**（loc 込みだとフル 0.72x まで沈む。エンジンは start/end しか見ないので出力は不変）。
+   - native は OPTIONAL peer。**explicit 指定で読めない時は throw**（silent fallback は「native 有無でバンドルが変わる」
+     再現性の罠なので避ける）。
+   - **健全性検証済み**: native 駆動の実コーパス **474/474 が compile 可**、svelte 差 22 は全て「native の方がよく shake」（SSR 等価）。
+   - **既定 flip は別判断**: 既定 'rsvelte' は未導入環境への silent fallback が必須＝再現性が崩れる + 出力が変わるので opt-in 据え置き。
+   - **envelope（さらに上積み）は [#908](https://github.com/baseballyama/rsvelte/issues/908) 解決待ち**。
+   - **WASM（0.61x）/ loc 込み native（0.72x）は不採用**。Rust/WASM エンジン化も速度目的では非推奨（上記 1）。
 3. **L2 モノモーフィズの Rust 化**、**sourcemap**（`TransformResult.map`）、**CI に `cargo test`+`build:wasm`
    （pinned toolchain）ジョブ追加**。
 4. **`<svelte:options>` accessors/customElement bail の発火**（M4 で記録した既存ギャップ）。
@@ -228,3 +252,85 @@ dev で素通しの安全性を捨てる代償への防御:
   高コスト。dev は L0/L1/L1.5 のみと文書化。
 - **sourcemap**: M5 まで dev のマップは近似。`TransformResult.map` 実体化で解消。
 - **未ロードモジュールの ModuleNode 不在**: `shaken` 更新は ModuleNode の有無と独立に常に行う。
+
+## 6. パース速度ベンチ（Option A の根拠・実測）
+
+「速度が最優先」という方針で、parse を rsvelte に差し替える Option A の効果を実コーパスで測定した。
+コーパスは nexus 実ビルドから捕捉した **474 `.svelte` / 3.1 MiB**（`/tmp/shaker-capture/input-474.json`）。
+5 pass・warm、parse のみ（解析/変換は除く）:
+
+| 経路 | ms/pass | µs/file | vs `svelte/compiler` |
+|---|---:|---:|---:|
+| `svelte/compiler` parse → object（現状の既定） | 996 | 2101 | 1.00x |
+| WASM `@rsvelte/compiler` `parse_svelte` + `JSON.parse` | 1643 | 3467 | **0.61x（遅い）** |
+| WASM `parse_svelte`（文字列のみ・JSON.parse 前） | 2871 | 6057 | 0.35x |
+| native `binding.parse` + `JSON.parse` | 817 | 1724 | 1.22x |
+| native `binding.parse`（文字列のみ） | 418 | 882 | 2.38x |
+| native `binding.parseEnvelope`（buffer・decode 前） | 465 | 982 | 2.14x |
+
+### フルパイプライン実測（parse → analyze → transform、同コーパス）
+
+parse 単体ではなくシェイク全体で測ると、parse がパイプラインの大半を占める一方、**JSON 経路では native の
+parse 速度優位がフルでは消える**ことが分かった（`tests/_bench_pipeline.test.ts` で実測。計測後に削除）:
+
+| フェーズ | ms/pass | 全体比 |
+|---|---:|---:|
+| `svelte/compiler` parse（cache seed） | 1044 | — |
+| `analyzeInput` + `transformAll`（パーサ非依存） | **183** | — |
+| **FULL（svelte/compiler）= parse+analyze+transform** | 1035 | 100% |
+| └ うち parse | ~1044 | **~85%** |
+| native parse（cache seed・JSON 経路） | 1083 | — |
+
+- **エンジン本体（解析+変換）はわずか 183ms**＝全体の ~15%。**ここを Rust/WASM 化しても全体は速くならない**
+  （しかも WASM 化は境界で遅くなる）。エンジンの Rust 化は速度目的では割に合わない（健全性の二重チェックとしては価値あり）。
+- **支配的なのは parse（~85%）**。だが **JSON 経路の native parse はフルパイプラインでほぼ break-even（1083 vs 1044ms）**。
+  単体ベンチで native parse が速かった分（文字列生成 418ms）は、**`JSON.parse`（~400ms）＋ AST 保持の確保コスト**で
+  相殺される。→ **JSON を介す限り、どのパーサでも頭打ち**。
+- 真の勝ち筋は **raw-transfer envelope（`parseEnvelope` + `decodeParseEnvelope`）で `JSON.parse` を丸ごと飛ばす**こと
+  だけ。envelope parse 単体は 465ms（2.14x）で、decode が JSON.parse より十分速ければフル ~1.5x が見込める。
+
+> ⚠️ この時点（rsvelte 0.6.1 / native 0.2.1）の結論は「投入不能」だった。下記「上流修正後の再検証」で**覆る**。
+
+- **WASM は parse でも遅い（0.61x）**。`shake_program`(WASM エンジン) が ~2x 遅かったのと同根（境界マーシャリング）。
+  → **Rust/WASM 化は速度の打ち手にならない**（この結論は不変）。
+- 当時の native+JSON はフルで break-even、envelope は出荷漏れ（#792）+ UTF-8 オフセット（#793）でそもそも動かなかった。
+
+### 上流修正後の再検証（compiler 0.7.6 / native 0.2.3、issue 全解決後）
+
+[#791](https://github.com/baseballyama/rsvelte/issues/791)（TS 型ツリー）・[#792](https://github.com/baseballyama/rsvelte/issues/792)
+（native `parse`/`parseEnvelope` 再エクスポート + decoder 出荷）・[#793](https://github.com/baseballyama/rsvelte/issues/793)
+（UTF-16 オフセット）が**全て修正された**ので、native 0.2.3 で再測定（`tests/_bench_native.test.ts`、計測後削除）。
+3 件とも実機で修正を確認済み（UTF-16 一致・完全 TS 型ツリー・`parse`/`parseEnvelope`/`decodeParseEnvelope` 出荷）。
+
+| 経路 | parse のみ | フルパイプライン | 健全性 |
+|---|---:|---:|---|
+| `svelte/compiler`（既定） | 1.00x | 1.00x | — |
+| native `parse` + `JSON.parse`（loc 込み） | 1.08–1.17x | **0.72x（遅い）** | クラッシュ無し |
+| **native `parse({skipExpressionLoc:true})` + `JSON.parse`** | **2.24x** | **1.46x** | **クラッシュ無し・loc 無視で出力不変（差分 0）** |
+| native `parseEnvelope` + `decodeParseEnvelope` | （理論上最速） | — | **[#908](https://github.com/baseballyama/rsvelte/issues/908) で破損**（typed-arrow body が byte offset・318/474 file 破損） |
+
+- **決め手は `skipExpressionLoc: true`**。native の JSON は**全ノードに `loc{line,column}` を載せる**ため、loc 込みだと
+  AST が肥大化しエンジンの walk が ~8x 遅くなり、フルで 0.72x まで沈む。**nested expression loc を落とすと AST が
+  軽量化**し、parse 2.24x・**フル 1.46x** の実速度向上。エンジンは `start`/`end` しか見ない（`loc` 不使用）ので
+  **skipExpressionLoc は出力に 0 影響**（native-JSON-with-loc と byte 一致を実証）。
+- **正当性**: native 駆動の shake は svelte/compiler 駆動と **474 中 408 が byte 一致**、残り 66 は**些細な AST 形状差**
+  （`root` end の off-by-one、svelte が `typeAnnotation: undefined` / CSS `args: null` を明示する所を native は key 省略）
+  に起因。**全て compile 可・SSR 等価**で、健全性問題ではなくパリティ磨きレベル。
+- **envelope（JSON.parse を飛ばす真の最速路）は新バグ [#908](https://github.com/baseballyama/rsvelte/issues/908) で当面不可**。
+  typed-arrow param があると arrow body 以降のサブツリーが byte offset のまま（#793 の envelope 取りこぼし）。解決すれば
+  1.46x からさらに上積み可能。
+
+**最新結論（Option A 実装済み・opt-in）**:
+
+- **native `parse({skipExpressionLoc:true})` + `JSON.parse` で実フル 1.46x**。クラッシュ無し・skipExprLoc は出力不変。
+  WASM（0.61x）でも loc 込み native（0.72x）でもなく、**この経路が現実解**。
+- **実装済み（opt-in `parser: 'rsvelte'`、既定 `svelte`）**: `parseCached`→`buildAnalyzeInput`→`svelteShaker`/`DevShaker`
+  に `Parse` を注入。crawl と analysis で**共有 cache に 1 parse/file**（既定 svelte 経路の二重 parse より効率的）。native は
+  OPTIONAL peer `@rsvelte/vite-plugin-svelte-native`、ローダーは node 専用 `rsvelte-parse.ts`（vite entry に同梱）。
+- **健全性（上流 #791/#792/#793/#916 全解決後、native 0.2.4）**: native 駆動の shake は実コーパス **474/474 が compile 可**。
+  svelte 駆動との差 22 は全て「native の方がよく shake（未渡し prop を undefined 畳み・冗長属性除去、SSR 等価）」。
+- **再現性のため explicit `parser:'rsvelte'` は native ロード失敗時に throw**（silent fallback だと「native 有無で
+  バンドルが変わる」罠になる）。
+- **既定 flip は別判断（follow-up）**: 既定を 'rsvelte' にすると未導入環境への silent fallback が要り再現性が崩れる + 出力が
+  変わる（より shake）ので、opt-in 据え置きが穏当。envelope（#908）解決でさらに高速化。エンジン本体の Rust/WASM 化は
+  **速度目的では非推奨**（全体の ~15%・境界で逆効果）。

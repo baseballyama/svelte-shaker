@@ -106,11 +106,19 @@ shaker({
   include: ['src'], // dirs (relative to root) holding every .svelte call site
   level: 1, //  0 | 1 | 2 — default 1 (L0/L1/L1.5 always on). 2 = opt-in L2.
   monomorphize: false, // L2 tuning; only consulted when level: 2.
+  parser: 'svelte', // 'svelte' (default) | 'rsvelte' — see below.
 });
 
 // Opt into L2 per-call-site monomorphization:
 shaker({ include: ['src'], level: 2, monomorphize: true });
 shaker({ include: ['src'], level: 2, monomorphize: { maxVariants: 16 } });
+
+// Opt into the faster rsvelte parser (~1.46x full build, ~2.2x parse).
+// Requires the optional peer `@rsvelte/vite-plugin-svelte-native` (install it
+// yourself). Soundness is unchanged — it only affects speed and, occasionally,
+// shakes a little more. If the native package can't load it THROWS (no silent
+// fallback) so the output stays the same on every machine.
+shaker({ include: ['src'], parser: 'rsvelte' });
 ```
 
 ## What it does

@@ -4,7 +4,14 @@ import resolve from '@rollup/plugin-node-resolve';
 import terser from '@rollup/plugin-terser';
 import { defineConfig } from 'rollup';
 
-const external = [/^svelte($|\/)/, /^node:/, 'vite', 'magic-string', 'zimmerframe'];
+const external = [
+  /^svelte($|\/)/,
+  /^node:/,
+  /^@rsvelte\//, // optional peer (native rsvelte parser), dynamically required
+  'vite',
+  'magic-string',
+  'zimmerframe',
+];
 
 export default defineConfig([
   {

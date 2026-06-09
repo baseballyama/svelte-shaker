@@ -1,6 +1,6 @@
 import { analyzeInput, buildAnalyzeInput, type ReadFile, type Resolve } from './analyze';
 import { transformAll } from './transform';
-import type { ParseCache } from './parse';
+import type { Parse, ParseCache } from './parse';
 import type { ComponentId, EditResult } from './ir';
 
 /**
@@ -44,6 +44,8 @@ export class DevShaker {
   private readonly resolve: Resolve;
   private readonly readFile: ReadFile;
   private readonly mode: DevMode;
+  /** Non-default parser (e.g. rsvelte), or `undefined` for svelte/compiler. */
+  private readonly parse: Parse | undefined;
 
   /** Content-keyed AST cache — only changed files re-parse (§2.2). */
   private readonly parseCache: ParseCache = new Map();
@@ -58,11 +60,13 @@ export class DevShaker {
     resolve: Resolve,
     readFile: ReadFile,
     mode: DevMode = 'incremental',
+    parse?: Parse,
   ) {
     for (const id of Array.isArray(files) ? files : [files]) this.entries.add(id);
     this.resolve = resolve;
     this.readFile = readFile;
     this.mode = mode;
+    this.parse = parse;
   }
 
   /** Full initial shake of the program.  Returns the slimmed source per file. */
@@ -125,8 +129,17 @@ export class DevShaker {
   private async shake(): Promise<Record<ComponentId, string>> {
     const useCache = this.mode === 'incremental';
     const read = useCache ? this.cachedReadFile : this.readFile;
-    const parseCache = useCache ? this.parseCache : undefined;
-    const input = await buildAnalyzeInput([...this.entries], this.resolve, read, parseCache);
+    // Share one cache between the crawl and the analysis so a non-default parser
+    // runs once per file (persistent in incremental, a throwaway in coarse). With
+    // the default parser this stays `undefined` in coarse mode — unchanged.
+    const parseCache = useCache ? this.parseCache : this.parse ? new Map() : undefined;
+    const input = await buildAnalyzeInput(
+      [...this.entries],
+      this.resolve,
+      read,
+      parseCache,
+      this.parse,
+    );
     const { models, plans } = analyzeInput(input, parseCache);
     return transformAll(models, plans);
   }

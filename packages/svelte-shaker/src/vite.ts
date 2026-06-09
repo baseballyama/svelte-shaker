@@ -1,10 +1,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plugin } from 'vite';
-import { svelteShaker, svelteShakerWithMono, type Resolve } from './index';
+import { svelteShaker, svelteShakerWithMono, type Parse, type Resolve } from './index';
 import { DevShaker, type DevMode } from './engine';
 import { collectSvelteFiles, fsResolve } from './scan';
 import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono';
+import { tryLoadRsvelteParser } from './rsvelte-parse';
 import type { ComponentId } from './ir';
 
 export interface ShakerOptions {
@@ -38,6 +39,19 @@ export interface ShakerOptions {
    * L2 is NOT applied in dev (L0/L1/L1.5 only — docs §5 risks).
    */
   dev?: false | DevMode;
+  /**
+   * Which parser feeds the engine (docs/RUST-MIGRATION.md §6).  Default
+   * `'svelte'` — svelte/compiler, byte-for-byte the established behavior.
+   * `'rsvelte'` uses rsvelte's native parser (the OPTIONAL peer
+   * `@rsvelte/vite-plugin-svelte-native`), which parses ~2.2x faster (full
+   * pipeline ~1.46x) and shakes a sound superset.  The engine reads only UTF-16
+   * `start`/`end`, so the choice never affects soundness — only speed and
+   * (occasionally) how much is shaken.  If `'rsvelte'` is requested but the native
+   * package can't be loaded (not installed, or no binary for this platform) the
+   * plugin THROWS rather than silently falling back, so the output stays
+   * deterministic across machines (install the peer on every build platform).
+   */
+  parser?: 'svelte' | 'rsvelte';
 }
 
 /** Query flag a specialized-variant `.svelte` request carries (see below). */
@@ -86,6 +100,31 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   /** The long-lived incremental engine, created in `configureServer` (serve only). */
   let devShaker: DevShaker | null = null;
 
+  // Resolve the parser ONCE (lazily, so the optional native package is only loaded
+  // when `parser: 'rsvelte'` is actually used). `undefined` means svelte/compiler.
+  // An explicit `parser: 'rsvelte'` that can't load THROWS rather than silently
+  // falling back to svelte/compiler: a silent fallback would make the same source
+  // shake differently depending on whether the optional native binary happens to be
+  // installed on this platform — a reproducibility footgun. Failing loudly keeps the
+  // chosen parser (and thus the output) deterministic.
+  let parseResolved = false;
+  let parse: Parse | undefined;
+  const getParse = (): Parse | undefined => {
+    if (parseResolved) return parse;
+    parseResolved = true;
+    if (options.parser === 'rsvelte') {
+      parse = tryLoadRsvelteParser() ?? undefined;
+      if (!parse)
+        throw new Error(
+          '[vite-plugin-svelte-shaker] parser: "rsvelte" was requested but the optional ' +
+            'peer `@rsvelte/vite-plugin-svelte-native` could not be loaded (not installed, or ' +
+            'no prebuilt binary for this platform). Install it on every build platform, or ' +
+            'remove `parser: "rsvelte"` to use svelte/compiler.',
+        );
+    }
+    return parse;
+  };
+
   /** The module specifier the rewritten owner imports a given variant from. */
   const variantSpecifier = (variantId: string): string => {
     // `variantId` is `<childPath>::v<n>`; turn it into a query request on the
@@ -116,7 +155,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       const dirs = (options.include ?? ['.']).map((p) => path.resolve(root, p));
       const entries = dirs.flatMap(collectSvelteFiles);
       const read = (id: ComponentId) => fs.readFileSync(id, 'utf-8');
-      devShaker = new DevShaker(entries, fsResolve, read, devMode);
+      devShaker = new DevShaker(entries, fsResolve, read, devMode, getParse());
       shaken = await devShaker.init();
 
       // A `.svelte` add/remove changes the call-site set (a new caller can
@@ -200,12 +239,19 @@ export function shaker(options: ShakerOptions = {}): Plugin {
 
       if (!mono.enabled) {
         // Default path: byte-for-byte the L0/L1/L1.5 output (no L2 at all).
-        shaken = await svelteShaker(entries, resolve, read);
+        shaken = await svelteShaker(entries, resolve, read, getParse());
         variantSources = new Map();
         return;
       }
 
-      const result = await svelteShakerWithMono(entries, resolve, read, mono, variantSpecifier);
+      const result = await svelteShakerWithMono(
+        entries,
+        resolve,
+        read,
+        mono,
+        variantSpecifier,
+        getParse(),
+      );
       shaken = result.files;
       variantSources = new Map();
       for (const v of result.mono.variants.values())
