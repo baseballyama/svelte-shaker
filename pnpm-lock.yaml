@@ -125,6 +125,9 @@ importers:
       '@rsvelte/compiler':
         specifier: 0.6.1
         version: 0.6.1
+      '@rsvelte/vite-plugin-svelte-native':
+        specifier: 0.2.4
+        version: 0.2.4
       '@sveltejs/vite-plugin-svelte':
         specifier: ^4
         version: 4.0.4(svelte@5.56.3)(vite@5.4.21(@types/node@20.12.12)(terser@5.48.0))
@@ -1224,8 +1227,18 @@ packages:
     cpu: [arm64]
     os: [darwin]
 
+  '@rsvelte/vite-plugin-svelte-native-darwin-arm64@0.2.5':
+    resolution: {integrity: sha512-V2VtcsaKlFqx8CiIreDjE3PXSBWnNCH4IHGZccpxp3/J3X4Bd7BVbK7PMjkTl1tZJd74YxdZVJubdNkDmR50tQ==}
+    cpu: [arm64]
+    os: [darwin]
+
   '@rsvelte/vite-plugin-svelte-native-darwin-x64@0.2.1':
     resolution: {integrity: sha512-FEyg8SaQGHKm7oFsAYmIfLvhtvTNBeZgYhMXXWA53oxlvqE8GKKXCquXGzlWIoKWJk1Bc4zXlHEqjq7yOEbtqg==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@rsvelte/vite-plugin-svelte-native-darwin-x64@0.2.5':
+    resolution: {integrity: sha512-qI2XCUvUdjDFi49Xg4nh9GVMfbJE5VYhpLQYSR+5lhvxaZSrsNdjjR9zgr1Z+ZDDwCnct+iPpwebuL5fAW1Ukg==}
     cpu: [x64]
     os: [darwin]
 
@@ -1234,8 +1247,18 @@ packages:
     cpu: [arm64]
     os: [linux]
 
+  '@rsvelte/vite-plugin-svelte-native-linux-arm64-gnu@0.2.5':
+    resolution: {integrity: sha512-gXPgEq8UbEiXrpknL/sP28xKvMJS1duBLXSFdKmGc6Ay3W4CHBP29OTWJrwoVCfCUiCvhEoR0HiiYtiIBYswfA==}
+    cpu: [arm64]
+    os: [linux]
+
   '@rsvelte/vite-plugin-svelte-native-linux-x64-gnu@0.2.1':
     resolution: {integrity: sha512-RgNHI2F9Ah6VoC1fZAvGz8I4wQXHrckJ79snDXpRyPM+R2cMhqKOinkN2etTmOIY3GEfP4uYPpTqByQy+bjXrA==}
+    cpu: [x64]
+    os: [linux]
+
+  '@rsvelte/vite-plugin-svelte-native-linux-x64-gnu@0.2.5':
+    resolution: {integrity: sha512-MzVRChE/LlCWDTRheaeJe3kos5cxl+hc3dKl8Jmena8wW0Nu4HIRcm3y8T+pUFknN8cVwj8fcHjHK29mGKMUMw==}
     cpu: [x64]
     os: [linux]
 
@@ -1244,8 +1267,16 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@rsvelte/vite-plugin-svelte-native-win32-x64-msvc@0.2.5':
+    resolution: {integrity: sha512-rLxut6i91URKsovX8fzLsuM0Hs5F24W+LWWfU9s54CJ95v021HI/lJZRk07fw1y+b7xJB+YtI59UiGBOQFx7pA==}
+    cpu: [x64]
+    os: [win32]
+
   '@rsvelte/vite-plugin-svelte-native@0.2.1':
     resolution: {integrity: sha512-aDrZnw92uFbTuEGkZKgHiwQ/G44H4ujMzxPsHEDydAwu7supTpV3L3QcLucVkHUYteBp/oNsJMXvuY3BQa3Ypw==}
+
+  '@rsvelte/vite-plugin-svelte-native@0.2.4':
+    resolution: {integrity: sha512-2+JyfwzCEDPGJuyQkXNGC3SoBb2tbxvCGC6USR46U+d3K4NqpPh94GV5Xhbt8tNetVT8bdCFb7bAtEUK/oYO/g==}
 
   '@rsvelte/vite-plugin-svelte@0.3.0':
     resolution: {integrity: sha512-uZkhsK3LC3me/EXjZoCRXdZDpEEo+cbzPVcBXnfdy14OAbtGbKCtdzU8N9L6nUYyba4DVOHQJUHDvQ8vf5qPnA==}
@@ -3120,16 +3151,31 @@ snapshots:
   '@rsvelte/vite-plugin-svelte-native-darwin-arm64@0.2.1':
     optional: true
 
+  '@rsvelte/vite-plugin-svelte-native-darwin-arm64@0.2.5':
+    optional: true
+
   '@rsvelte/vite-plugin-svelte-native-darwin-x64@0.2.1':
+    optional: true
+
+  '@rsvelte/vite-plugin-svelte-native-darwin-x64@0.2.5':
     optional: true
 
   '@rsvelte/vite-plugin-svelte-native-linux-arm64-gnu@0.2.1':
     optional: true
 
+  '@rsvelte/vite-plugin-svelte-native-linux-arm64-gnu@0.2.5':
+    optional: true
+
   '@rsvelte/vite-plugin-svelte-native-linux-x64-gnu@0.2.1':
     optional: true
 
+  '@rsvelte/vite-plugin-svelte-native-linux-x64-gnu@0.2.5':
+    optional: true
+
   '@rsvelte/vite-plugin-svelte-native-win32-x64-msvc@0.2.1':
+    optional: true
+
+  '@rsvelte/vite-plugin-svelte-native-win32-x64-msvc@0.2.5':
     optional: true
 
   '@rsvelte/vite-plugin-svelte-native@0.2.1':
@@ -3139,6 +3185,14 @@ snapshots:
       '@rsvelte/vite-plugin-svelte-native-linux-arm64-gnu': 0.2.1
       '@rsvelte/vite-plugin-svelte-native-linux-x64-gnu': 0.2.1
       '@rsvelte/vite-plugin-svelte-native-win32-x64-msvc': 0.2.1
+
+  '@rsvelte/vite-plugin-svelte-native@0.2.4':
+    optionalDependencies:
+      '@rsvelte/vite-plugin-svelte-native-darwin-arm64': 0.2.5
+      '@rsvelte/vite-plugin-svelte-native-darwin-x64': 0.2.5
+      '@rsvelte/vite-plugin-svelte-native-linux-arm64-gnu': 0.2.5
+      '@rsvelte/vite-plugin-svelte-native-linux-x64-gnu': 0.2.5
+      '@rsvelte/vite-plugin-svelte-native-win32-x64-msvc': 0.2.5
 
   '@rsvelte/vite-plugin-svelte@0.3.0(@rsvelte/vite-plugin-svelte@0.3.0)(svelte@5.56.3)(vite@6.4.3(@types/node@20.12.12)(terser@5.48.0)(tsx@4.22.4))':
     dependencies:

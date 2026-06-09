@@ -102,11 +102,25 @@ export function parseSvelte(code: string, filename: string): Root {
  */
 export type ParseCache = Map<string, { code: string; ast: Root }>;
 
-export function parseCached(filename: string, code: string, cache?: ParseCache): Root {
-  if (!cache) return parseSvelte(code, filename);
+/**
+ * A `.svelte` -> modern-AST parser, swappable for the default {@link parseSvelte}
+ * (svelte/compiler).  The engine reads only the AST it returns, so any parser that
+ * emits svelte/compiler's modern shape (UTF-16 `start`/`end`) can drive it — the
+ * Vite plugin's `parser: 'rsvelte'` option supplies rsvelte's native parser here
+ * (docs/RUST-MIGRATION.md §6).
+ */
+export type Parse = (code: string, filename: string) => Root;
+
+export function parseCached(
+  filename: string,
+  code: string,
+  cache?: ParseCache,
+  parse: Parse = parseSvelte,
+): Root {
+  if (!cache) return parse(code, filename);
   const hit = cache.get(filename);
   if (hit && hit.code === code) return hit.ast;
-  const ast = parseSvelte(code, filename);
+  const ast = parse(code, filename);
   cache.set(filename, { code, ast });
   return ast;
 }

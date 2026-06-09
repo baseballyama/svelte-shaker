@@ -66,6 +66,7 @@
     "@rollup/plugin-terser": "0.4.4",
     "@rollup/plugin-typescript": "11.1.6",
     "@rsvelte/compiler": "0.6.1",
+    "@rsvelte/vite-plugin-svelte-native": "0.2.4",
     "@sveltejs/vite-plugin-svelte": "^4",
     "rollup": "4.18.0",
     "svelte": "^5",
@@ -73,7 +74,13 @@
     "vite": "^5"
   },
   "peerDependencies": {
+    "@rsvelte/vite-plugin-svelte-native": ">=0.2.4",
     "svelte": "^5"
+  },
+  "peerDependenciesMeta": {
+    "@rsvelte/vite-plugin-svelte-native": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=22"
