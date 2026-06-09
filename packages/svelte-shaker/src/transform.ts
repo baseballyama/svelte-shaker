@@ -629,6 +629,18 @@ function isNonReference(node: AnyNode, parent: AnyNode | null): boolean {
     parent.shorthand !== true
   )
     return true;
+  // TS type-member name (`interface Props { NAME?: T }` / a `{ NAME: T }` type
+  // literal / a method signature). The key is a member NAME in a type position,
+  // never a value read of a prop, so folding a same-named prop's literal into it
+  // would corrupt the type (`width?: number` -> `36?: number`). Type text is erased
+  // at compile, so the old behavior was byte-wrong but not a runtime fault — still,
+  // the type member must keep its name. (`computed` keys `[expr]` ARE value reads.)
+  if (
+    (parent.type === 'TSPropertySignature' || parent.type === 'TSMethodSignature') &&
+    parent.key === node &&
+    !parent.computed
+  )
+    return true;
   // Import / export specifier slots are MODULE-EXPORT names, never a read of a
   // local prop value (`import { count as store }` -> `count` is the module's
   // export, not our prop).  Substituting a literal there is invalid syntax, so

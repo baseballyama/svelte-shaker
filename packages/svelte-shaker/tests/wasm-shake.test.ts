@@ -92,4 +92,38 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     expect(viaRust['/Sub.svelte']).toContain('さようなら');
     expect(viaRust['/Sub.svelte']).not.toContain('アイコン');
   });
+
+  it('TS interface-member keys are not folded (Rust matches the fixed TS engine)', async () => {
+    // Mirrors transform-robustness's interface-key guard: the Rust engine's
+    // `is_non_reference` must also skip a `TSPropertySignature` key, or it would
+    // corrupt `width?: number` -> `36?: number` and diverge from the TS engine.
+    const files: Record<string, string> = {
+      '/App.svelte': `<script lang="ts">\n  import Child from './Child.svelte';\n</script>\n<Child />`,
+      '/Child.svelte': `<script lang="ts">\n  interface Props {\n    width?: number;\n    height?: number;\n  }\n  const { width = 36, height = 20 }: Props = $props();\n</script>\n<p>{width}{height}</p>`,
+    };
+    const resolve = (source: string, importer: string): string | null => {
+      if (!source.startsWith('.')) return null;
+      const base = importer.slice(0, importer.lastIndexOf('/'));
+      const parts: string[] = [];
+      for (const seg of `${base}/${source}`.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return `/${parts.join('/')}`;
+    };
+    const readFile = (id: string): string => files[id]!;
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const programInput = {
+      files: input.files.map((f) => ({ id: f.id, ast: parseSvelte(f.code, f.id), code: f.code })),
+      edges: input.edges,
+      entries: input.entries,
+    };
+    const viaRust = JSON.parse(wasm.shake_program(JSON.stringify(programInput)));
+    const viaTs = await svelteShaker('/App.svelte', resolve, readFile);
+    expect(viaRust).toEqual(viaTs);
+    expect(viaRust['/Child.svelte']).toContain('width?: number');
+    expect(viaRust['/Child.svelte']).not.toContain('36?: number');
+  });
 });
