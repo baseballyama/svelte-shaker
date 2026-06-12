@@ -1,7 +1,7 @@
 import MagicString from 'magic-string';
 import { walk, type AnyNode } from './parse';
 import type { ComponentId, ComponentPlan, Literal } from './ir';
-import type { FileModel } from './analyze';
+import { remapToLocalNames, type FileModel } from './analyze';
 import { decideChain, inSpans, type Span } from './dead';
 import { evaluate } from './eval';
 import { shakeCss } from './css';
@@ -263,10 +263,19 @@ export function shakeBody(
   if (env.size === 0 && setEnv.size === 0) return new Set();
   const code = model.code;
 
+  // `env`/`setEnv` arrive keyed by the EXTERNAL prop name (that is what the plan
+  // and the L2 call-site shapes carry).  Every body/template reference, however,
+  // uses the prop's LOCAL binding name (`prop: alias` -> `alias`), and the two can
+  // even be different entities (a same-named import).  Remap ONCE to local-keyed
+  // maps for every name-matched pass below (branch folding, ternaries, reference
+  // substitution, CSS); the `$props()` signature drop keeps the external names.
+  const localEnv = remapToLocalNames(env, model);
+  const localSetEnv = remapToLocalNames(setEnv, model);
+
   // (1) Fold `{#if <const>}` blocks (L1) and narrow if/else-if chains against
   // the known value sets (L1.5); remember every region we deleted/unwrapped.
   const dead: Span[] = [];
-  foldIfBlocks(model.ast.fragment, env, setEnv, code, s, dead);
+  foldIfBlocks(model.ast.fragment, localEnv, localSetEnv, code, s, dead);
 
   // (1b) Fold template ternaries `{cond ? a : b}` whose `cond` is a provable
   // constant down to the taken arm.  This runs BEFORE substitution: the taken
@@ -274,22 +283,24 @@ export function shakeBody(
   // substitution pass below leaves identifiers inside it alone (a sub-range
   // overwrite inside an already-overwritten span would conflict in MagicString).
   // Mirrors the `{#if}` "collapse to a kept fragment verbatim" handling.
-  foldTernaries(model.ast.fragment, env, code, s, dead);
+  foldTernaries(model.ast.fragment, localEnv, code, s, dead);
 
   // (2) Substitute any surviving references to a folded prop with its literal.
   // Narrowed (set) props are genuinely dynamic and are NOT substituted; we only
-  // walk `env` (constFold). Substitution still reaches references inside KEPT
+  // walk `localEnv` (constFold). Substitution still reaches references inside KEPT
   // narrowed arms because those arms are left as original text (only dead arms
   // are removed), so a constFold prop used inside a surviving arm is handled.
-  const refs = collectPropRefs(model, env, dead);
-  for (const [name, value] of env) {
+  const refs = collectPropRefs(model, localEnv, dead);
+  for (const [name, value] of localEnv) {
     const lit = literalSource(value);
     for (const ref of refs.get(name) ?? [])
       s.overwrite(ref.start, ref.end, ref.head + lit + ref.tail);
   }
 
   // (3) Drop only the folded (constFold) props from the `$props()` signature.
-  // Narrowed props stay in the signature — they are still used/dynamic.
+  // Narrowed props stay in the signature — they are still used/dynamic.  The drop
+  // matches the destructure KEYS, so it keeps the EXTERNAL names (which is also
+  // what phase 2's call-site attribute removal consumes).
   const droppable = new Set(env.keys()); // every surviving ref is an expression position
   dropProps(model, droppable, s);
 
@@ -303,10 +314,12 @@ export function shakeBody(
   // `constFold`/`narrow` are the ENVIRONMENTS we actually folded with (for L2 a
   // call site's extra literals shrink the possible class set further), reusing
   // `cssPlan` for everything else (id, valueSets of untouched props).
+  // CSS matches the value-set maps against TEMPLATE identifiers (`class={alias}`),
+  // so it too reads the LOCAL-keyed environments.
   const cssView: ComponentPlan = {
     ...cssPlan,
-    constFold: env,
-    narrow: setEnv,
+    constFold: localEnv,
+    narrow: localSetEnv,
   };
   shakeCss(model, cssView, s);
 
