@@ -1,9 +1,7 @@
 <script lang="ts">
 </script>
 
-
-  <p>always shown</p>
-
+<p>always shown</p>
 
 
 

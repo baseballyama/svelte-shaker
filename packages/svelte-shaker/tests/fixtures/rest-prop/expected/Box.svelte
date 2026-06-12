@@ -6,8 +6,6 @@
 </script>
 
 <div {...rest}>
-  
-    <span>hidden flag is set</span>
-  
+  <span>hidden flag is set</span>
   <p>Box content</p>
 </div>

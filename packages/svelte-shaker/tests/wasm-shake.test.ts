@@ -40,6 +40,8 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     'basic1',
     'cascade',
     'css-variant',
+    'drop-trailing-run',
+    'fold-alias',
     'fold-nested',
     'fold-shorthand',
     'fold-ternary',
@@ -47,6 +49,9 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     'narrow-variant',
     'rest-prop',
     'spread-after',
+    'ws-compensate',
+    'ws-kept-arm',
+    'ws-pre',
   ]) {
     it(`${name}: full shaken output matches the TS engine`, async () => {
       const entry = join(FIXTURES, name, 'input', 'App.svelte');

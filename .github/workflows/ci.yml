@@ -50,6 +50,13 @@ jobs:
       - name: Build example (end-to-end shake)
         run: pnpm --filter example build
 
+      # Differential SSR harness: builds the app twice (with and without the
+      # shaker) and asserts byte-equal HTML.  Placed in `static` because the
+      # engine is already built here; running it in the `test` matrix would
+      # require rebuilding the engine for every Node version unnecessarily.
+      - name: E2E differential SSR test
+        run: pnpm --filter e2e test
+
       - name: Check site (@rsvelte/svelte-check)
         run: pnpm --filter site check
 

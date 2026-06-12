@@ -27,7 +27,19 @@ export type ReadFile = (id: ComponentId) => Promise<string> | string;
 
 /** One declared prop in a `$props()` destructuring. */
 export interface PropDecl {
+  /** The EXTERNAL prop name — the destructure KEY (`prop` in `prop: alias`).
+   * Call sites pass this name, so value sets / dropping key off it. */
   name: string;
+  /**
+   * The LOCAL binding name the entry introduces in the body — the destructure
+   * VALUE (`alias` in `prop: alias`, or the bare name for a shorthand `prop`),
+   * or `null` when the entry binds a NESTED pattern (`prop: { x }`) rather than a
+   * single identifier.  Body and template references use THIS name, not {@link
+   * name}, so folding/substitution must look props up by it (`prop` and its alias
+   * `alias` can even be different entities — e.g. a same-named import).  A `null`
+   * local is never foldable: there is no single identifier to substitute or drop.
+   */
+  local: string | null;
   /** The `Property` node inside the `ObjectPattern` (for surgical removal). */
   property: AnyNode;
   /** Default value expression, if `name = <default>`. */
@@ -423,8 +435,40 @@ export function deadSpansForPlans(
   for (const model of models.values()) {
     const plan = plans.get(model.id)!;
     if (plan.bail) continue;
-    const spans = computeDeadSpans(model.ast.fragment, plan.constFold, plan.narrow);
+    // Dead spans are derived from the TEMPLATE, which references props by their
+    // LOCAL binding name — so the fold/narrow maps (keyed by external prop name)
+    // must be remapped here.  This MUST match the transform's own remap exactly,
+    // or the fixpoint and the edit could disagree on what folds (unsound).
+    const spans = computeDeadSpans(
+      model.ast.fragment,
+      remapToLocalNames(plan.constFold, model),
+      remapToLocalNames(plan.narrow, model),
+    );
     if (spans.length > 0) out.set(model.id, spans);
+  }
+  return out;
+}
+
+/**
+ * Remap a plan map keyed by EXTERNAL prop name (`constFold` / `narrow`) to one
+ * keyed by the LOCAL binding name each prop introduces.  Call-site analysis and
+ * call-site attribute dropping work off the external name (`prop` in `prop:
+ * alias`), but every body/template reference uses the local name (`alias`), so
+ * substitution, branch folding and CSS must look values up by local.  A prop in
+ * `constFold`/`narrow` always has a single-identifier local by construction
+ * ({@link buildPlan} never folds a `null`-local or shadowed prop), so every entry
+ * maps cleanly; an external name with no matching declared local is dropped.
+ */
+export function remapToLocalNames<V>(map: Map<string, V>, model: FileModel): Map<string, V> {
+  if (map.size === 0) return map; // common case: nothing folds — share the empty map
+  const localByName = new Map<string, string>();
+  for (const decl of model.props ?? []) {
+    if (decl.local !== null) localByName.set(decl.name, decl.local);
+  }
+  const out = new Map<string, V>();
+  for (const [name, value] of map) {
+    const local = localByName.get(name);
+    if (local !== undefined) out.set(local, value);
   }
   return out;
 }
@@ -500,9 +544,22 @@ function buildModelFromInput(
         if (p.type !== 'Property') continue;
         const key = p.key;
         if (key?.type !== 'Identifier' || !key.name) continue;
+        // The destructure VALUE is the local binding.  A bare identifier (`prop`
+        // shorthand, or `prop: alias`) binds that one name; an `AssignmentPattern`
+        // (`prop = d` / `prop: alias = d`) binds its LEFT and carries the default;
+        // anything else (a nested Object/Array pattern, with or without default)
+        // binds no single identifier, so `local` is `null` and the prop is never
+        // foldable.
         const value = p.value as AnyNode | undefined;
-        const defaultExpr = value?.type === 'AssignmentPattern' ? value.right : undefined;
-        props.push({ name: key.name, property: p, defaultExpr });
+        let local: string | null = null;
+        let defaultExpr: AnyNode | undefined;
+        if (value?.type === 'Identifier') {
+          local = value.name ?? null;
+        } else if (value?.type === 'AssignmentPattern') {
+          defaultExpr = value.right;
+          if (value.left?.type === 'Identifier') local = value.left.name ?? null;
+        }
+        props.push({ name: key.name, local, property: p, defaultExpr });
       }
     }
   }
@@ -959,9 +1016,13 @@ function buildPlan(model: FileModel, u: Usage | undefined): ComponentPlan {
   if (sites.length === 0) return plan; // entry / unused: leave as-is
 
   for (const decl of model.props) {
-    // A name also bound elsewhere is a different entity — folding it corrupts
-    // that binding. L2 specialization honors the SAME predicate (see mono.ts).
-    if (isFoldBlockedName(model, decl.name)) continue;
+    // A `null` local is a nested-pattern entry (`prop: { x }`): there is no single
+    // identifier to substitute or drop, so it is never foldable — folding it would
+    // delete the inner binding.  The shadow guard tests the LOCAL name (the entity
+    // the body actually references): a name also bound elsewhere is a different
+    // entity, so folding it corrupts that binding.  L2 specialization honors the
+    // SAME two predicates (see mono.ts).
+    if (decl.local === null || isFoldBlockedName(model, decl.local)) continue;
 
     const set = valueSetFor(decl, sites);
     plan.valueSets.set(decl.name, set);

@@ -28,8 +28,35 @@ export function cleanTmp(): void {
  * normalized.  This is the soundness oracle: shaking must not change what a
  * user sees, even though it deliberately changes the framework-internal markers
  * (removing a dead `{#if}` removes its SSR anchor — that is expected).
+ *
+ * `siblings` writes extra plain modules (e.g. a `./keys.js` the component
+ * statically imports) next to the compiled component so those imports resolve;
+ * each key is the file name relative to the compiled output.
  */
 export async function renderHtml(
+  source: string,
+  props: Record<string, unknown>,
+  filename: string,
+  siblings: Record<string, string> = {},
+): Promise<string> {
+  const { js } = compile(source, { generate: 'server', filename, dev: false });
+  mkdirSync(TMP, { recursive: true });
+  for (const [name, code] of Object.entries(siblings)) writeFileSync(join(TMP, name), code);
+  const hash = createHash('sha1').update(source).update(filename).digest('hex').slice(0, 16);
+  const file = join(TMP, `${hash}.js`);
+  writeFileSync(file, js.code);
+  const mod = await import(pathToFileURL(file).href);
+  const out = render(mod.default, { props });
+  return normalizeHtml(out.body ?? out.html ?? '');
+}
+
+/**
+ * Like {@link renderHtml} but returns the body with only framework comments
+ * stripped — whitespace runs are NOT collapsed.  Used by the whitespace oracle to
+ * assert byte-exact rendered output (e.g. that plain deletion inside `<pre>` is
+ * byte-identical, where {@link normalizeHtml} would mask the difference).
+ */
+export async function renderHtmlRaw(
   source: string,
   props: Record<string, unknown>,
   filename: string,
@@ -41,7 +68,7 @@ export async function renderHtml(
   writeFileSync(file, js.code);
   const mod = await import(pathToFileURL(file).href);
   const out = render(mod.default, { props });
-  return normalizeHtml(out.body ?? out.html ?? '');
+  return (out.body ?? out.html ?? '').replace(/<!--[\s\S]*?-->/g, '');
 }
 
 export function normalizeHtml(html: string): string {

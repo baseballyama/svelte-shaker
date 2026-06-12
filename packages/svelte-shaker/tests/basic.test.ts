@@ -4,7 +4,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { svelteShaker } from '../src/index';
 import { fsResolve } from '../src/scan';
 import { analyze } from '../src/analyze';
-import { assertCompiles, cleanTmp, renderHtml, renderGraphHtml } from './diff';
+import { assertCompiles, cleanTmp, renderHtml, renderHtmlRaw, renderGraphHtml } from './diff';
 
 const FIXTURES = resolve(__dirname, 'fixtures');
 const readFile = (id: string) => readFileSync(id, 'utf-8');
@@ -32,6 +32,54 @@ describe('svelte-shaker / fixtures', () => {
       }
     });
   }
+});
+
+describe('svelte-shaker / whitespace soundness (differential SSR)', () => {
+  it('ws-compensate: removing a chain that separated two nodes keeps the space', async () => {
+    // `<div>\n  {#if hidden}…{/if}\n  <p>…` with hidden=false: plain deletion would
+    // let the surviving whitespace fall to a leading edge and be trimmed, dropping
+    // the space before `<p>`.  The engine overwrites the seam with `{" "}` instead.
+    const dir = join(FIXTURES, 'ws-compensate');
+    const original = readFileSync(join(dir, 'input', 'Box.svelte'), 'utf-8');
+    const out = await svelteShaker(join(dir, 'input', 'App.svelte'), fsResolve, readFile);
+    const shaken = out[join(dir, 'input', 'Box.svelte')]!;
+
+    expect(shaken).toContain('{" "}'); // compensation present
+    const before = await renderHtml(original, { hidden: false }, 'Box.svelte');
+    const after = await renderHtml(shaken, {}, 'Box.svelte');
+    expect(after).toBe(before);
+    expect(before).toBe('<div> <p>content</p></div>'); // the space is observable
+  });
+
+  it('ws-kept-arm: collapsing to a kept arm strips the arm-edge whitespace', async () => {
+    // `{#if on} <b>x</b>{/if}` with on=true: the arm's leading space was a
+    // block-fragment edge (trimmed); a verbatim splice would gain it, so it is
+    // stripped — matching the original render exactly.
+    const dir = join(FIXTURES, 'ws-kept-arm');
+    const original = readFileSync(join(dir, 'input', 'Tag.svelte'), 'utf-8');
+    const out = await svelteShaker(join(dir, 'input', 'App.svelte'), fsResolve, readFile);
+    const shaken = out[join(dir, 'input', 'Tag.svelte')]!;
+
+    expect(shaken).toContain('<p>a</p><b>x</b><p>c</p>'); // stripped, no gained space
+    const before = await renderHtml(original, { on: true }, 'Tag.svelte');
+    const after = await renderHtml(shaken, {}, 'Tag.svelte');
+    expect(after).toBe(before);
+    expect(before).toBe('<div><p>a</p><b>x</b><p>c</p></div>');
+  });
+
+  it('ws-pre: inside <pre> a dead block is deleted byte-exactly (no compensation)', async () => {
+    // Whitespace is observable in `<pre>`, so the engine must NOT inject `{" "}`;
+    // plain deletion is already byte-identical.  Compared without normalization.
+    const dir = join(FIXTURES, 'ws-pre');
+    const original = readFileSync(join(dir, 'input', 'Pre.svelte'), 'utf-8');
+    const out = await svelteShaker(join(dir, 'input', 'App.svelte'), fsResolve, readFile);
+    const shaken = out[join(dir, 'input', 'Pre.svelte')]!;
+
+    expect(shaken).not.toContain('{" "}'); // never compensate under preserved whitespace
+    const before = await renderHtmlRaw(original, { hidden: false }, 'Pre.svelte');
+    const after = await renderHtmlRaw(shaken, {}, 'Pre.svelte');
+    expect(after).toBe(before); // byte-exact, whitespace runs preserved
+  });
 });
 
 describe('svelte-shaker / soundness (differential SSR)', () => {

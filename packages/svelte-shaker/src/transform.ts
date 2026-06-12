@@ -1,7 +1,7 @@
 import MagicString from 'magic-string';
 import { walk, type AnyNode } from './parse';
 import type { ComponentId, ComponentPlan, Literal } from './ir';
-import type { FileModel } from './analyze';
+import { remapToLocalNames, type FileModel } from './analyze';
 import { decideChain, inSpans, type Span } from './dead';
 import { evaluate } from './eval';
 import { shakeCss } from './css';
@@ -263,10 +263,19 @@ export function shakeBody(
   if (env.size === 0 && setEnv.size === 0) return new Set();
   const code = model.code;
 
+  // `env`/`setEnv` arrive keyed by the EXTERNAL prop name (that is what the plan
+  // and the L2 call-site shapes carry).  Every body/template reference, however,
+  // uses the prop's LOCAL binding name (`prop: alias` -> `alias`), and the two can
+  // even be different entities (a same-named import).  Remap ONCE to local-keyed
+  // maps for every name-matched pass below (branch folding, ternaries, reference
+  // substitution, CSS); the `$props()` signature drop keeps the external names.
+  const localEnv = remapToLocalNames(env, model);
+  const localSetEnv = remapToLocalNames(setEnv, model);
+
   // (1) Fold `{#if <const>}` blocks (L1) and narrow if/else-if chains against
   // the known value sets (L1.5); remember every region we deleted/unwrapped.
   const dead: Span[] = [];
-  foldIfBlocks(model.ast.fragment, env, setEnv, code, s, dead);
+  foldIfBlocks(model.ast.fragment, localEnv, localSetEnv, code, s, dead);
 
   // (1b) Fold template ternaries `{cond ? a : b}` whose `cond` is a provable
   // constant down to the taken arm.  This runs BEFORE substitution: the taken
@@ -274,22 +283,24 @@ export function shakeBody(
   // substitution pass below leaves identifiers inside it alone (a sub-range
   // overwrite inside an already-overwritten span would conflict in MagicString).
   // Mirrors the `{#if}` "collapse to a kept fragment verbatim" handling.
-  foldTernaries(model.ast.fragment, env, code, s, dead);
+  foldTernaries(model.ast.fragment, localEnv, code, s, dead);
 
   // (2) Substitute any surviving references to a folded prop with its literal.
   // Narrowed (set) props are genuinely dynamic and are NOT substituted; we only
-  // walk `env` (constFold). Substitution still reaches references inside KEPT
+  // walk `localEnv` (constFold). Substitution still reaches references inside KEPT
   // narrowed arms because those arms are left as original text (only dead arms
   // are removed), so a constFold prop used inside a surviving arm is handled.
-  const refs = collectPropRefs(model, env, dead);
-  for (const [name, value] of env) {
+  const refs = collectPropRefs(model, localEnv, dead);
+  for (const [name, value] of localEnv) {
     const lit = literalSource(value);
     for (const ref of refs.get(name) ?? [])
       s.overwrite(ref.start, ref.end, ref.head + lit + ref.tail);
   }
 
   // (3) Drop only the folded (constFold) props from the `$props()` signature.
-  // Narrowed props stay in the signature — they are still used/dynamic.
+  // Narrowed props stay in the signature — they are still used/dynamic.  The drop
+  // matches the destructure KEYS, so it keeps the EXTERNAL names (which is also
+  // what phase 2's call-site attribute removal consumes).
   const droppable = new Set(env.keys()); // every surviving ref is an expression position
   dropProps(model, droppable, s);
 
@@ -303,10 +314,12 @@ export function shakeBody(
   // `constFold`/`narrow` are the ENVIRONMENTS we actually folded with (for L2 a
   // call site's extra literals shrink the possible class set further), reusing
   // `cssPlan` for everything else (id, valueSets of untouched props).
+  // CSS matches the value-set maps against TEMPLATE identifiers (`class={alias}`),
+  // so it too reads the LOCAL-keyed environments.
   const cssView: ComponentPlan = {
     ...cssPlan,
-    constFold: env,
-    narrow: setEnv,
+    constFold: localEnv,
+    narrow: localSetEnv,
   };
   shakeCss(model, cssView, s);
 
@@ -319,6 +332,15 @@ export function shakeBody(
  * decision comes from the shared {@link decideChain} (same predicate the
  * analysis fixpoint uses); here we turn that decision into MagicString edits.
  * `dead` accumulates the deleted regions so later passes skip them.
+ *
+ * The walk threads each chain's parent fragment (for sibling lookup) and whether
+ * it sits in a preserved-whitespace context (`<pre>`/`<textarea>` ancestor, or a
+ * component-level `<svelte:options preserveWhitespace>`).  {@link applyChain}
+ * needs both to keep the RENDERED whitespace unchanged when a chain disappears:
+ * Svelte trims a whitespace-only text node at a fragment edge but keeps one
+ * between two rendering nodes, so naively deleting a chain that separated two
+ * nodes (or splicing in an arm whose own edge whitespace was trimmed) would lose
+ * or gain a space.
  */
 function foldIfBlocks(
   fragment: AnyNode,
@@ -328,33 +350,55 @@ function foldIfBlocks(
   s: MagicString,
   dead: Span[],
 ): void {
-  walk<null>(fragment, null, {
-    IfBlock(node, { next }) {
-      // `elseif` IfBlocks are the *continuation* of a chain we already own from
-      // its head; skip them so we never edit the same chain twice. Also skip any
-      // block already inside a region we removed (a dead arm we descended into).
-      if (node.elseif || inSpans(node, dead)) return;
-      const decision = decideChain(node, env, setEnv);
-      applyChain(decision, env, code, s);
-      // When the chain collapses to a kept fragment we overwrite the WHOLE span
-      // in one shot, so the whole span must be off-limits to later edits (a
-      // sub-range overwrite inside it would conflict in MagicString). When the
-      // structure is kept, only the genuinely-removed regions are off-limits —
-      // surviving arms must stay editable for prop substitution.
-      if (decision.kept) dead.push(decision.span);
-      else for (const r of decision.removed) dead.push(r);
-      if (decision.recurse) next(); // kept head: descend for nested blocks
-      // otherwise the subtree is gone or re-emitted verbatim — do not recurse.
+  walk<{ parent: AnyNode | null; preserve: boolean }>(
+    fragment,
+    { parent: null, preserve: hasPreserveWhitespaceOption(fragment) },
+    {
+      _(node, { state, next }) {
+        if (node.type !== 'IfBlock') {
+          // Descend, recording this node as the children's parent and whether it
+          // opens a preserved-whitespace context for them.
+          next({ parent: node, preserve: state.preserve || isPreserveElement(node) });
+          return;
+        }
+        // `elseif` IfBlocks are the *continuation* of a chain we already own from
+        // its head; skip them so we never edit the same chain twice. Also skip any
+        // block already inside a region we removed (a dead arm we descended into).
+        if (node.elseif || inSpans(node, dead)) return;
+        const decision = decideChain(node, env, setEnv);
+        applyChain(decision, env, code, s, dead, {
+          parent: state.parent,
+          // `state.parent` is the Fragment that holds this chain (the walk sets a
+          // node as its children's parent), so its `nodes` are the chain's siblings.
+          index: state.parent?.nodes?.indexOf(node) ?? -1,
+          preserve: state.preserve,
+        });
+        if (decision.recurse) next({ parent: node, preserve: state.preserve }); // kept head: descend for nested blocks
+        // otherwise the subtree is gone or re-emitted verbatim — do not recurse.
+      },
     },
-  });
+  );
 }
 
-/** Realize one {@link decideChain} decision as MagicString edits. */
+/** What {@link applyChain} needs about a chain's position to fix the seam. */
+interface ChainContext {
+  /** The Fragment holding the chain, whose `nodes` are its siblings. */
+  parent: AnyNode | null;
+  /** The chain's index in `parent.nodes`, or -1 when unavailable. */
+  index: number;
+  /** Whitespace is preserved here (`<pre>`/`<textarea>`/`preserveWhitespace`). */
+  preserve: boolean;
+}
+
+/** Realize one {@link decideChain} decision as MagicString edits, keeping the
+ * rendered whitespace at the chain's seam unchanged (see {@link foldIfBlocks}). */
 function applyChain(
   decision: ReturnType<typeof decideChain>,
   env: Map<string, Literal>,
   code: string,
   s: MagicString,
+  dead: Span[],
+  ctx: ChainContext,
 ): void {
   if (decision.kept) {
     // The chain collapses to a single surviving fragment, re-emitted verbatim.
@@ -364,18 +408,174 @@ function applyChain(
     // props are about to be dropped from the signature — so we must substitute
     // them into the emitted text HERE, or they would become dangling
     // references.  {@link substitutedSlice} does exactly that.
-    s.overwrite(decision.span[0], decision.span[1], fragmentSource(decision.kept, env, code));
+    let text = fragmentSource(decision.kept, env, code);
+    // The arm's own leading/trailing whitespace runs were block-fragment edges
+    // (trimmed) in the original, but become INNER once spliced into the parent
+    // fragment — keeping them would GAIN a space.  Strip them.  Under preserved
+    // whitespace nothing was trimmed, so splice verbatim.
+    if (!ctx.preserve) text = text.replace(/^\s+|\s+$/g, '');
+    // A kept arm that is empty or pure whitespace renders nothing, exactly like a
+    // full chain removal — route through the same seam handling so a separating
+    // space is neither lost nor spuriously kept.
+    if (text === '' && !ctx.preserve) {
+      removeChain([decision.span], decision.span, code, s, dead, ctx);
+      return;
+    }
+    s.overwrite(decision.span[0], decision.span[1], text);
+    dead.push(decision.span);
     return;
   }
-  // Otherwise the `{#if}` structure is kept: delete the dead regions in place.
-  // `removed` ranges and `headerRewrite` are disjoint (the prefix ends exactly
-  // where the promoted header begins), so they never overlap.
-  for (const [a, b] of decision.removed) s.remove(a, b);
+  // The chain renders nothing (no surviving arm): delete it, compensating the
+  // seam so a space that separated two siblings is not lost.
+  if (isFullRemoval(decision)) {
+    removeChain(decision.removed, decision.span, code, s, dead, ctx);
+    return;
+  }
+  // Otherwise the `{#if}` structure is kept (head survives, or a `{:else if}` is
+  // promoted): the chain still renders in place, so the outer seam is unchanged —
+  // only delete the dead regions.  `removed` ranges and `headerRewrite` are
+  // disjoint (the prefix ends exactly where the promoted header begins).
+  for (const [a, b] of decision.removed) {
+    s.remove(a, b);
+    dead.push([a, b]);
+  }
   // If a `{:else if}` was promoted to the new head, rewrite its header.
   if (decision.headerRewrite) {
     const { from, to, text } = decision.headerRewrite;
     s.overwrite(from, to, text);
   }
+}
+
+/** True when a chain folds away entirely (its whole span is the only removal). */
+function isFullRemoval(decision: ReturnType<typeof decideChain>): boolean {
+  return (
+    decision.kept === undefined &&
+    decision.removed.length === 1 &&
+    decision.removed[0]![0] === decision.span[0] &&
+    decision.removed[0]![1] === decision.span[1]
+  );
+}
+
+/**
+ * Delete a chain that renders nothing, compensating the seam so the RENDERED
+ * whitespace is unchanged.  When the chain separated two rendering siblings via
+ * a whitespace-only text node, plain deletion would let that node fall to a
+ * fragment edge and be trimmed — losing a space.  In that one case we overwrite
+ * the whole `L + chain + R` span with `{" "}`: an ExpressionTag is never
+ * edge-trimmed, so it renders exactly one space wherever it lands, matching the
+ * original.  Otherwise plain deletion already preserves space presence (only the
+ * run LENGTH can differ, which the SSR oracle normalizes).  Never compensate
+ * under preserved whitespace — there plain deletion is byte-exact.
+ */
+function removeChain(
+  removed: Span[],
+  span: Span,
+  code: string,
+  s: MagicString,
+  dead: Span[],
+  ctx: ChainContext,
+): void {
+  if (!ctx.preserve && ctx.parent?.nodes && ctx.index >= 0) {
+    const seam = analyzeSeam(ctx.parent.nodes, ctx.index, span, code, dead);
+    if (seam) {
+      s.overwrite(seam[0], seam[1], '{" "}');
+      dead.push(seam);
+      return;
+    }
+  }
+  for (const [a, b] of removed) {
+    s.remove(a, b);
+    dead.push([a, b]);
+  }
+}
+
+/**
+ * Decide whether removing the chain at `siblings[index]` would lose a separating
+ * space, and if so return the `[from, to]` span (covering the adjacent
+ * whitespace-only text siblings plus the chain) to overwrite with `{" "}`.
+ *
+ * Svelte renders a whitespace-only text node as a single space iff it sits
+ * between two rendering nodes (element / text / expression tag / block — a
+ * comment is transparent and counts as a fragment edge), and trims it at a
+ * fragment edge.  With `L`/`R` the chain's adjacent whitespace siblings and
+ * `P`/`N` whether a rendering sibling lies just beyond them:
+ *   origSpace  = (L && P) || (R && N)          // a space rendered originally
+ *   afterSpace = P && N && (L || R)            // … survives plain deletion
+ * A space is lost exactly when `origSpace && !afterSpace`.  A sibling already
+ * consumed by an earlier compensation is treated as absent so two adjacent dead
+ * chains never produce overlapping edits.
+ */
+function analyzeSeam(
+  siblings: AnyNode[],
+  index: number,
+  span: Span,
+  code: string,
+  dead: Span[],
+): Span | undefined {
+  const live = (node: AnyNode | undefined): node is AnyNode => !!node && !inSpans(node, dead);
+  const left = siblings[index - 1];
+  const right = siblings[index + 1];
+  const L = live(left) && isWhitespaceText(left, code) ? left : undefined;
+  const R = live(right) && isWhitespaceText(right, code) ? right : undefined;
+
+  const pIdx = L ? index - 2 : index - 1;
+  const nIdx = R ? index + 2 : index + 1;
+  const P = pIdx >= 0 && isRenderingSibling(siblings[pIdx]!, code);
+  const N = nIdx < siblings.length && isRenderingSibling(siblings[nIdx]!, code);
+
+  const origSpace = (!!L && P) || (!!R && N);
+  const afterSpace = P && N && (!!L || !!R);
+  if (!origSpace || afterSpace) return undefined;
+  return [L ? L.start : span[0], R ? R.end : span[1]];
+}
+
+/** A text node whose source is entirely whitespace. */
+function isWhitespaceText(node: AnyNode, code: string): boolean {
+  return node.type === 'Text' && /^\s*$/.test(code.slice(node.start, node.end));
+}
+
+/**
+ * A sibling that adjacent whitespace can "lean on" so it renders a space.  A
+ * whitespace-only text node is not one (it is the seam whitespace itself), and a
+ * `Comment` is transparent to SSR — it acts as a fragment edge for trimming, so
+ * it is not a rendering neighbour either.
+ */
+function isRenderingSibling(node: AnyNode, code: string): boolean {
+  return node.type !== 'Comment' && !isWhitespaceText(node, code);
+}
+
+/** An element inside which Svelte preserves whitespace verbatim. */
+function isPreserveElement(node: AnyNode): boolean {
+  return node.type === 'RegularElement' && (node.name === 'pre' || node.name === 'textarea');
+}
+
+/** Does the component opt into preserved whitespace via `<svelte:options>`? */
+function hasPreserveWhitespaceOption(fragment: AnyNode): boolean {
+  let preserve = false;
+  walk<null>(fragment, null, {
+    SvelteOptions(node) {
+      for (const a of node.attributes ?? []) {
+        if (a.type !== 'Attribute' || a.name !== 'preserveWhitespace') continue;
+        // `preserveWhitespace` (boolean shorthand) or `={true}` opts in; only an
+        // explicit `={false}` opts out.  Any other (invalid) form is treated as
+        // opting in, since svelte:options requires a static value.
+        preserve = !isExplicitFalse(a.value);
+      }
+    },
+  });
+  return preserve;
+}
+
+/** True when an attribute value is the literal `{false}` (or `false`). */
+function isExplicitFalse(value: unknown): boolean {
+  if (value === false) return true;
+  const parts = (Array.isArray(value) ? value : [value]) as AnyNode[];
+  return parts.some(
+    (p) =>
+      p?.type === 'ExpressionTag' &&
+      p.expression?.type === 'Literal' &&
+      p.expression.value === false,
+  );
 }
 
 /**

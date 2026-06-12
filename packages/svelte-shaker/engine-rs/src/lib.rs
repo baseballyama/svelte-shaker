@@ -543,7 +543,18 @@ fn push_literal_unique(values: &mut Vec<Literal>, v: Literal) {
 // ---- prop declarations with defaults --------------------------------------
 
 struct PropDecl {
+    /// The EXTERNAL prop name — the destructure KEY (`prop` in `prop: alias`).
+    /// Call sites pass this name, so value sets / dropping key off it.  Mirrors
+    /// `PropDecl.name` in analyze.ts.
     name: String,
+    /// The LOCAL binding name the entry introduces in the body — the destructure
+    /// VALUE (`alias` in `prop: alias`, or the bare name for a shorthand `prop`),
+    /// or `None` when the entry binds a NESTED pattern (`prop: { x }`) rather than
+    /// a single identifier.  Body and template references use THIS name, not
+    /// {@link name} (`prop` and its alias `alias` can even be different entities —
+    /// e.g. a same-named import), so folding/substitution must look props up by it.
+    /// A `None` local is never foldable.  Mirrors `PropDecl.local` in analyze.ts.
+    local: Option<String>,
     /// The default-value expression node, or `Null` when omitted.
     default: Value,
     /// The `Property` node inside the `ObjectPattern` (for surgical removal).
@@ -592,13 +603,29 @@ fn declared_props_full(ast: &Value) -> Option<PropsInfo> {
                         let key = get(p, "key");
                         if str_eq(key, "type", "Identifier") {
                             if let Some(name) = key.get("name").and_then(Value::as_str) {
+                                // The destructure VALUE is the local binding.  A bare identifier
+                                // (`prop` shorthand, or `prop: alias`) binds that one name; an
+                                // `AssignmentPattern` (`prop = d` / `prop: alias = d`) binds its
+                                // LEFT and carries the default; anything else (a nested
+                                // Object/Array pattern) binds no single identifier, so `local` is
+                                // `None` and the prop is never foldable.  Mirrors analyze.ts.
                                 let value = get(p, "value");
-                                let default = if str_eq(value, "type", "AssignmentPattern") {
-                                    get(value, "right").clone()
-                                } else {
-                                    Value::Null
-                                };
-                                props.push(PropDecl { name: name.to_string(), default, property: p.clone() });
+                                let mut local: Option<String> = None;
+                                let mut default = Value::Null;
+                                match type_of(value) {
+                                    Some("Identifier") => {
+                                        local = value.get("name").and_then(Value::as_str).map(str::to_string);
+                                    }
+                                    Some("AssignmentPattern") => {
+                                        default = get(value, "right").clone();
+                                        let left = get(value, "left");
+                                        if str_eq(left, "type", "Identifier") {
+                                            local = left.get("name").and_then(Value::as_str).map(str::to_string);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                props.push(PropDecl { name: name.to_string(), local, default, property: p.clone() });
                             }
                         }
                     }
@@ -841,6 +868,36 @@ fn is_fold_blocked(model: &Model, name: &str) -> bool {
     model.shadowed.contains(name) || model.debug.contains(name)
 }
 
+/// Remap an env keyed by EXTERNAL prop name (`constFold` / `narrow`) to one keyed
+/// by the LOCAL binding name each prop introduces.  Call-site analysis and
+/// call-site attribute dropping work off the external name (`prop` in `prop:
+/// alias`), but every body/template reference uses the local name (`alias`), so
+/// substitution, branch folding and CSS must look values up by local.  A prop in
+/// `constFold`/`narrow` always has a single-identifier local by construction
+/// (`build_plan` never folds a `None`-local or shadowed prop), so every entry maps
+/// cleanly; an external name with no matching declared local is dropped.  Mirrors
+/// `remapToLocalNames` in analyze.ts.
+fn remap_to_local_names<V: Clone>(map: &HashMap<String, V>, model: &Model) -> HashMap<String, V> {
+    if map.is_empty() {
+        return map.clone(); // common case: nothing folds
+    }
+    let mut local_by_name: HashMap<&str, &str> = HashMap::new();
+    if let Some(pi) = &model.props_info {
+        for decl in &pi.props {
+            if let Some(local) = &decl.local {
+                local_by_name.insert(&decl.name, local);
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for (name, value) in map {
+        if let Some(local) = local_by_name.get(name.as_str()) {
+            out.insert((*local).to_string(), value.clone());
+        }
+    }
+    out
+}
+
 fn build_plan(model: &Model, sites: Option<&Vec<CallSite>>) -> ComponentPlan {
     let mut plan = ComponentPlan::empty(&model.id);
     if !model.bail_reasons.is_empty() {
@@ -857,8 +914,15 @@ fn build_plan(model: &Model, sites: Option<&Vec<CallSite>>) -> ComponentPlan {
         _ => return plan,
     };
     for decl in props {
-        if is_fold_blocked(model, &decl.name) {
-            continue;
+        // A `None` local is a nested-pattern entry (`prop: { x }`): there is no
+        // single identifier to substitute or drop, so it is never foldable.  The
+        // shadow guard tests the LOCAL name (the entity the body references): a
+        // name also bound elsewhere is a different entity, so folding it corrupts
+        // that binding.  L2 specialization honors the SAME two predicates (mono.ts).
+        // Value sets and const_fold/narrow stay keyed by the EXTERNAL name below.
+        match &decl.local {
+            Some(local) if !is_fold_blocked(model, local) => {}
+            _ => continue,
         }
         let set = value_set_for(decl, sites);
         let (dynamic, top) = (set.dynamic, set.top);
@@ -1161,7 +1225,13 @@ fn dead_spans_for_plans(models: &[Model], plans: &Plans) -> HashMap<String, Vec<
         if plan.bail {
             continue;
         }
-        let spans = compute_dead_spans(get(&model.ast, "fragment"), &plan.const_env(), &plan.set_env());
+        // Dead spans are derived from the TEMPLATE, which references props by their
+        // LOCAL binding name — so the fold/narrow envs (keyed by external prop name)
+        // must be remapped here.  This MUST match the transform's own remap exactly,
+        // or the fixpoint and the edit could disagree on what folds (unsound).
+        let env = remap_to_local_names(&plan.const_env(), model);
+        let set_env = remap_to_local_names(&plan.set_env(), model);
+        let spans = compute_dead_spans(get(&model.ast, "fragment"), &env, &set_env);
         if !spans.is_empty() {
             out.insert(model.id.clone(), spans);
         }
@@ -1375,25 +1445,164 @@ fn fragment_source(edits: &MagicEdit, fragment: &Value, env: &Env) -> String {
     }
 }
 
-fn apply_chain(decision: &ChainDecision, env: &Env, edits: &mut MagicEdit) {
+/// A text node whose source is entirely whitespace.
+fn is_whitespace_text(node: &Value, edits: &MagicEdit) -> bool {
+    type_of(node) == Some("Text")
+        && edits.slice(off(node, "start") as usize, off(node, "end") as usize).trim().is_empty()
+}
+
+/// A sibling that adjacent whitespace can "lean on" so it renders a space.  A
+/// whitespace-only text node is the seam whitespace itself, and a `Comment` is
+/// transparent to SSR (acts as a fragment edge) — neither is a rendering neighbour.
+fn is_rendering_sibling(node: &Value, edits: &MagicEdit) -> bool {
+    type_of(node) != Some("Comment") && !is_whitespace_text(node, edits)
+}
+
+/// An element inside which Svelte preserves whitespace verbatim.
+fn is_preserve_element(node: &Value) -> bool {
+    type_of(node) == Some("RegularElement")
+        && matches!(node.get("name").and_then(Value::as_str), Some("pre") | Some("textarea"))
+}
+
+/// True when an attribute value is the literal `{false}` (or `false`).
+fn attr_is_explicit_false(value: &Value) -> bool {
+    if value == &Value::Bool(false) {
+        return true;
+    }
+    let parts: Vec<&Value> = match value {
+        Value::Array(a) => a.iter().collect(),
+        _ => vec![value],
+    };
+    parts.iter().any(|p| {
+        type_of(p) == Some("ExpressionTag")
+            && type_of(get(p, "expression")) == Some("Literal")
+            && get(p, "expression").get("value") == Some(&Value::Bool(false))
+    })
+}
+
+/// Does the component opt into preserved whitespace via `<svelte:options>`?
+fn has_preserve_whitespace_option(fragment: &Value) -> bool {
+    let mut preserve = false;
+    walk(fragment, &mut |node| {
+        if type_of(node) == Some("SvelteOptions") {
+            for a in arr(node, "attributes") {
+                if str_eq(a, "type", "Attribute")
+                    && a.get("name").and_then(Value::as_str) == Some("preserveWhitespace")
+                {
+                    preserve = !attr_is_explicit_false(get(a, "value"));
+                }
+            }
+        }
+    });
+    preserve
+}
+
+/// True when a chain folds away entirely (its whole span is the only removal).
+fn is_full_removal(decision: &ChainDecision) -> bool {
+    decision.kept.is_none() && decision.removed.len() == 1 && decision.removed[0] == decision.span
+}
+
+/// Decide whether removing the chain at `siblings[index]` loses a separating
+/// space, returning the `[from, to]` span (covering the adjacent whitespace-only
+/// siblings plus the chain) to overwrite with `{" "}` if so.  See transform.ts
+/// `analyzeSeam` for the `origSpace`/`afterSpace` derivation.
+fn analyze_seam(siblings: &[Value], index: usize, span: Span, edits: &MagicEdit, dead: &[Span]) -> Option<Span> {
+    let live = |node: &Value| !in_spans(node, dead);
+    let left = if index >= 1 { siblings.get(index - 1) } else { None };
+    let l = left.filter(|n| live(n) && is_whitespace_text(n, edits));
+    let r = siblings.get(index + 1).filter(|n| live(n) && is_whitespace_text(n, edits));
+
+    let p_idx = if l.is_some() { index as isize - 2 } else { index as isize - 1 };
+    let n_idx = if r.is_some() { index + 2 } else { index + 1 };
+    let p = p_idx >= 0 && siblings.get(p_idx as usize).is_some_and(|n| is_rendering_sibling(n, edits));
+    let n = siblings.get(n_idx).is_some_and(|node| is_rendering_sibling(node, edits));
+
+    let orig_space = (l.is_some() && p) || (r.is_some() && n);
+    let after_space = p && n && (l.is_some() || r.is_some());
+    if !orig_space || after_space {
+        return None;
+    }
+    Some((l.map_or(span.0, |n| off(n, "start")), r.map_or(span.1, |n| off(n, "end"))))
+}
+
+/// Delete a chain that renders nothing, compensating the seam (see transform.ts
+/// `removeChain`) so the rendered whitespace is unchanged.
+fn remove_chain(
+    removed: &[Span],
+    span: Span,
+    edits: &mut MagicEdit,
+    dead: &mut Vec<Span>,
+    siblings: Option<&[Value]>,
+    index: usize,
+    preserve: bool,
+) {
+    if !preserve {
+        if let Some(sibs) = siblings {
+            if let Some(seam) = analyze_seam(sibs, index, span, edits, dead) {
+                edits.overwrite(seam.0 as usize, seam.1 as usize, "{\" \"}");
+                dead.push(seam);
+                return;
+            }
+        }
+    }
+    for (a, b) in removed {
+        edits.remove(*a as usize, *b as usize);
+        dead.push((*a, *b));
+    }
+}
+
+fn apply_chain(
+    decision: &ChainDecision,
+    env: &Env,
+    edits: &mut MagicEdit,
+    dead: &mut Vec<Span>,
+    siblings: Option<&[Value]>,
+    index: usize,
+    preserve: bool,
+) {
     if let Some(frag) = &decision.kept {
-        let text = fragment_source(edits, frag, env);
+        let mut text = fragment_source(edits, frag, env);
+        // Strip the kept arm's leading/trailing whitespace (block-fragment edges,
+        // trimmed in the original) so splicing it inline does not gain a space.
+        if !preserve {
+            text = text.trim().to_string();
+        }
+        // A kept arm that renders nothing behaves like a full removal.
+        if text.is_empty() && !preserve {
+            remove_chain(&[decision.span], decision.span, edits, dead, siblings, index, preserve);
+            return;
+        }
         edits.overwrite(decision.span.0 as usize, decision.span.1 as usize, &text);
+        dead.push(decision.span);
+        return;
+    }
+    if is_full_removal(decision) {
+        remove_chain(&decision.removed, decision.span, edits, dead, siblings, index, preserve);
         return;
     }
     for (a, b) in &decision.removed {
         edits.remove(*a as usize, *b as usize);
+        dead.push((*a, *b));
     }
     if let Some((from, to, text)) = &decision.header_rewrite {
         edits.overwrite(*from as usize, *to as usize, text);
     }
 }
 
-fn fold_if_blocks(node: &Value, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit, dead: &mut Vec<Span>) {
+fn fold_if_blocks(
+    node: &Value,
+    env: &Env,
+    set_env: &SetEnv,
+    edits: &mut MagicEdit,
+    dead: &mut Vec<Span>,
+    siblings: Option<&[Value]>,
+    index: usize,
+    preserve: bool,
+) {
     match node {
         Value::Array(items) => {
-            for v in items {
-                fold_if_blocks(v, env, set_env, edits, dead);
+            for (i, v) in items.iter().enumerate() {
+                fold_if_blocks(v, env, set_env, edits, dead, Some(items), i, preserve);
             }
         }
         Value::Object(map) => {
@@ -1402,21 +1611,17 @@ fn fold_if_blocks(node: &Value, env: &Env, set_env: &SetEnv, edits: &mut MagicEd
                     return;
                 }
                 let decision = decide_chain(node, env, set_env);
-                apply_chain(&decision, env, edits);
-                if decision.kept.is_some() {
-                    dead.push(decision.span);
-                } else {
-                    dead.extend(decision.removed.iter().copied());
-                }
+                apply_chain(&decision, env, edits, dead, siblings, index, preserve);
                 if decision.recurse {
                     for v in map.values() {
-                        fold_if_blocks(v, env, set_env, edits, dead);
+                        fold_if_blocks(v, env, set_env, edits, dead, None, 0, preserve);
                     }
                 }
                 return;
             }
+            let child_preserve = preserve || is_preserve_element(node);
             for v in map.values() {
-                fold_if_blocks(v, env, set_env, edits, dead);
+                fold_if_blocks(v, env, set_env, edits, dead, None, 0, child_preserve);
             }
         }
         _ => {}
@@ -1958,18 +2163,28 @@ fn shake_body(
         return HashSet::new();
     }
     let fragment = get(&model.ast, "fragment");
+    // `env`/`set_env` arrive keyed by the EXTERNAL prop name (that is what the plan
+    // carries).  Every body/template reference, however, uses the prop's LOCAL
+    // binding name (`prop: alias` -> `alias`), and the two can even be different
+    // entities (a same-named import).  Remap ONCE to local-keyed envs for every
+    // name-matched pass below (branch folding, ternaries, reference substitution,
+    // CSS); the `$props()` signature drop keeps the external names.
+    let local_env = remap_to_local_names(env, model);
+    let local_set_env = remap_to_local_names(set_env, model);
     let mut dead: Vec<Span> = Vec::new();
-    fold_if_blocks(fragment, env, set_env, edits, &mut dead);
-    if !env.is_empty() {
-        fold_ternaries(fragment, env, edits, &mut dead);
+    fold_if_blocks(fragment, &local_env, &local_set_env, edits, &mut dead, None, 0, has_preserve_whitespace_option(fragment));
+    if !local_env.is_empty() {
+        fold_ternaries(fragment, &local_env, edits, &mut dead);
     }
-    for r in collect_prop_refs(model, env, &dead, edits) {
-        let text = format!("{}{}{}", r.head, env[&r.name].to_source(), r.tail);
+    for r in collect_prop_refs(model, &local_env, &dead, edits) {
+        let text = format!("{}{}{}", r.head, local_env[&r.name].to_source(), r.tail);
         edits.overwrite(r.start as usize, r.end as usize, &text);
     }
+    // The drop matches the destructure KEYS, so it keeps the EXTERNAL names (which
+    // is also what phase 2's call-site attribute removal consumes).
     let droppable: HashSet<String> = env.keys().cloned().collect();
     drop_props(model, &droppable, edits);
-    shake_css(model, env, set_env, edits);
+    shake_css(model, &local_env, &local_set_env, edits);
     // Hand phase 2 the regions we edited so it never edits inside a folded-away branch.
     out_dead.extend(dead.iter().copied());
     droppable

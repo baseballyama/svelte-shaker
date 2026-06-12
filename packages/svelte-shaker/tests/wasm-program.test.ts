@@ -82,12 +82,18 @@ describe('M4: Rust (WASM) whole-program plans match the TS engine', () => {
     'basic1',
     'cascade',
     'css-variant',
+    'drop-trailing-run',
+    'fold-alias',
     'fold-nested',
+    'fold-shorthand',
     'fold-ternary',
     'if-true',
     'narrow-variant',
     'rest-prop',
     'spread-after',
+    'ws-compensate',
+    'ws-kept-arm',
+    'ws-pre',
   ]) {
     it(`${name}: plans (constFold / narrow / valueSets / bail) match`, async () => {
       await expectPlansMatch(join(FIXTURES, name, 'input', 'App.svelte'));

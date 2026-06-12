@@ -1,0 +1,21 @@
+{
+  "name": "e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "mode-watcher": "^1.1.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^4",
+    "svelte": "^5",
+    "svelte-shaker": "workspace:*",
+    "vite": "^5",
+    "vitest": "1.6.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

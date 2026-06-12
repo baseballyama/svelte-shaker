@@ -32,6 +32,7 @@ a transform is safe, it leaves the code untouched (bails). See
 | `packages/svelte-shaker`               | The engine + `svelte-shaker/vite` and `svelte-shaker/node` entries | **yes**  |
 | `packages/rollup-plugin-svelte-shaker` | Plain-Rollup plugin wrapping the engine                         | no (`private`) |
 | `packages/example`                     | Tiny app used as an end-to-end shake fixture                    | no (`private`) |
+| `packages/e2e`                         | Differential SSR harness: builds a realistic app (incl. library `.svelte` deps) with/without the shaker and asserts byte-equal HTML | no (`private`) |
 | `packages/site`                        | In-browser playground (SvelteKit + rsvelte), deployed to Pages  | no (`private`) |
 
 The engine is split into an environment-free **Engine** (Svelte-aware analysis +
