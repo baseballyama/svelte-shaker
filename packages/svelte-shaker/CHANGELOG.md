@@ -1,5 +1,12 @@
 # svelte-shaker
 
+## 0.5.1
+
+### Patch Changes
+
+- 19efe6f: fix: aliased `$props()` destructuring (`prop: alias = default`) no longer breaks builds — references to the alias were left dangling and a same-named import could be corrupted (#37). Folds now substitute the local binding name and leave colliding imports untouched. Props bound to a nested pattern (`prop: { x }`) are now left alone instead of being folded.
+- 19efe6f: fix: removing a dead `{#if}` chain (or collapsing it to its kept arm) no longer changes the rendered whitespace. A space could be lost where the chain separated two nodes (the surviving whitespace fell to a fragment edge and was trimmed), or gained from the kept arm's own edge whitespace. The chain's seam is now compensated with `{" "}` only when a space would otherwise be lost, the kept arm's leading/trailing whitespace is stripped when spliced, and whitespace inside `<pre>`/`<textarea>` (or under `preserveWhitespace`) is left byte-exact.
+
 ## 0.5.0
 
 ### Minor Changes
