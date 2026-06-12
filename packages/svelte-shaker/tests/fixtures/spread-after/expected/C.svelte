@@ -6,8 +6,6 @@
   <p>A is one</p>
 {/if}
 
-
-  <p>B is truthy</p>
-
+<p>B is truthy</p>
 
 <p>C base</p>

@@ -50,6 +50,27 @@ export async function renderHtml(
   return normalizeHtml(out.body ?? out.html ?? '');
 }
 
+/**
+ * Like {@link renderHtml} but returns the body with only framework comments
+ * stripped — whitespace runs are NOT collapsed.  Used by the whitespace oracle to
+ * assert byte-exact rendered output (e.g. that plain deletion inside `<pre>` is
+ * byte-identical, where {@link normalizeHtml} would mask the difference).
+ */
+export async function renderHtmlRaw(
+  source: string,
+  props: Record<string, unknown>,
+  filename: string,
+): Promise<string> {
+  const { js } = compile(source, { generate: 'server', filename, dev: false });
+  mkdirSync(TMP, { recursive: true });
+  const hash = createHash('sha1').update(source).update(filename).digest('hex').slice(0, 16);
+  const file = join(TMP, `${hash}.js`);
+  writeFileSync(file, js.code);
+  const mod = await import(pathToFileURL(file).href);
+  const out = render(mod.default, { props });
+  return (out.body ?? out.html ?? '').replace(/<!--[\s\S]*?-->/g, '');
+}
+
 export function normalizeHtml(html: string): string {
   return html
     .replace(/<!--[\s\S]*?-->/g, '') // drop framework comments (incl. SSR anchors)

@@ -4,6 +4,4 @@
   themeStorageKey.current = "mode-watcher-theme";
 </script>
 
-
-  <p>mode key: {"mode-watcher-mode"}</p>
-
+<p>mode key: {"mode-watcher-mode"}</p>
