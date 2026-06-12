@@ -3,7 +3,7 @@
 // shaker must follow barrel re-exports when building the whole-program graph.
 export { default as ShorthandFold } from './ShorthandFold.svelte';
 export { default as AliasedProp } from './AliasedProp.svelte';
-export { default as NestedDestructure } from './NestedDestructure.svelte';
+export { default as TernaryNestedFold } from './TernaryNestedFold.svelte';
 export { default as RestProps } from './RestProps.svelte';
 export { default as MultiCallSites } from './MultiCallSites.svelte';
 export { default as TernaryFold } from './TernaryFold.svelte';

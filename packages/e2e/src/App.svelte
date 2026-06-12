@@ -5,7 +5,7 @@
     Bindable,
     DynamicComponent,
     MultiCallSites,
-    NestedDestructure,
+    TernaryNestedFold,
     RestProps,
     ShorthandFold,
     Snippets,
@@ -30,8 +30,8 @@
 <!-- Pattern 2: local reproduction of the #37 aliased-prop pattern. -->
 <AliasedProp />
 
-<!-- Pattern 4: nested destructure prop. -->
-<NestedDestructure />
+<!-- Pattern 4: folded prop substituted inside a collapsed ternary arm. -->
+<TernaryNestedFold />
 
 <!-- Pattern 5: rest props + spread.  `hidden` folds to false; rest survives. -->
 <RestProps hidden={false} id="box-1" class="rest-box" />

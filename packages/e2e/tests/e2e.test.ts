@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { shaker } from 'svelte-shaker/vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { build } from 'vite';
+import { build, type PluginOption } from 'vite';
 
 // The e2e package root is one level above this test file.
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -34,8 +34,9 @@ interface RenderBundle {
  * `withShaker` controls whether svelte-shaker is in the plugin chain.
  */
 async function buildSsr(outDir: string, withShaker: boolean): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const plugins: any[] = withShaker ? [shaker({ include: SHAKER_INCLUDE }), svelte()] : [svelte()];
+  const plugins: PluginOption[] = withShaker
+    ? [shaker({ include: SHAKER_INCLUDE }), svelte()]
+    : [svelte()];
 
   await build({
     root: ROOT,
@@ -104,11 +105,11 @@ describe('no-shaker baseline', () => {
 });
 
 describe('differential SSR oracle', () => {
-  // The current engine has the #37 aliased-prop bug.  The shaken render()
-  // will either throw a ReferenceError (modeStorageKeyProp is not defined)
-  // or produce HTML that differs from the control.  Either outcome is caught
-  // by this test.  DO NOT weaken, skip, or special-case these assertions —
-  // a passing differential test here means the bug is fixed.
+  // Soundness gate: executing the shaken bundle catches dangling references
+  // (issue #37 threw `ReferenceError: modeStorageKeyProp is not defined` here),
+  // and the HTML comparison catches every other observable divergence.  DO NOT
+  // weaken, skip, or special-case these assertions — a failure means the
+  // engine over-shook one of the patterns.
   const controlDir = join(TMP, 'control');
   const shakenDir = join(TMP, 'shaken');
 
@@ -131,7 +132,7 @@ describe('differential SSR oracle', () => {
 describe('client build smoke test', () => {
   it('vite build (client) with shaker succeeds', async () => {
     const outDir = join(TMP, 'client');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plugins: PluginOption[] = [shaker({ include: SHAKER_INCLUDE }), svelte()];
     await build({
       root: ROOT,
       logLevel: 'silent',
@@ -141,8 +142,7 @@ describe('client build smoke test', () => {
         minify: false,
         rollupOptions: { input: join(ROOT, 'src/main.ts') },
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      plugins: [shaker({ include: SHAKER_INCLUDE }), svelte()] as any[],
+      plugins,
     });
   });
 });
