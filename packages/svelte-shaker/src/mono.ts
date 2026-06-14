@@ -367,7 +367,10 @@ function netWin(
   const variantChildren = new Map<string, ComponentId[]>();
   for (const v of variantSources) variantChildren.set(v.id, liveChildIds(v.code, childModel));
 
-  // --- Sigma_base: reachable set in the BASE scenario, sized by base residual.
+  // --- Reachability is graph-only (NO compile): the costly `ownSize` is deferred
+  // until we know which modules actually differ between the two scenarios.
+
+  // BASE scenario: components reachable from the roots through the base graph.
   const baseReached = new Set<ComponentId>();
   const stackB = [...roots];
   while (stackB.length > 0) {
@@ -376,23 +379,13 @@ function netWin(
     baseReached.add(id);
     for (const c of baseChildrenOf.get(id) ?? []) stackB.push(c);
   }
-  let sigmaBase = 0;
-  for (const id of baseReached) {
-    const size = ownSize(id, baseSource.get(id)!);
-    if (size === null) return false; // un-sizable -> decline
-    sigmaBase += size;
-  }
 
-  // --- Sigma_spec: reachability with the child expanded into its variants.
-  //   * reached non-variant components are sized by their base residual,
-  //   * each reached variant by its own residual,
-  //   * the child's base module is NOT a node (its edges redirect to variants).
-  // A worklist over a tagged node: either a real component id or a variant id.
+  // SPEC scenario: the same graph, but every edge into the child redirects to ALL
+  // its variants (all-sites means each live caller now renders a variant); the
+  // child's base module is gone and each variant renders its OWN live children.
   const allVariantIds = variantSources.map((v) => v.id);
-  const reachedComponents = new Set<ComponentId>();
-  const reachedVariants = new Set<string>();
-  // Redirect any edge into the child to ALL its variants (all-sites means every
-  // live caller now renders a variant; for a sound upper bound we keep them all).
+  const specComponents = new Set<ComponentId>();
+  const specVariants = new Set<string>();
   const expand = (id: ComponentId): { comps: ComponentId[]; vars: string[] } =>
     id === childId ? { comps: [], vars: allVariantIds } : { comps: [id], vars: [] };
 
@@ -406,8 +399,8 @@ function netWin(
   while (compStack.length > 0 || varStack.length > 0) {
     if (compStack.length > 0) {
       const id = compStack.pop()!;
-      if (reachedComponents.has(id)) continue;
-      reachedComponents.add(id);
+      if (specComponents.has(id)) continue;
+      specComponents.add(id);
       for (const c of baseChildrenOf.get(id) ?? []) {
         const e = expand(c);
         compStack.push(...e.comps);
@@ -416,8 +409,8 @@ function netWin(
       continue;
     }
     const vid = varStack.pop()!;
-    if (reachedVariants.has(vid)) continue;
-    reachedVariants.add(vid);
+    if (specVariants.has(vid)) continue;
+    specVariants.add(vid);
     for (const c of variantChildren.get(vid) ?? []) {
       const e = expand(c);
       compStack.push(...e.comps);
@@ -425,20 +418,48 @@ function netWin(
     }
   }
 
-  let sigmaSpec = 0;
-  for (const id of reachedComponents) {
+  // A component reachable in BOTH scenarios has the same base size on each side, so
+  // for the default `minSavings === 0` it cancels out of `Σ_spec < Σ_base` — we
+  // only have to size the SYMMETRIC DIFFERENCE: the variants (spec-only), and the
+  // child base plus any now-orphaned modules (base-only).  Compiling only the diff
+  // — instead of the whole reachable program, once per candidate — is what keeps a
+  // large `maxVariants` affordable: a child that orphans nothing sizes just its
+  // variants vs. its base and declines without touching the rest of the graph.
+  let baseSide = 0; // Σ over base-only modules (child base + orphaned)
+  let specSide = 0; // Σ over spec-only modules (the variants, + any spec-only comp)
+  for (const id of baseReached) {
+    if (specComponents.has(id)) continue; // shared -> cancels
     const size = ownSize(id, baseSource.get(id)!);
-    if (size === null) return false;
-    sigmaSpec += size;
+    if (size === null) return false; // un-sizable -> decline
+    baseSide += size;
   }
-  for (const vid of reachedVariants) {
+  for (const vid of specVariants) {
     const src = variantSources.find((v) => v.id === vid)!.code;
     const size = ownSize(vid, src);
     if (size === null) return false;
-    sigmaSpec += size;
+    specSide += size;
+  }
+  // Folding never adds reachability, so this set is normally empty; sizing it keeps
+  // the comparison sound regardless.
+  for (const id of specComponents) {
+    if (baseReached.has(id)) continue;
+    const size = ownSize(id, baseSource.get(id)!);
+    if (size === null) return false;
+    specSide += size;
   }
 
-  return sigmaSpec < sigmaBase * (1 - minSavings);
+  // Default gate: shared modules cancel, so the strict net win is `specSide < baseSide`.
+  if (minSavings === 0) return specSide < baseSide;
+
+  // A non-zero `minSavings` needs the ABSOLUTE base total, so size the shared set too.
+  let shared = 0;
+  for (const id of baseReached) {
+    if (!specComponents.has(id)) continue;
+    const size = ownSize(id, baseSource.get(id)!);
+    if (size === null) return false;
+    shared += size;
+  }
+  return specSide + shared < (baseSide + shared) * (1 - minSavings);
 }
 
 /**
