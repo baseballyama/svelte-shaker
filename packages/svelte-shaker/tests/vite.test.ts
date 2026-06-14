@@ -56,4 +56,22 @@ describe('vite-plugin-svelte-shaker (end-to-end build)', () => {
     expect(code).not.toMatch(IF_MACHINERY);
     expect(code).toContain('This is Sub Component'); // live markup survives
   });
+
+  it('engine: the native Rust engine shakes identically to the JS engine', async () => {
+    const js = await bundle([shaker({ include: ['.'], level: 1, engine: 'js' })]);
+    const rust = await bundle([shaker({ include: ['.'], level: 1, engine: 'rust' })]);
+    // The Rust engine removed the dead branch just like the JS engine …
+    expect(rust).not.toMatch(IF_MACHINERY);
+    expect(rust).toContain('This is Sub Component');
+    // … and the whole bundle is byte-identical (the engines are differential-tested).
+    expect(rust).toBe(js);
+  });
+
+  it('engine: "rust" runs L0/L1/L1.5 even when L2 is on by default (L2 skipped)', async () => {
+    // Default level enables L2, which is JS-only; engine: "rust" must still shake
+    // the dead branch (skipping L2) rather than throw or no-op.
+    const code = await bundle([shaker({ include: ['.'], engine: 'rust' })]);
+    expect(code).not.toMatch(IF_MACHINERY);
+    expect(code).toContain('This is Sub Component');
+  });
 });

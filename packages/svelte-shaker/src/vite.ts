@@ -7,6 +7,7 @@ import { DevShaker, type DevMode } from './engine.js';
 import { collectSvelteFiles, fsResolve } from './scan.js';
 import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono.js';
 import { tryLoadRsvelteParser } from './rsvelte-parse.js';
+import { svelteShakerWasm, tryLoadWasmEngine } from './wasm-engine.js';
 import type { ComponentId } from './ir.js';
 
 export interface ShakerOptions {
@@ -18,17 +19,37 @@ export interface ShakerOptions {
    */
   include?: string[];
   /**
-   * Optimization level (docs §3).  L0/L1/L1.5 are always on (`level >= 1`); only
-   * `level: 2` additionally enables L2 per-call-site monomorphization, which is
-   * OPT-IN.  Default `1` — behavior with the level unset is unchanged.
+   * Optimization level (docs §3).  L0/L1/L1.5 are always on; `level: 2`
+   * additionally enables L2 per-call-site monomorphization.  **Default `2`** — L2
+   * is ON by default because it is bail-safe and never bloats (the measured
+   * net-win gate, docs §3 L2).  Set `level: 1` (or `0`) to turn L2 OFF, e.g. to
+   * trade a little compression for faster builds, or to use the Rust {@link
+   * engine} (which implements L0/L1/L1.5 only).
    */
   level?: 0 | 1 | 2;
   /**
-   * L2 monomorphization tuning (docs §13.2).  Only consulted when `level: 2`.
-   * `true` enables it with defaults; an object overrides `maxVariants`.  Defaults
-   * to OFF.
+   * L2 monomorphization tuning (docs §13.2).  Consulted whenever L2 is active
+   * (i.e. not turned off via `level: 1`/`0`).  `true`/omitted enables it with
+   * defaults; an object overrides `maxVariants` / `minSavings`; `false` turns L2
+   * OFF (same as `level: 1`).  Raising `maxVariants` lets children with more
+   * distinct call-site shapes be specialized — affordable now that the net-win
+   * gate only sizes the modules that actually differ (docs §13.2).
    */
   monomorphize?: boolean | Partial<Omit<MonomorphizeOptions, 'enabled'>>;
+  /**
+   * Which engine runs the L0/L1/L1.5 analysis + transform.  Default `'auto'`.
+   *  - `'auto'` — use the native Rust (WASM) engine when it can be loaded AND L2
+   *    is off; otherwise fall back to the JS engine.  Since L2 lives only in the
+   *    JS engine, a build with L2 active (the default) runs on JS; turn L2 off
+   *    (`level: 1`) to get the faster Rust path.
+   *  - `'rust'` — force the Rust engine.  L2 is not available there, so it is
+   *    skipped (a one-time notice is logged) even if requested.  Throws if the
+   *    WASM module cannot be loaded.
+   *  - `'js'` — force the JS engine (the established, L2-capable path).
+   * The Rust engine is differentially tested to produce byte-identical output to
+   * the JS engine, so the choice only affects speed, never what is shaken.
+   */
+  engine?: 'auto' | 'js' | 'rust';
   /**
    * Whether to shake in `vite dev` too (docs/RUST-MIGRATION.md §3 M2,
    * ARCHITECTURE §6.2).  Default `false` — dev is a pass-through, which is always
@@ -163,11 +184,13 @@ const VARIANT_QUERY = 'shaker_variant';
 
 /**
  * Resolve the {@link MonomorphizeOptions} from the public option surface.  L2 is
- * active only when `level: 2` AND `monomorphize` is truthy; anything else leaves
- * it disabled (the default), so existing configs are unaffected.
+ * ON by default (it is bail-safe and never bloats); it is disabled only by an
+ * explicit opt-out — `level: 1`/`0` or `monomorphize: false`.  An object
+ * `monomorphize` overrides the tuning knobs (`maxVariants` / `minSavings`).
  */
 function resolveMono(options: ShakerOptions): MonomorphizeOptions {
-  if (options.level !== 2 || !options.monomorphize) return DEFAULT_MONO_OPTIONS;
+  const optedOut = options.level === 0 || options.level === 1 || options.monomorphize === false;
+  if (optedOut) return DEFAULT_MONO_OPTIONS;
   const overrides = typeof options.monomorphize === 'object' ? options.monomorphize : {};
   return { ...DEFAULT_MONO_OPTIONS, enabled: true, ...overrides };
 }
@@ -345,8 +368,38 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         return resolved.id.split('?')[0]!;
       };
 
-      if (!mono.enabled) {
-        // Default path: byte-for-byte the L0/L1/L1.5 output (no L2 at all).
+      // Decide the engine.  L2 (the default) lives only in the JS engine, so it
+      // takes precedence; the native Rust engine drives the L0/L1/L1.5 path when
+      // selected (`engine: 'rust'`) or under `'auto'` whenever L2 is off.
+      const engineChoice = options.engine ?? 'auto';
+      let effectiveMono = mono;
+      let wasm: ReturnType<typeof tryLoadWasmEngine> = null;
+      if (engineChoice === 'rust') {
+        if (mono.enabled) {
+          log('engine: "rust" runs L0/L1/L1.5 only — L2 monomorphization (JS-only) is skipped');
+          effectiveMono = DEFAULT_MONO_OPTIONS;
+        }
+        wasm = tryLoadWasmEngine();
+        if (!wasm)
+          throw new Error(
+            '[vite-plugin-svelte-shaker] engine: "rust" was requested but the WASM engine ' +
+              'could not be loaded. Remove the option (or use engine: "js") to use the JS engine.',
+          );
+      } else if (engineChoice === 'auto' && !mono.enabled) {
+        // Auto: prefer the native engine on the L2-off path; fall back to JS silently.
+        wasm = tryLoadWasmEngine();
+      }
+
+      if (wasm) {
+        // Native Rust L0/L1/L1.5 — byte-identical to the JS engine (no L2 here).
+        shaken = await svelteShakerWasm(wasm, entries, resolve, read, getParse());
+        variantSources = new Map();
+        reportSizes(shaken, read, root, options.verbose === true, log);
+        return;
+      }
+
+      if (!effectiveMono.enabled) {
+        // JS engine, L2 off: byte-for-byte the L0/L1/L1.5 output.
         shaken = await svelteShaker(entries, resolve, read, getParse());
         variantSources = new Map();
         reportSizes(shaken, read, root, options.verbose === true, log);
@@ -357,7 +410,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         entries,
         resolve,
         read,
-        mono,
+        effectiveMono,
         variantSpecifier,
         getParse(),
       );

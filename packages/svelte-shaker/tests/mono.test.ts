@@ -402,13 +402,22 @@ describe('vite-plugin-svelte-shaker / L2 (end-to-end build)', () => {
     expect(code).toContain(HEAVY_MARK);
   });
 
-  it('level 1 (default): L2 is OFF, the conditional and Heavy both survive', async () => {
-    const code = await bundle([shaker({ include: ['.'] })]);
+  it('level 1: L2 is OFF, the conditional and Heavy both survive', async () => {
+    const code = await bundle([shaker({ include: ['.'], level: 1 })]);
     expect(code).toMatch(IF_MACHINERY);
     expect(code).toContain(HEAVY_MARK);
   });
 
-  it('level 2: correlated sites specialized -> `{#if}` gone AND Heavy dropped', async () => {
+  it('default (no level): L2 is ON -> correlated `{#if}` gone AND Heavy dropped', async () => {
+    const code = await bundle([shaker({ include: ['.'] })]);
+    // L2 is on by default now: the correlated branch folds false in every variant
+    // -> no conditional, and `<Heavy/>` is orphaned and dropped from the bundle.
+    expect(code).not.toMatch(IF_MACHINERY);
+    expect(code).not.toContain(HEAVY_MARK);
+    expect(code).toContain('base');
+  });
+
+  it('level 2 (explicit): correlated sites specialized -> `{#if}` gone AND Heavy dropped', async () => {
     const code = await bundle([shaker({ include: ['.'], level: 2, monomorphize: true })]);
     // The correlated branch folded false in every variant -> no conditional.
     expect(code).not.toMatch(IF_MACHINERY);
@@ -420,7 +429,7 @@ describe('vite-plugin-svelte-shaker / L2 (end-to-end build)', () => {
   });
 
   it('level 2 bundle is <= the level-1 (L1.5) bundle in bytes (never bloat)', async () => {
-    const l1 = await bundle([shaker({ include: ['.'] })]);
+    const l1 = await bundle([shaker({ include: ['.'], level: 1 })]);
     const l2 = await bundle([shaker({ include: ['.'], level: 2, monomorphize: true })]);
     expect(l2.length).toBeLessThanOrEqual(l1.length);
   });
