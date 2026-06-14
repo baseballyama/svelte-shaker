@@ -18,6 +18,7 @@ import {
   type ResolvedEdge,
 } from './ir.js';
 import { computeDeadSpans, inSpans, type Span } from './dead.js';
+import { evaluate } from './eval.js';
 
 export type Resolve = (
   source: string,
@@ -106,11 +107,15 @@ export interface ChildCall {
 
 /**
  * One value passed explicitly to a prop at one call site, after last-write-wins
- * has been resolved (`{...obj}` aside).  `dynamic` means the attribute had a
- * non-literal value (`bind:`, dynamic expression): used, value not statically
- * known.  `afterLastSpread` records whether this explicit write happened after
- * the site's last `{...spread}` — only then can a spread not silently override
- * it (docs §4.1, "後勝ち順序で救う").
+ * has been resolved.  An explicit write is either a real attribute (`a={1}`) OR a
+ * key expanded out of a statically-known object-literal spread (`{...{a:1}}`,
+ * docs §4.1) — both name a prop and a value the same way.  `dynamic` means the
+ * value is non-literal (`bind:`, a dynamic expression, or a spread key whose
+ * value is non-literal): used, value not statically known.  `afterLastSpread`
+ * records whether this write happened after the site's last *unknown* spread (one
+ * we could not expand) — only then can no spread silently override it (docs §4.1,
+ * "後勝ち順序で救う").  A known object-literal spread is expanded, not opaque, so
+ * it never counts as an "unknown spread" here.
  */
 export interface ExplicitProp {
   value: Literal;
@@ -120,7 +125,12 @@ export interface ExplicitProp {
 
 /** How a child component is called at one `<Child .../>` site. */
 export interface CallSite {
-  /** Did this site have at least one `{...spread}` attribute? */
+  /**
+   * Did this site have at least one spread we could NOT statically expand (an
+   * identifier / call / `{...{…computed/nested…}}`)?  A fully-known object-literal
+   * spread is expanded into {@link ExplicitProp} writes instead, so it does not
+   * set this — only an opaque spread, which may set any prop, does (docs §4.1).
+   */
   hadSpread: boolean;
   /** Last-write-wins explicit props at this site, keyed by prop name. */
   explicit: Map<string, ExplicitProp>;
@@ -872,18 +882,43 @@ function memberComponentTags(ast: Root): Set<string> {
  * Read one `<Child .../>` into a {@link CallSite}.  Attributes are in source
  * order, so we resolve last-write-wins (a later `a={…}` overrides an earlier
  * one) and record, per prop, whether its winning write came *after* the last
- * spread — the only case a spread cannot silently override it (docs §4.1).
+ * *unknown* spread — the only case a spread cannot silently override it (docs
+ * §4.1).  A statically-known object-literal spread (`{...{a:1, b:2}}`) is not
+ * opaque: we expand its keys into explicit writes at the spread's position, so it
+ * both contributes those literals AND does not poison props it cannot set (docs
+ * §4.1, "{...obj} が object literal ならキー展開").
  */
 export function readCallSite(component: AnyNode): CallSite {
   const attrs = component.attributes ?? [];
+  // Only spreads we CANNOT expand are opaque (may set any prop).  Classify first
+  // so `afterLastSpread` is measured against the last *unknown* spread, not a
+  // known object literal we are about to expand into explicit writes.
   let lastSpreadIndex = -1;
   for (let i = 0; i < attrs.length; i++) {
-    if (attrs[i]!.type === 'SpreadAttribute') lastSpreadIndex = i;
+    const attr = attrs[i]!;
+    if (attr.type === 'SpreadAttribute' && knownSpreadEntries(attr) === null) lastSpreadIndex = i;
   }
 
   const explicit = new Map<string, ExplicitProp>();
   for (let i = 0; i < attrs.length; i++) {
     const attr = attrs[i]!;
+    if (attr.type === 'SpreadAttribute') {
+      // A known object-literal spread expands to one explicit write per key, at
+      // this spread's position; an unknown spread is opaque and handled by the
+      // `hadSpread`/`afterLastSpread` poisoning in `valueSetFor`.
+      const entries = knownSpreadEntries(attr);
+      if (entries) {
+        for (const [name, value] of entries) {
+          explicit.set(
+            name,
+            value.known
+              ? { value: value.value, dynamic: false, afterLastSpread: i > lastSpreadIndex }
+              : dynamicWrite(i, lastSpreadIndex),
+          );
+        }
+      }
+      continue;
+    }
     const name = attr.name;
     if (attr.type === 'BindDirective') {
       // `bind:prop` is a used, dynamic two-way binding (docs §4.1).
@@ -960,6 +995,57 @@ function dynamicWrite(index: number, lastSpreadIndex: number): ExplicitProp {
     dynamic: true,
     afterLastSpread: index > lastSpreadIndex,
   };
+}
+
+/**
+ * The `[name, value]` entries a spread contributes IF it is a statically-known
+ * object literal whose complete key set we can see (docs §4.1 "object literal な
+ * spread はキー展開").  Returns `null` for any spread we cannot fully expand — an
+ * identifier/call (`{...rest}`), or an object literal carrying a nested spread
+ * (`{...{...x}}`), a computed key (`{...{[k]: 1}}`), or a getter/setter/method —
+ * because then we do not know the full set of props it sets and must treat it as
+ * opaque.  Each entry's value is `{known:true,value}` for a literal (so it folds)
+ * or `{known:false}` for a non-literal value (key known, value dynamic): both are
+ * sound, since the key set is fully known either way.
+ */
+function knownSpreadEntries(
+  attr: AnyNode,
+): Array<[string, { known: true; value: Literal } | { known: false }]> | null {
+  const obj = attr.expression;
+  if (obj?.type !== 'ObjectExpression') return null;
+  const entries: Array<[string, { known: true; value: Literal } | { known: false }]> = [];
+  for (const prop of obj.properties ?? []) {
+    // A nested spread, computed key, or accessor/method means the full key set is
+    // not statically knowable -> the whole spread is opaque.
+    if (prop.type !== 'Property') return null;
+    if (
+      prop.computed === true ||
+      prop.kind === 'get' ||
+      prop.kind === 'set' ||
+      prop.method === true
+    )
+      return null;
+    const key = prop.key;
+    const name =
+      key?.type === 'Identifier'
+        ? key.name
+        : key?.type === 'Literal' &&
+            (typeof key.value === 'string' || typeof key.value === 'number')
+          ? String(key.value)
+          : null;
+    if (name == null) return null;
+    entries.push([name, evalToLiteral(prop.value as AnyNode | undefined)]);
+  }
+  return entries;
+}
+
+/** Constant-evaluate a spread property value with no environment (literals + the
+ * tiny pure operator fragment), as `{known:true,value}` or `{known:false}`. */
+function evalToLiteral(
+  node: AnyNode | undefined,
+): { known: true; value: Literal } | { known: false } {
+  const r = evaluate(node, new Map());
+  return r.known ? { known: true, value: r.value } : { known: false };
 }
 
 /** Extract a literal from an attribute value, or `{ known:false }`. */

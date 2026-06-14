@@ -742,19 +742,78 @@ fn synthesized_body_props(component: &Value) -> Vec<String> {
     names
 }
 
+/// The `[name, value]` entries a spread contributes IF it is a statically-known
+/// object literal whose complete key set we can see. `None` => an opaque spread
+/// (an identifier/call `{...rest}`, or an object literal carrying a nested spread,
+/// a computed key, or a getter/setter/method) that may set any prop. Each value
+/// is `Some(lit)` for a literal (so it folds) or `None` for a non-literal value
+/// (key known, value dynamic). Mirrors `knownSpreadEntries` in analyze.ts.
+fn known_spread_entries(attr: &Value) -> Option<Vec<(String, Option<Literal>)>> {
+    let obj = get(attr, "expression");
+    if type_of(obj) != Some("ObjectExpression") {
+        return None;
+    }
+    let empty: Env = HashMap::new();
+    let mut entries = Vec::new();
+    for prop in arr(obj, "properties") {
+        // A nested spread, computed key, or accessor/method means the full key set
+        // is not statically knowable -> the whole spread is opaque.
+        if type_of(prop) != Some("Property") {
+            return None;
+        }
+        if bool_field(prop, "computed")
+            || str_eq(prop, "kind", "get")
+            || str_eq(prop, "kind", "set")
+            || bool_field(prop, "method")
+        {
+            return None;
+        }
+        let key = get(prop, "key");
+        let name = match type_of(key) {
+            Some("Identifier") => key.get("name").and_then(Value::as_str).map(str::to_string),
+            Some("Literal") => match key.get("value") {
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(Value::Number(n)) => Some(n.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let name = name?; // unknown key shape -> whole spread opaque
+        entries.push((name, evaluate(get(prop, "value"), &empty)));
+    }
+    Some(entries)
+}
+
 /// Read one `<Child .../>` into a {@link CallSite} (last-write-wins + spread
 /// tracking + synthesized body props). Mirrors `readCallSite`.
 fn read_call_site(component: &Value) -> CallSite {
     let attrs = arr(component, "attributes");
+    // Only spreads we cannot expand are opaque; a known object literal is expanded
+    // into explicit writes below, so `after_last_spread` is measured against the
+    // last *unknown* spread (mirrors readCallSite).
     let mut last_spread: i64 = -1;
     for (i, a) in attrs.iter().enumerate() {
-        if type_of(a) == Some("SpreadAttribute") {
+        if type_of(a) == Some("SpreadAttribute") && known_spread_entries(a).is_none() {
             last_spread = i as i64;
         }
     }
     let mut explicit: HashMap<String, ExplicitProp> = HashMap::new();
     for (i, attr) in attrs.iter().enumerate() {
         let i = i as i64;
+        if type_of(attr) == Some("SpreadAttribute") {
+            // A known object-literal spread expands to one explicit write per key;
+            // an unknown spread is opaque (handled via had_spread/after_last_spread).
+            if let Some(entries) = known_spread_entries(attr) {
+                for (name, val) in entries {
+                    let prop = match val {
+                        Some(v) => ExplicitProp { value: Some(v), dynamic: false, after_last_spread: i > last_spread },
+                        None => dynamic_write(i, last_spread),
+                    };
+                    explicit.insert(name, prop);
+                }
+            }
+            continue;
+        }
         let name = attr.get("name").and_then(Value::as_str);
         if type_of(attr) == Some("BindDirective") {
             if let Some(n) = name {

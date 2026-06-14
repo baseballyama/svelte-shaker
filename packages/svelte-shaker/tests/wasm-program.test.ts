@@ -91,6 +91,7 @@ describe('M4: Rust (WASM) whole-program plans match the TS engine', () => {
     'narrow-variant',
     'rest-prop',
     'spread-after',
+    'spread-const-object',
     'ws-compensate',
     'ws-kept-arm',
     'ws-pre',

@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { compile } from 'svelte/compiler';
 import type { Plugin } from 'vite';
 import { svelteShaker, svelteShakerWithMono, type Parse, type Resolve } from './index.js';
 import { DevShaker, type DevMode } from './engine.js';
@@ -75,6 +76,23 @@ function formatKB(bytes: number): string {
 }
 
 /**
+ * Compiled-output size proxy: the bytes the Svelte compiler emits for `code`
+ * (client JS + scoped CSS).  This is the number that actually ships, so it
+ * captures what the SOURCE-byte total cannot: a dead `{#if}` arm or a removed
+ * `<style>` rule shrinks the compiled output far more than its few source bytes
+ * suggest.  Reporting-only; `null` if the (always valid) source fails to compile,
+ * so the caller can skip it without aborting the build.
+ */
+function compiledSize(code: string, id: ComponentId): number | null {
+  try {
+    const { js, css } = compile(code, { generate: 'client', dev: false, filename: id });
+    return js.code.length + (css?.code.length ?? 0);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Print what the shake saved.  Always emits a one-line whole-program summary;
  * when `verbose`, also lists each shrunk file (largest saving first).  Sizes are
  * UTF-8 byte lengths of the source the engine consumed vs. produced — the honest
@@ -114,6 +132,29 @@ function reportSizes(
     const fileSaved = row.before - row.after;
     const filePct = ((fileSaved / row.before) * 100).toFixed(1);
     log(`  ${rel}: ${formatKB(row.before)} → ${formatKB(row.after)} (-${filePct}%)`);
+  }
+
+  // The source-byte delta UNDER-reports the real win: a folded dead branch or a
+  // removed `<style>` rule shrinks the compiled output much more than its source.
+  // Compiling is costly, so we only do it for the files that actually shrank, and
+  // only under `verbose` — it never affects the build, just the visible number.
+  let compiledBefore = 0;
+  let compiledAfter = 0;
+  for (const row of rows) {
+    const before = compiledSize(read(row.id), row.id);
+    const after = compiledSize(shaken[row.id]!, row.id);
+    if (before === null || after === null) continue; // skip the un-compilable
+    compiledBefore += before;
+    compiledAfter += after;
+  }
+  if (compiledBefore > 0) {
+    const compiledSaved = compiledBefore - compiledAfter;
+    const compiledPct = ((compiledSaved / compiledBefore) * 100).toFixed(1);
+    log(
+      `compiled output (js+css) of shaken files: ` +
+        `${formatKB(compiledBefore)} → ${formatKB(compiledAfter)} ` +
+        `(saved ${formatKB(compiledSaved)}, ${compiledPct}%)`,
+    );
   }
 }
 
