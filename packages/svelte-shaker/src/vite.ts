@@ -7,7 +7,7 @@ import { DevShaker, type DevMode } from './engine.js';
 import { collectSvelteFiles, fsResolve } from './scan.js';
 import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono.js';
 import { tryLoadRsvelteParser } from './rsvelte-parse.js';
-import { svelteShakerWasm, tryLoadWasmEngine } from './wasm-engine.js';
+import { svelteShakerWasm, svelteShakerWasmWithMono, tryLoadWasmEngine } from './wasm-engine.js';
 import type { ComponentId } from './ir.js';
 
 export interface ShakerOptions {
@@ -23,8 +23,7 @@ export interface ShakerOptions {
    * additionally enables L2 per-call-site monomorphization.  **Default `2`** — L2
    * is ON by default because it is bail-safe and never bloats (the measured
    * net-win gate, docs §3 L2).  Set `level: 1` (or `0`) to turn L2 OFF, e.g. to
-   * trade a little compression for faster builds, or to use the Rust {@link
-   * engine} (which implements L0/L1/L1.5 only).
+   * trade a little compression for faster builds.
    */
   level?: 0 | 1 | 2;
   /**
@@ -37,17 +36,16 @@ export interface ShakerOptions {
    */
   monomorphize?: boolean | Partial<Omit<MonomorphizeOptions, 'enabled'>>;
   /**
-   * Which engine runs the L0/L1/L1.5 analysis + transform.  Default `'auto'`.
-   *  - `'auto'` — use the native Rust (WASM) engine when it can be loaded AND L2
-   *    is off; otherwise fall back to the JS engine.  Since L2 lives only in the
-   *    JS engine, a build with L2 active (the default) runs on JS; turn L2 off
-   *    (`level: 1`) to get the faster Rust path.
-   *  - `'rust'` — force the Rust engine.  L2 is not available there, so it is
-   *    skipped (a one-time notice is logged) even if requested.  Throws if the
-   *    WASM module cannot be loaded.
-   *  - `'js'` — force the JS engine (the established, L2-capable path).
-   * The Rust engine is differentially tested to produce byte-identical output to
-   * the JS engine, so the choice only affects speed, never what is shaken.
+   * Which engine runs the whole shake (analysis + transform, INCLUDING L2).
+   * Default `'auto'`.  The native Rust (WASM) engine implements every level — for
+   * L2 it calls back into JS only for the per-module compiled-size proxy the
+   * net-win gate needs — so it is the default fast path:
+   *  - `'auto'` — use the native Rust engine when it can be loaded; otherwise fall
+   *    back to the JS engine.
+   *  - `'rust'` — force the Rust engine; throws if the WASM module can't be loaded.
+   *  - `'js'` — force the JS engine.
+   * Both engines are differentially tested to produce byte-identical output, so the
+   * choice only affects speed, never what is shaken.
    */
   engine?: 'auto' | 'js' | 'rust';
   /**
@@ -368,37 +366,46 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         return resolved.id.split('?')[0]!;
       };
 
-      // Decide the engine.  L2 (the default) lives only in the JS engine, so it
-      // takes precedence; the native Rust engine drives the L0/L1/L1.5 path when
-      // selected (`engine: 'rust'`) or under `'auto'` whenever L2 is off.
+      // Decide the engine.  The native Rust engine now implements every level
+      // INCLUDING L2 (it calls back to JS only for the compiled-size proxy), so it
+      // is the default: `'auto'` uses it whenever it can be loaded and falls back
+      // to JS otherwise, `'rust'` forces it (throwing if it can't load), `'js'`
+      // forces the JS engine.  Both engines produce byte-identical output.
       const engineChoice = options.engine ?? 'auto';
-      let effectiveMono = mono;
       let wasm: ReturnType<typeof tryLoadWasmEngine> = null;
       if (engineChoice === 'rust') {
-        if (mono.enabled) {
-          log('engine: "rust" runs L0/L1/L1.5 only — L2 monomorphization (JS-only) is skipped');
-          effectiveMono = DEFAULT_MONO_OPTIONS;
-        }
         wasm = tryLoadWasmEngine();
         if (!wasm)
           throw new Error(
             '[vite-plugin-svelte-shaker] engine: "rust" was requested but the WASM engine ' +
               'could not be loaded. Remove the option (or use engine: "js") to use the JS engine.',
           );
-      } else if (engineChoice === 'auto' && !mono.enabled) {
-        // Auto: prefer the native engine on the L2-off path; fall back to JS silently.
+      } else if (engineChoice === 'auto') {
         wasm = tryLoadWasmEngine();
       }
 
       if (wasm) {
-        // Native Rust L0/L1/L1.5 — byte-identical to the JS engine (no L2 here).
-        shaken = await svelteShakerWasm(wasm, entries, resolve, read, getParse());
-        variantSources = new Map();
+        // Native Rust engine — byte-identical to the JS engine, including L2.
+        if (mono.enabled) {
+          const result = await svelteShakerWasmWithMono(
+            wasm,
+            entries,
+            resolve,
+            read,
+            mono,
+            getParse(),
+          );
+          shaken = result.files;
+          variantSources = result.variants;
+        } else {
+          shaken = await svelteShakerWasm(wasm, entries, resolve, read, getParse());
+          variantSources = new Map();
+        }
         reportSizes(shaken, read, root, options.verbose === true, log);
         return;
       }
 
-      if (!effectiveMono.enabled) {
+      if (!mono.enabled) {
         // JS engine, L2 off: byte-for-byte the L0/L1/L1.5 output.
         shaken = await svelteShaker(entries, resolve, read, getParse());
         variantSources = new Map();
@@ -410,7 +417,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         entries,
         resolve,
         read,
-        effectiveMono,
+        mono,
         variantSpecifier,
         getParse(),
       );

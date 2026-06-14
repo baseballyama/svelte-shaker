@@ -67,9 +67,9 @@ describe('vite-plugin-svelte-shaker (end-to-end build)', () => {
     expect(rust).toBe(js);
   });
 
-  it('engine: "rust" runs L0/L1/L1.5 even when L2 is on by default (L2 skipped)', async () => {
-    // Default level enables L2, which is JS-only; engine: "rust" must still shake
-    // the dead branch (skipping L2) rather than throw or no-op.
+  it('engine: "rust" shakes with L2 on by default (native L2)', async () => {
+    // The Rust engine implements L2 too, so engine: "rust" with the default level
+    // shakes the dead branch (and would specialize where it wins) rather than throw.
     const code = await bundle([shaker({ include: ['.'], engine: 'rust' })]);
     expect(code).not.toMatch(IF_MACHINERY);
     expect(code).toContain('This is Sub Component');

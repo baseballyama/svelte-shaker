@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module';
+import { compile } from 'svelte/compiler';
 import { buildAnalyzeInput, type ReadFile, type Resolve } from './analyze.js';
 import { parseCached, parseSvelte, type Parse, type ParseCache } from './parse.js';
+import { type MonomorphizeOptions } from './mono.js';
 import type { ComponentId } from './ir.js';
 
 // NODE-ONLY: loads the native Rust (WASM) engine and drives it from the Vite
@@ -9,10 +11,21 @@ import type { ComponentId } from './ir.js';
 
 const require = createRequire(import.meta.url);
 
-/** The subset of the WASM exports the plugin uses (docs/RUST-MIGRATION.md M5). */
+/** The subset of the WASM exports the plugin uses (docs/RUST-MIGRATION.md M5+). */
 interface WasmEngine {
   /** Whole-program L0/L1/L1.5 shake: input JSON in, `{id: shakenCode}` JSON out. */
   shake_program: (inputJson: string) => string;
+  /**
+   * Whole-program shake WITH L2 monomorphization.  `ownSize(id, source)` is the
+   * per-module compiled-byte proxy the net-win gate calls back into JS for (the
+   * Svelte compiler has no in-WASM equivalent); returns
+   * `{ files: {id: code}, variants: {specifier: code} }` JSON.
+   */
+  shake_program_with_mono: (
+    inputJson: string,
+    optionsJson: string,
+    ownSize: (id: string, source: string) => number | null,
+  ) => string;
 }
 
 /**
@@ -29,13 +42,29 @@ export function tryLoadWasmEngine(): WasmEngine | null {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(spec) as Partial<WasmEngine>;
-      if (typeof mod.shake_program === 'function')
-        return { shake_program: mod.shake_program.bind(mod) };
+      if (
+        typeof mod.shake_program === 'function' &&
+        typeof mod.shake_program_with_mono === 'function'
+      )
+        return {
+          shake_program: mod.shake_program.bind(mod),
+          shake_program_with_mono: mod.shake_program_with_mono.bind(mod),
+        };
     } catch {
       // Try the next location.
     }
   }
   return null;
+}
+
+/** The compiled-byte size proxy the L2 net-win gate uses — the same call
+ * `mono.ts` makes, so the Rust gate decides byte-for-byte like the JS engine. */
+function ownSize(id: ComponentId, source: string): number | null {
+  try {
+    return compile(source, { generate: 'client', dev: false, filename: id }).js.code.length;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -74,7 +103,65 @@ export async function svelteShakerWasm(
     string
   >;
 
-  for (const file of input.files) {
+  revertUnparseable(out, input.files);
+  return out;
+}
+
+/** The output of a Rust L2 shake: the wired owner files + the variant residuals
+ * keyed by their request specifier (what the Shell's `load` hook serves). */
+export interface WasmMonoResult {
+  files: Record<ComponentId, string>;
+  variants: Map<string, string>;
+}
+
+/**
+ * Whole-program shake WITH L2 monomorphization, run entirely in the native Rust
+ * engine — the counterpart of {@link svelteShakerWithMono}.  The crawl/resolution
+ * stays in JS; the Rust engine does the analysis, the L2 graph/gate, and the
+ * call-site rewrite, calling back into JS only for {@link ownSize} (the Svelte
+ * compiler).  Feeding it the same compiler the JS engine uses makes the result
+ * byte-identical (pinned by the differential `wasm-mono` test).
+ */
+export async function svelteShakerWasmWithMono(
+  engine: WasmEngine,
+  entries: ComponentId | ComponentId[],
+  resolve: Resolve,
+  readFile: ReadFile,
+  mono: MonomorphizeOptions,
+  parse?: Parse,
+): Promise<WasmMonoResult> {
+  const cache: ParseCache = new Map();
+  const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse);
+  const programInput = {
+    files: input.files.map((f) => ({
+      id: f.id,
+      ast: parseCached(f.id, f.code, cache, parse),
+      code: f.code,
+    })),
+    edges: input.edges,
+    entries: input.entries,
+  };
+  const options = JSON.stringify({
+    enabled: mono.enabled,
+    maxVariants: mono.maxVariants,
+    minSavings: mono.minSavings,
+  });
+  const result = JSON.parse(
+    engine.shake_program_with_mono(JSON.stringify(programInput), options, ownSize),
+  ) as { files: Record<ComponentId, string>; variants: Record<string, string> };
+
+  revertUnparseable(result.files, input.files);
+  return { files: result.files, variants: new Map(Object.entries(result.variants)) };
+}
+
+/** Self-check: revert any emitted file that no longer parses to its original — a
+ * sound "did not shake this component", mirroring the JS engine's last line of
+ * defense ({@link svelteShaker}'s `revertUnparseable`). */
+function revertUnparseable(
+  out: Record<ComponentId, string>,
+  files: { id: ComponentId; code: string }[],
+): void {
+  for (const file of files) {
     const code = out[file.id];
     if (code === undefined || code === file.code) continue;
     try {
@@ -83,5 +170,4 @@ export async function svelteShakerWasm(
       out[file.id] = file.code;
     }
   }
-  return out;
 }
