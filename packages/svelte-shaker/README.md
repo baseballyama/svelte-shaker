@@ -110,11 +110,11 @@ shaker({
 shaker({ include: ['src'], level: 1 }); // L2 off (L0/L1/L1.5 only)
 shaker({ include: ['src'], monomorphize: { maxVariants: 16 } }); // raise the variant cap
 
-// Run the analysis + transform in the native Rust (WASM) engine. It implements
-// L0/L1/L1.5 and is differentially tested to be byte-identical to the JS engine,
-// so it only changes speed. L2 lives only in the JS engine, so the Rust engine
-// skips it — pair it with `level: 1`:
-shaker({ include: ['src'], level: 1, engine: 'rust' });
+// Engine: the native Rust (WASM) engine runs the whole shake INCLUDING L2 (it
+// calls back to JS only for the net-win gate's compiled-size proxy) and is
+// differentially tested to be byte-identical to the JS engine, so it only changes
+// speed. It is the default ('auto'); force it (or the JS engine) explicitly with:
+shaker({ include: ['src'], engine: 'rust' }); // or engine: 'js'
 
 // Opt into the faster rsvelte parser (~1.46x full build, ~2.2x parse).
 // Requires the optional peer `@rsvelte/vite-plugin-svelte-native` (install it

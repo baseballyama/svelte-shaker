@@ -23,3 +23,12 @@ export function analyze_program(input_json: string): string;
  * byte-for-byte the L0/L1/L1.5 output (the `svelteShaker` equivalent).
  */
 export function shake_program(input_json: string): string;
+
+/**
+ * Whole-program shake WITH L2 monomorphization.  `input` is the same shape as
+ * `shake_program`; `options_json` is `{enabled, maxVariants, minSavings}`;
+ * `own_size(source) -> number | null` is the per-module compiled-byte proxy the
+ * net-win gate uses (the JS side runs svelte/compiler, so decisions match the TS
+ * engine).  Returns `{ files: {id: code}, variants: {specifier: code} }`.
+ */
+export function shake_program_with_mono(input_json: string, options_json: string, own_size: Function): string;
