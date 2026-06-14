@@ -80,6 +80,10 @@ export interface AnyNode {
   computed?: boolean | undefined;
   shorthand?: boolean | undefined;
   elseif?: boolean | undefined;
+  /** ObjectExpression `Property` accessor kind (`init` / `get` / `set`). */
+  kind?: string | undefined;
+  /** ObjectExpression `Property` shorthand-method flag (`{ m() {} }`). */
+  method?: boolean | undefined;
 
   value?: unknown;
 }
