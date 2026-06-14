@@ -101,12 +101,50 @@ shaker({
   include: ['src'], // dirs (relative to root) holding every .svelte call site
   level: 1, //  0 | 1 | 2 — default 1 (L0/L1/L1.5 always on). 2 = opt-in L2.
   monomorphize: false, // L2 tuning; only consulted when level: 2.
+  parser: 'svelte', // 'svelte' (default) | 'rsvelte' — see below.
 });
 
 // Opt into L2 per-call-site monomorphization:
 shaker({ include: ['src'], level: 2, monomorphize: true });
 shaker({ include: ['src'], level: 2, monomorphize: { maxVariants: 16 } });
+
+// Opt into the faster rsvelte parser (~1.46x full build, ~2.2x parse).
+// Requires the optional peer `@rsvelte/vite-plugin-svelte-native` (install it
+// yourself). Soundness is unchanged — it only affects speed and, occasionally,
+// shakes a little more. If the native package can't load it THROWS (no silent
+// fallback) so the output stays the same on every machine.
+shaker({ include: ['src'], parser: 'rsvelte' });
 ```
+
+### The rsvelte (Rust) parser
+
+By default the engine parses with `svelte/compiler`. Setting `parser: 'rsvelte'`
+swaps in [rsvelte](https://github.com/rsvelte/rsvelte)'s native (Rust) parser,
+which dominates the shake pipeline (~85% of the time is parsing): on a real
+474-component app the full build runs **~1.46x faster** (parse alone ~2.2x).
+
+```sh
+# rsvelte's native parser is an OPTIONAL peer — install it to opt in:
+pnpm add -D @rsvelte/vite-plugin-svelte-native
+```
+
+```ts
+// vite.config.ts
+shaker({ include: ['src'], parser: 'rsvelte' });
+```
+
+- **Soundness is parser-independent.** The engine reads only UTF-16
+  `start`/`end` offsets, so the chosen parser never changes _what_ is folded —
+  only how fast. The few differences from the `svelte/compiler` path are cases
+  where rsvelte happens to shake a little _more_, each still behavior-preserving.
+- **No silent fallback.** If `parser: 'rsvelte'` is requested but the native
+  package can't be loaded (not installed, or no prebuilt binary for the
+  platform), the plugin **throws** rather than quietly using `svelte/compiler` —
+  a silent fallback would make the same source shake differently depending on
+  whether the optional binary is present, breaking build reproducibility.
+
+See [`docs/RUST-MIGRATION.md`](https://github.com/baseballyama/svelte-shaker/blob/main/docs/RUST-MIGRATION.md)
+for the design.
 
 ## What it does
 

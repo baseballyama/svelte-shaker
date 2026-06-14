@@ -121,6 +121,35 @@ shaker({ include: ['src'], level: 2, monomorphize: { maxVariants: 16 } });
 shaker({ include: ['src'], parser: 'rsvelte' });
 ```
 
+### The rsvelte (Rust) parser
+
+By default the engine parses with `svelte/compiler`. Setting `parser: 'rsvelte'`
+swaps in [rsvelte](https://github.com/rsvelte/rsvelte)'s native (Rust) parser,
+which dominates the shake pipeline (~85% of the time is parsing): on a real
+474-component app the full build runs **~1.46x faster** (parse alone ~2.2x).
+
+```sh
+# rsvelte's native parser is an OPTIONAL peer — install it to opt in:
+pnpm add -D @rsvelte/vite-plugin-svelte-native
+```
+
+```ts
+// vite.config.ts
+shaker({ include: ['src'], parser: 'rsvelte' });
+```
+
+- **Soundness is parser-independent.** The engine reads only UTF-16
+  `start`/`end` offsets, so the chosen parser never changes _what_ is folded —
+  only how fast. The few differences from the `svelte/compiler` path are cases
+  where rsvelte happens to shake a little _more_, each still behavior-preserving.
+- **No silent fallback.** If `parser: 'rsvelte'` is requested but the native
+  package can't be loaded (not installed, or no prebuilt binary for the
+  platform), the plugin **throws** rather than quietly using `svelte/compiler` —
+  a silent fallback would make the same source shake differently depending on
+  whether the optional binary is present, breaking build reproducibility.
+
+See [`docs/RUST-MIGRATION.md`](./docs/RUST-MIGRATION.md) for the design.
+
 ## What it does
 
 | Level    | What it removes                                                                                                                              | Default    |
