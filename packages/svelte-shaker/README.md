@@ -99,14 +99,22 @@ pipelines; the Vite plugin is preferred for apps.
 ```ts
 shaker({
   include: ['src'], // dirs (relative to root) holding every .svelte call site
-  level: 1, //  0 | 1 | 2 — default 1 (L0/L1/L1.5 always on). 2 = opt-in L2.
-  monomorphize: false, // L2 tuning; only consulted when level: 2.
+  level: 2, //  0 | 1 | 2 — default 2 (L0/L1/L1.5 always on; 2 also enables L2).
+  monomorphize: true, // L2 tuning; on by default — object overrides maxVariants/minSavings.
+  engine: 'auto', // 'auto' (default) | 'js' | 'rust' — see below.
   parser: 'svelte', // 'svelte' (default) | 'rsvelte' — see below.
 });
 
-// Opt into L2 per-call-site monomorphization:
-shaker({ include: ['src'], level: 2, monomorphize: true });
-shaker({ include: ['src'], level: 2, monomorphize: { maxVariants: 16 } });
+// L2 is ON by default (it is bail-safe and never bloats). Turn it OFF for faster
+// builds, or tune it:
+shaker({ include: ['src'], level: 1 }); // L2 off (L0/L1/L1.5 only)
+shaker({ include: ['src'], monomorphize: { maxVariants: 16 } }); // raise the variant cap
+
+// Run the analysis + transform in the native Rust (WASM) engine. It implements
+// L0/L1/L1.5 and is differentially tested to be byte-identical to the JS engine,
+// so it only changes speed. L2 lives only in the JS engine, so the Rust engine
+// skips it — pair it with `level: 1`:
+shaker({ include: ['src'], level: 1, engine: 'rust' });
 
 // Opt into the faster rsvelte parser (~1.46x full build, ~2.2x parse).
 // Requires the optional peer `@rsvelte/vite-plugin-svelte-native` (install it
@@ -154,7 +162,7 @@ for the design.
 | **L1**   | Props that collapse to one constant app-wide → fold + drop + strip every call site's attribute                                               | on         |
 | **L1.5** | Value-set **narrowing**: with `variant ∈ {primary, secondary}`, delete provably-dead `{#if}`/`{:else if}` arms (prop stays in the signature) | on         |
 | **CSS**  | `<style>` rules whose class can never be produced given the value sets — the bundler-can't differentiator                                    | on         |
-| **L2**   | Per-call-site monomorphization: specialize a component per prop shape (deduped by residual, capped by `maxVariants`)                         | **opt-in** |
+| **L2**   | Per-call-site monomorphization: specialize a component per prop shape (deduped by residual, capped by `maxVariants`)                         | on (set `level: 1` to disable) |
 
 Folding also reaches template ternaries (`{cond ? a : b}`) and class-string
 interpolation when the condition/parts are provable constants.

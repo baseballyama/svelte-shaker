@@ -46,9 +46,9 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-wasm.mjs",
     "build:wasm": "wasm-pack build engine-rs --target nodejs --release --out-dir pkg",
-    "prepack": "tsc -p tsconfig.build.json",
+    "prepack": "tsc -p tsconfig.build.json && node scripts/copy-wasm.mjs",
     "dev": "tsc -p tsconfig.build.json -w",
     "test:watch": "vitest",
     "test": "vitest run"
