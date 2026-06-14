@@ -1,5 +1,11 @@
 # svelte-shaker
 
+## 0.5.2
+
+### Patch Changes
+
+- 17afa10: Document the opt-in `parser: 'rsvelte'` (Rust) parser in the package README — how to install the optional `@rsvelte/vite-plugin-svelte-native` peer, opt in, and why there is no silent fallback.
+
 ## 0.5.1
 
 ### Patch Changes
