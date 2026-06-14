@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import type { Parse, Root } from './parse';
+import type { Parse, Root } from './parse.js';
 
 // NODE-ONLY: dynamically loads the OPTIONAL native rsvelte parser. Imported only
 // by the Vite plugin (`vite.ts`, an ESM/Node entry), never by the environment-free

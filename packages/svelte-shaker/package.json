@@ -22,25 +22,22 @@
     "directory": "packages/svelte-shaker"
   },
   "files": [
-    "dist/*.js",
-    "dist/*.cjs",
-    "dist/types/src"
+    "dist"
   ],
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/types/src/index.d.ts",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/types/src/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     },
     "./vite": {
-      "types": "./dist/types/src/vite.d.ts",
+      "types": "./dist/vite.d.ts",
       "import": "./dist/vite.js"
     },
     "./node": {
-      "types": "./dist/types/src/scan.d.ts",
+      "types": "./dist/scan.d.ts",
       "import": "./dist/scan.js"
     },
     "./package.json": "./package.json"
@@ -49,10 +46,10 @@
     "access": "public"
   },
   "scripts": {
-    "build": "rollup -c",
+    "build": "tsc -p tsconfig.build.json",
     "build:wasm": "wasm-pack build engine-rs --target nodejs --release --out-dir pkg",
-    "prepack": "rollup -c",
-    "dev": "rollup -cw",
+    "prepack": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json -w",
     "test:watch": "vitest",
     "test": "vitest run"
   },
@@ -61,16 +58,10 @@
     "zimmerframe": "1.1.4"
   },
   "devDependencies": {
-    "@rollup/plugin-commonjs": "25.0.8",
-    "@rollup/plugin-node-resolve": "15.2.3",
-    "@rollup/plugin-terser": "0.4.4",
-    "@rollup/plugin-typescript": "11.1.6",
     "@rsvelte/compiler": "0.6.1",
     "@rsvelte/vite-plugin-svelte-native": "0.2.4",
     "@sveltejs/vite-plugin-svelte": "^4",
-    "rollup": "4.18.0",
     "svelte": "^5",
-    "tslib": "2.6.2",
     "vite": "^5"
   },
   "peerDependencies": {

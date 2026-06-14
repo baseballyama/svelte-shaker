@@ -1,10 +1,10 @@
 import MagicString from 'magic-string';
-import { walk, type AnyNode } from './parse';
-import type { ComponentId, ComponentPlan, Literal } from './ir';
-import { remapToLocalNames, type FileModel } from './analyze';
-import { decideChain, inSpans, type Span } from './dead';
-import { evaluate } from './eval';
-import { shakeCss } from './css';
+import { walk, type AnyNode } from './parse.js';
+import type { ComponentId, ComponentPlan, Literal } from './ir.js';
+import { remapToLocalNames, type FileModel } from './analyze.js';
+import { decideChain, inSpans, type Span } from './dead.js';
+import { evaluate } from './eval.js';
+import { shakeCss } from './css.js';
 
 /**
  * Apply every plan to every component and return the shaken source per file.

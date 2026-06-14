@@ -1,5 +1,5 @@
-import type { AnyNode } from './parse';
-import type { Literal } from './ir';
+import type { AnyNode } from './parse.js';
+import type { Literal } from './ir.js';
 
 export type EvalResult = { known: true; value: Literal } | { known: false };
 

@@ -1,7 +1,7 @@
-import { analyzeInput, buildAnalyzeInput, type ReadFile, type Resolve } from './analyze';
-import { transformAll } from './transform';
-import type { Parse, ParseCache } from './parse';
-import type { ComponentId, EditResult } from './ir';
+import { analyzeInput, buildAnalyzeInput, type ReadFile, type Resolve } from './analyze.js';
+import { transformAll } from './transform.js';
+import type { Parse, ParseCache } from './parse.js';
+import type { ComponentId, EditResult } from './ir.js';
 
 /**
  * dev shake granularity (docs/RUST-MIGRATION.md §3 M2 / ARCHITECTURE §6.2):
