@@ -110,6 +110,16 @@
     <pre class="install"><span class="c"># Vite</span>
 import &#123; shaker &#125; from <span class="s">'svelte-shaker/vite'</span>;
 plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte()]</pre>
+    <p class="caveat rust-note">
+      <strong>Faster builds with the rsvelte (Rust) parser.</strong> Parsing is
+      ~85% of the pipeline, so swapping <code>svelte/compiler</code> for rsvelte's
+      native parser makes a real 474-component build <strong>~1.46x faster</strong>
+      (parse alone ~2.2x). Install the optional peer
+      <code>@rsvelte/vite-plugin-svelte-native</code> and opt in — soundness is
+      unchanged:
+    </p>
+    <pre class="install"><span class="c"># opt in to the Rust parser</span>
+plugins: [shaker(&#123; include: [<span class="s">'src'</span>], parser: <span class="s">'rsvelte'</span> &#125;), svelte()]</pre>
   </section>
 </main>
 
@@ -303,6 +313,12 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
     font-size: 13px;
     max-width: 80ch;
     line-height: 1.7;
+  }
+  .rust-note {
+    margin-top: 26px;
+  }
+  .rust-note strong {
+    color: var(--ink);
   }
   .install {
     margin-top: 22px;
