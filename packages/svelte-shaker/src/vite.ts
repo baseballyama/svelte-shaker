@@ -1,12 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plugin } from 'vite';
-import { svelteShaker, svelteShakerWithMono, type Parse, type Resolve } from './index';
-import { DevShaker, type DevMode } from './engine';
-import { collectSvelteFiles, fsResolve } from './scan';
-import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono';
-import { tryLoadRsvelteParser } from './rsvelte-parse';
-import type { ComponentId } from './ir';
+import { svelteShaker, svelteShakerWithMono, type Parse, type Resolve } from './index.js';
+import { DevShaker, type DevMode } from './engine.js';
+import { collectSvelteFiles, fsResolve } from './scan.js';
+import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono.js';
+import { tryLoadRsvelteParser } from './rsvelte-parse.js';
+import type { ComponentId } from './ir.js';
 
 export interface ShakerOptions {
   /**
@@ -52,6 +52,69 @@ export interface ShakerOptions {
    * deterministic across machines (install the peer on every build platform).
    */
   parser?: 'svelte' | 'rsvelte';
+  /**
+   * Report how much the shake saved.  Default `false`: a single one-line summary
+   * of the whole-program byte reduction is always printed after the build crawl.
+   * `true` additionally prints a per-file breakdown (original → shaken size and
+   * the delta) for every component that actually shrank, so you can see which
+   * files were shaken and by how much.  Reporting only — it never affects output.
+   */
+  verbose?: boolean;
+}
+
+/** A component that the shake actually shrank, with its before/after byte size. */
+interface SizeRow {
+  id: ComponentId;
+  before: number;
+  after: number;
+}
+
+/** kB with two decimals, the unit Vite itself uses in its build size report. */
+function formatKB(bytes: number): string {
+  return `${(bytes / 1024).toFixed(2)} kB`;
+}
+
+/**
+ * Print what the shake saved.  Always emits a one-line whole-program summary;
+ * when `verbose`, also lists each shrunk file (largest saving first).  Sizes are
+ * UTF-8 byte lengths of the source the engine consumed vs. produced — the honest
+ * "how much smaller is the source we hand to the Svelte compiler" number, not the
+ * final post-compile/minify bundle size.
+ */
+function reportSizes(
+  shaken: Record<ComponentId, string>,
+  read: (id: ComponentId) => string,
+  root: string,
+  verbose: boolean,
+  log: (msg: string) => void,
+): void {
+  let totalBefore = 0;
+  let totalAfter = 0;
+  const rows: SizeRow[] = [];
+  for (const [id, after] of Object.entries(shaken)) {
+    const beforeBytes = Buffer.byteLength(read(id));
+    const afterBytes = Buffer.byteLength(after);
+    totalBefore += beforeBytes;
+    totalAfter += afterBytes;
+    if (afterBytes < beforeBytes) rows.push({ id, before: beforeBytes, after: afterBytes });
+  }
+  if (totalBefore === 0) return;
+
+  const saved = totalBefore - totalAfter;
+  const pct = ((saved / totalBefore) * 100).toFixed(1);
+  log(
+    `shaken ${rows.length}/${Object.keys(shaken).length} files: ` +
+      `${formatKB(totalBefore)} → ${formatKB(totalAfter)} ` +
+      `(saved ${formatKB(saved)}, ${pct}%)`,
+  );
+
+  if (!verbose) return;
+  for (const row of rows.sort((a, b) => b.before - b.after - (a.before - a.after))) {
+    const rel = path.relative(root, row.id) || row.id;
+    const fileSaved = row.before - row.after;
+    const filePct = ((fileSaved / row.before) * 100).toFixed(1);
+    log(`  ${rel}: ${formatKB(row.before)} → ${formatKB(row.after)} (-${filePct}%)`);
+  }
 }
 
 /** Query flag a specialized-variant `.svelte` request carries (see below). */
@@ -93,6 +156,9 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   /** Variant request id (`<childPath>?shaker_variant=<n>`) -> residual source. */
   let variantSources = new Map<string, string>();
   let root = process.cwd();
+  // Vite's logger, captured in `configResolved`; until then fall back to console
+  // so the size report still surfaces if `buildStart` somehow runs first.
+  let log: (msg: string) => void = (msg) => console.info(`[svelte-shaker] ${msg}`);
 
   // Dev (serve) shaking is opt-in (docs §6.2); `null` keeps dev a pass-through.
   const devMode: DevMode | null =
@@ -145,6 +211,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
 
     configResolved(config) {
       root = config.root;
+      log = (msg) => config.logger.info(`[svelte-shaker] ${msg}`);
     },
 
     // Dev (serve): drive the long-lived incremental engine instead of the
@@ -241,6 +308,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         // Default path: byte-for-byte the L0/L1/L1.5 output (no L2 at all).
         shaken = await svelteShaker(entries, resolve, read, getParse());
         variantSources = new Map();
+        reportSizes(shaken, read, root, options.verbose === true, log);
         return;
       }
 
@@ -256,6 +324,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       variantSources = new Map();
       for (const v of result.mono.variants.values())
         variantSources.set(variantSpecifier(v.id), v.code);
+      reportSizes(shaken, read, root, options.verbose === true, log);
     },
 
     // A `?shaker_variant` request resolves to the real child path (so relative

@@ -1,0 +1,17 @@
+{
+  // No bundler: `tsc` just transpiles each `src/*.ts` to a matching `dist/*.js`
+  // (ESM, unminified) with its `.d.ts` beside it. The file split is preserved so
+  // a consumer stepping through `node_modules/svelte-shaker/dist` reads the same
+  // module layout as the source. This is why the engine's internal imports carry
+  // explicit `.js` extensions (`./parse.js`) — Node ESM requires them and `tsc`
+  // emits import specifiers verbatim.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "outDir": "./dist",
+    "declarationDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"]
+}

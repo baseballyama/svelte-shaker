@@ -107,6 +107,7 @@ shaker({
   level: 1, //  0 | 1 | 2 — default 1 (L0/L1/L1.5 always on). 2 = opt-in L2.
   monomorphize: false, // L2 tuning; only consulted when level: 2.
   parser: 'svelte', // 'svelte' (default) | 'rsvelte' — see below.
+  verbose: false, // true = print a per-file size breakdown — see below.
 });
 
 // Opt into L2 per-call-site monomorphization:
@@ -119,6 +120,21 @@ shaker({ include: ['src'], level: 2, monomorphize: { maxVariants: 16 } });
 // shakes a little more. If the native package can't load it THROWS (no silent
 // fallback) so the output stays the same on every machine.
 shaker({ include: ['src'], parser: 'rsvelte' });
+
+// Report how much was shaken. A one-line whole-program summary is ALWAYS
+// printed after the build crawl; `verbose: true` adds a per-file breakdown
+// (original → shaken size and the delta) for every component that shrank.
+shaker({ include: ['src'], verbose: true });
+```
+
+The size report measures the `.svelte` **source** the engine hands to the
+Svelte compiler (UTF-8 bytes), not the final post-compile bundle — it tells you
+how much each component shrank at the source level:
+
+```
+[svelte-shaker] shaken 9/18 files: 16.79 kB → 15.60 kB (saved 1.19 kB, 7.1%)
+[svelte-shaker]   src/patterns/RestProps.svelte: 0.43 kB → 0.33 kB (-23.0%)
+...
 ```
 
 ### The rsvelte (Rust) parser

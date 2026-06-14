@@ -56,17 +56,17 @@
 
 import MagicString from 'magic-string';
 import { compile } from 'svelte/compiler';
-import { inSpans } from './dead';
-import { shakeBody } from './transform';
+import { inSpans } from './dead.js';
+import { shakeBody } from './transform.js';
 import {
   readCallSite,
   deadSpansForPlans,
   isFoldBlockedName,
   type FileModel,
   type PropDecl,
-} from './analyze';
-import { parseSvelte, walk, type AnyNode } from './parse';
-import type { ComponentId, ComponentPlan, Literal } from './ir';
+} from './analyze.js';
+import { parseSvelte, walk, type AnyNode } from './parse.js';
+import type { ComponentId, ComponentPlan, Literal } from './ir.js';
 
 /** Tuning knobs for L2 (docs §8.1, §13.2).  All have sound defaults. */
 export interface MonomorphizeOptions {

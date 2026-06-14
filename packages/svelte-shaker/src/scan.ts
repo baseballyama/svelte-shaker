@@ -5,8 +5,8 @@
 // ----------------------------------------------------------------------
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { ComponentId } from './ir';
-import type { Resolve, ReadFile } from './analyze';
+import type { ComponentId } from './ir.js';
+import type { Resolve, ReadFile } from './analyze.js';
 
 /** Default filesystem resolver: resolve `source` relative to its importer. */
 export const fsResolve: Resolve = (source, importer) => {

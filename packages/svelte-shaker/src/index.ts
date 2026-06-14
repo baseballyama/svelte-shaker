@@ -5,16 +5,16 @@ import {
   type FileModel,
   type ReadFile,
   type Resolve,
-} from './analyze';
-import { parseSvelte, type Parse, type ParseCache } from './parse';
-import { transformAll, transformAllWithMono } from './transform';
+} from './analyze.js';
+import { parseSvelte, type Parse, type ParseCache } from './parse.js';
+import { transformAll, transformAllWithMono } from './transform.js';
 import {
   monomorphize,
   DEFAULT_MONO_OPTIONS,
   type MonomorphizeOptions,
   type MonomorphizeResult,
-} from './mono';
-import type { ComponentId } from './ir';
+} from './mono.js';
+import type { ComponentId } from './ir.js';
 
 export type {
   ComponentId,
@@ -23,12 +23,12 @@ export type {
   ResolvedEdge,
   EdgeKind,
   EditResult,
-} from './ir';
-export type { Resolve, ReadFile } from './analyze';
-export type { Parse, Root } from './parse';
-export { analyze, analyzeInput, buildAnalyzeInput } from './analyze';
-export { DevShaker, type DevMode, type DevShakerChange } from './engine';
-export { transformAll, transformAllWithMono } from './transform';
+} from './ir.js';
+export type { Resolve, ReadFile } from './analyze.js';
+export type { Parse, Root } from './parse.js';
+export { analyze, analyzeInput, buildAnalyzeInput } from './analyze.js';
+export { DevShaker, type DevMode, type DevShakerChange } from './engine.js';
+export { transformAll, transformAllWithMono } from './transform.js';
 export {
   monomorphize,
   DEFAULT_MONO_OPTIONS,
@@ -36,7 +36,7 @@ export {
   type MonomorphizeResult,
   type Variant,
   type CallSiteBinding,
-} from './mono';
+} from './mono.js';
 
 /**
  * Whole-program shake: crawl the component graph from `entry`, decide what to

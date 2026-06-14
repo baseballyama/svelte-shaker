@@ -12,9 +12,9 @@
 //     genuinely vanish from the output (used to drop call sites in dead code).
 // ----------------------------------------------------------------------
 
-import { walk, type AnyNode } from './parse';
-import type { Literal } from './ir';
-import { evaluateWithSets } from './eval';
+import { walk, type AnyNode } from './parse.js';
+import type { Literal } from './ir.js';
+import { evaluateWithSets } from './eval.js';
 
 export type Span = [number, number];
 

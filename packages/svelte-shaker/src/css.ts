@@ -18,10 +18,10 @@
 // ----------------------------------------------------------------------
 
 import type MagicString from 'magic-string';
-import { walk, type AnyNode } from './parse';
-import type { ComponentPlan, Literal } from './ir';
-import type { FileModel } from './analyze';
-import { evaluate } from './eval';
+import { walk, type AnyNode } from './parse.js';
+import type { ComponentPlan, Literal } from './ir.js';
+import type { FileModel } from './analyze.js';
+import { evaluate } from './eval.js';
 
 /**
  * The set of class names any element this component renders could carry.

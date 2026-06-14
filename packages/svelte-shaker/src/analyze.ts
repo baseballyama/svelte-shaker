@@ -6,7 +6,7 @@ import {
   type Parse,
   type ParseCache,
   type Root,
-} from './parse';
+} from './parse.js';
 import {
   emptyPlan,
   type AnalyzeInput,
@@ -16,8 +16,8 @@ import {
   type Literal,
   type PropValueSet,
   type ResolvedEdge,
-} from './ir';
-import { computeDeadSpans, inSpans, type Span } from './dead';
+} from './ir.js';
+import { computeDeadSpans, inSpans, type Span } from './dead.js';
 
 export type Resolve = (
   source: string,
