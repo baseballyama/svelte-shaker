@@ -1,5 +1,16 @@
 # svelte-shaker
 
+## 0.8.0
+
+### Minor Changes
+
+- b98d957: L2 per-call-site monomorphization is now **on by default**. It is bail-safe and never bloats (the measured net-win gate only specializes when it strictly shrinks the bundle), so leaving it on gives the most compression out of the box. To turn it off — e.g. to trade a little compression for faster builds — set `level: 1` (or `monomorphize: false`). Explicit `level: 2` / `monomorphize` configs are unaffected.
+- b98d957: Add an `engine` option (`'auto' | 'js' | 'rust'`, default `'auto'`) to run the L0/L1/L1.5 analysis + transform in the native Rust (WASM) engine. The Rust engine is differentially tested to produce byte-identical output to the JS engine, so the choice only affects build speed, never what is shaken. `'auto'` uses the Rust engine on the L2-off path and falls back to JS otherwise; `'rust'` forces it (L2 is JS-only and is skipped); `'js'` forces the JS engine. The WASM artifact now ships inside the package.
+
+### Patch Changes
+
+- b98d957: Make the L2 net-win gate much cheaper: it now compiles only the modules whose size actually differs between the base and specialized scenarios (the variants plus any orphaned modules) instead of the whole reachable program for every candidate. Components reachable in both scenarios cancel out, so a child that orphans nothing is decided by sizing just its variants against its base. This makes a larger `maxVariants` affordable without changing any specialization decision.
+
 ## 0.7.0
 
 ### Minor Changes
