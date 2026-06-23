@@ -65,7 +65,7 @@
     "vite": "^5"
   },
   "peerDependencies": {
-    "@rsvelte/vite-plugin-svelte-native": ">=0.2.4",
+    "@rsvelte/vite-plugin-svelte-native": ">=0.2.6",
     "svelte": "^5"
   },
   "peerDependenciesMeta": {
