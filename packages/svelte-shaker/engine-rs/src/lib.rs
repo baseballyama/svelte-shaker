@@ -1523,6 +1523,41 @@ fn is_preserve_element(node: &Value) -> bool {
         && matches!(node.get("name").and_then(Value::as_str), Some("pre") | Some("textarea"))
 }
 
+/// Node types that reset the content-model parent to "unknown" (text allowed
+/// again), mirroring svelte's `parent_element: null` reset in the SvelteElement /
+/// SvelteFragment / SnippetBlock / Component visitors.  See transform.ts
+/// `PARENT_ELEMENT_RESET`.
+fn is_parent_element_reset(node: &Value) -> bool {
+    matches!(
+        type_of(node),
+        Some("SvelteElement") | Some("SvelteFragment") | Some("SnippetBlock") | Some("Component") | Some("SvelteSelf") | Some("SvelteComponent")
+    )
+}
+
+/// The content-model parent element a seam would land in for `node`'s children,
+/// given the element the walk is currently inside.  Mirrors svelte's
+/// `parent_element` threading: a `RegularElement` becomes the parent, the reset
+/// node types clear it, every other node (Fragment, blocks, …) inherits.  `None`
+/// means "text allowed" (root or a reset context).  See transform.ts
+/// `childParentElement`.
+fn child_parent_element<'a>(node: &'a Value, current: Option<&'a str>) -> Option<&'a str> {
+    if type_of(node) == Some("RegularElement") {
+        return node.get("name").and_then(Value::as_str);
+    }
+    if is_parent_element_reset(node) {
+        return None;
+    }
+    current
+}
+
+/// True when an `{" "}` seam would be an invalid text child of `element`: these are
+/// svelte's `disallowed_children` entries carrying an `only` list (text is in none
+/// of them), restricted to the parts that can appear as elements inside a
+/// component.  See transform.ts `TEXT_FREE_PARENTS` / `isTextFreeParent`.
+fn is_text_free_parent(element: Option<&str>) -> bool {
+    matches!(element, Some("table" | "thead" | "tbody" | "tfoot" | "tr" | "colgroup"))
+}
+
 /// True when an attribute value is the literal `{false}` (or `false`).
 fn attr_is_explicit_false(value: &Value) -> bool {
     if value == &Value::Bool(false) {
@@ -1594,8 +1629,12 @@ fn remove_chain(
     siblings: Option<&[Value]>,
     index: usize,
     preserve: bool,
+    element: Option<&str>,
 ) {
-    if !preserve {
+    // Never compensate under preserved whitespace (plain deletion is byte-exact)
+    // nor inside a text-free parent (`<tr>`, `<tbody>`, …), where Svelte rejects the
+    // `{" "}` text child and the whitespace rendered nothing to begin with.
+    if !preserve && !is_text_free_parent(element) {
         if let Some(sibs) = siblings {
             if let Some(seam) = analyze_seam(sibs, index, span, edits, dead) {
                 edits.overwrite(seam.0 as usize, seam.1 as usize, "{\" \"}");
@@ -1618,6 +1657,7 @@ fn apply_chain(
     siblings: Option<&[Value]>,
     index: usize,
     preserve: bool,
+    element: Option<&str>,
 ) {
     if let Some(frag) = &decision.kept {
         let mut text = fragment_source(edits, frag, env);
@@ -1628,7 +1668,7 @@ fn apply_chain(
         }
         // A kept arm that renders nothing behaves like a full removal.
         if text.is_empty() && !preserve {
-            remove_chain(&[decision.span], decision.span, edits, dead, siblings, index, preserve);
+            remove_chain(&[decision.span], decision.span, edits, dead, siblings, index, preserve, element);
             return;
         }
         edits.overwrite(decision.span.0 as usize, decision.span.1 as usize, &text);
@@ -1636,7 +1676,7 @@ fn apply_chain(
         return;
     }
     if is_full_removal(decision) {
-        remove_chain(&decision.removed, decision.span, edits, dead, siblings, index, preserve);
+        remove_chain(&decision.removed, decision.span, edits, dead, siblings, index, preserve, element);
         return;
     }
     for (a, b) in &decision.removed {
@@ -1648,20 +1688,21 @@ fn apply_chain(
     }
 }
 
-fn fold_if_blocks(
-    node: &Value,
+fn fold_if_blocks<'a>(
+    node: &'a Value,
     env: &Env,
     set_env: &SetEnv,
     edits: &mut MagicEdit,
     dead: &mut Vec<Span>,
-    siblings: Option<&[Value]>,
+    siblings: Option<&'a [Value]>,
     index: usize,
     preserve: bool,
+    element: Option<&'a str>,
 ) {
     match node {
         Value::Array(items) => {
             for (i, v) in items.iter().enumerate() {
-                fold_if_blocks(v, env, set_env, edits, dead, Some(items), i, preserve);
+                fold_if_blocks(v, env, set_env, edits, dead, Some(items), i, preserve, element);
             }
         }
         Value::Object(map) => {
@@ -1670,17 +1711,20 @@ fn fold_if_blocks(
                     return;
                 }
                 let decision = decide_chain(node, env, set_env);
-                apply_chain(&decision, env, edits, dead, siblings, index, preserve);
+                apply_chain(&decision, env, edits, dead, siblings, index, preserve, element);
                 if decision.recurse {
+                    // kept head: the `{#if}` is transparent to the content model, so its
+                    // children stay in the same parent element.
                     for v in map.values() {
-                        fold_if_blocks(v, env, set_env, edits, dead, None, 0, preserve);
+                        fold_if_blocks(v, env, set_env, edits, dead, None, 0, preserve, element);
                     }
                 }
                 return;
             }
             let child_preserve = preserve || is_preserve_element(node);
+            let child_element = child_parent_element(node, element);
             for v in map.values() {
-                fold_if_blocks(v, env, set_env, edits, dead, None, 0, child_preserve);
+                fold_if_blocks(v, env, set_env, edits, dead, None, 0, child_preserve, child_element);
             }
         }
         _ => {}
@@ -2231,7 +2275,7 @@ fn shake_body(
     let local_env = remap_to_local_names(env, model);
     let local_set_env = remap_to_local_names(set_env, model);
     let mut dead: Vec<Span> = Vec::new();
-    fold_if_blocks(fragment, &local_env, &local_set_env, edits, &mut dead, None, 0, has_preserve_whitespace_option(fragment));
+    fold_if_blocks(fragment, &local_env, &local_set_env, edits, &mut dead, None, 0, has_preserve_whitespace_option(fragment), None);
     if !local_env.is_empty() {
         fold_ternaries(fragment, &local_env, edits, &mut dead);
     }

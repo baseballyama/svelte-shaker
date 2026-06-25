@@ -1,5 +1,17 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { cleanTmp, renderHtml, renderHtmlRaw } from './diff';
+import { svelteShaker } from '../src/index';
+import { assertCompiles, cleanTmp, renderHtml, renderHtmlRaw } from './diff';
+
+/** Shake a tiny in-memory program and return the shaken source per file. */
+async function shakeProgram(
+  files: Record<string, string>,
+  entry: string,
+): Promise<Record<string, string>> {
+  const resolve = (source: string, importer: string): string | null =>
+    source.startsWith('.') ? new URL(source, `file://${importer}`).pathname : null;
+  const readFile = (id: string): string => files[id]!;
+  return svelteShaker(entry, resolve, readFile);
+}
 
 // ----------------------------------------------------------------------
 // Whitespace oracle: the engine deletes/collapses `{#if}` chains and must not
@@ -143,5 +155,64 @@ describe('whitespace oracle / preserved whitespace is byte-exact under plain del
     );
     const deleted = await renderHtmlRaw(`<pre>${W}${W}<p>b</p></pre>`, {}, 'Pre.svelte');
     expect(deleted).toBe(original); // never compensate here — runs are observable
+  });
+});
+
+// ----------------------------------------------------------------------
+// Text-free parents: the `{" "}` seam compensation is invalid HTML inside
+// `<tr>`/`<tbody>`/… (svelte's `is_tag_valid_with_parent('#text', …)` rejects
+// it, and the run rendered nothing there anyway), so a folded chain must be
+// plain-deleted.  Regression for the flygate Table.svelte build failure
+// (`<#text> cannot be a child of <tr>`).
+// ----------------------------------------------------------------------
+describe('whitespace oracle / text-free parents skip the `{" "}` compensation', () => {
+  it('folding a leading `{#if}` inside `<tr>` stays valid svelte (no `{" "}`)', async () => {
+    // `checked` is never passed by the call site, so the `{#if checked}` folds
+    // away.  Its seam is a leading whitespace run before `{@render}`/`<th>` — the
+    // exact shape that would otherwise be overwritten with `{" "}`.
+    const table = [
+      '<script>',
+      '  let { checked = false, headers } = $props();',
+      '</script>',
+      '<table>',
+      '  <thead>',
+      '    <tr>',
+      '      {#if checked}<th>c</th>{/if}',
+      '      <th>{headers}</th>',
+      '    </tr>',
+      '  </thead>',
+      '</table>',
+    ].join('\n');
+    const app = '<script>import Table from \'./Table.svelte\';</script>\n<Table headers="H" />';
+    const out = await shakeProgram({ '/App.svelte': app, '/Table.svelte': table }, '/App.svelte');
+    const shaken = out['/Table.svelte']!;
+
+    // The bug: `{" "}` inside `<tr>` makes svelte throw `node_invalid_placement`.
+    expect(shaken).not.toContain('{" "}');
+    assertCompiles(shaken, 'Table.svelte'); // would throw before the fix
+    // And the rendered output is unchanged (the run never rendered a space here).
+    const before = await renderHtml(table, { checked: false, headers: 'H' }, 'Table.svelte');
+    const after = await renderHtml(shaken, { headers: 'H' }, 'Table.svelte');
+    expect(after).toBe(before);
+  });
+
+  it('a `<td>` still gets the `{" "}` compensation (fix is not over-broad)', async () => {
+    // Same leading-`{#if}` seam, but inside `<td>` text IS allowed, so the space
+    // must still be compensated — otherwise plain deletion would drop it.
+    const cell = [
+      '<script>',
+      '  let { hidden = false } = $props();',
+      '</script>',
+      "<table><tbody><tr><td>{#if hidden}<b>x</b>{/if} {'R'}</td></tr></tbody></table>",
+    ].join('\n');
+    const app = "<script>import Cell from './Cell.svelte';</script>\n<Cell />";
+    const out = await shakeProgram({ '/App.svelte': app, '/Cell.svelte': cell }, '/App.svelte');
+    const shaken = out['/Cell.svelte']!;
+
+    expect(shaken).toContain('{" "}'); // compensation kept where text is legal
+    assertCompiles(shaken, 'Cell.svelte');
+    const before = await renderHtml(cell, { hidden: false }, 'Cell.svelte');
+    const after = await renderHtml(shaken, {}, 'Cell.svelte');
+    expect(after).toBe(before);
   });
 });
