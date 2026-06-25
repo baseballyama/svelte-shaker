@@ -350,15 +350,20 @@ function foldIfBlocks(
   s: MagicString,
   dead: Span[],
 ): void {
-  walk<{ parent: AnyNode | null; preserve: boolean }>(
+  walk<{ parent: AnyNode | null; preserve: boolean; element: string | null }>(
     fragment,
-    { parent: null, preserve: hasPreserveWhitespaceOption(fragment) },
+    { parent: null, preserve: hasPreserveWhitespaceOption(fragment), element: null },
     {
       _(node, { state, next }) {
         if (node.type !== 'IfBlock') {
-          // Descend, recording this node as the children's parent and whether it
-          // opens a preserved-whitespace context for them.
-          next({ parent: node, preserve: state.preserve || isPreserveElement(node) });
+          // Descend, recording this node as the children's parent, whether it
+          // opens a preserved-whitespace context, and the content-model element
+          // their seam would land in (for the `{" "}` validity check).
+          next({
+            parent: node,
+            preserve: state.preserve || isPreserveElement(node),
+            element: childParentElement(node, state.element),
+          });
           return;
         }
         // `elseif` IfBlocks are the *continuation* of a chain we already own from
@@ -372,8 +377,12 @@ function foldIfBlocks(
           // node as its children's parent), so its `nodes` are the chain's siblings.
           index: state.parent?.nodes?.indexOf(node) ?? -1,
           preserve: state.preserve,
+          element: state.element,
         });
-        if (decision.recurse) next({ parent: node, preserve: state.preserve }); // kept head: descend for nested blocks
+        // kept head: descend for nested blocks. The `{#if}` is transparent to the
+        // content model, so children stay in the same parent element.
+        if (decision.recurse)
+          next({ parent: node, preserve: state.preserve, element: state.element });
         // otherwise the subtree is gone or re-emitted verbatim — do not recurse.
       },
     },
@@ -388,6 +397,9 @@ interface ChainContext {
   index: number;
   /** Whitespace is preserved here (`<pre>`/`<textarea>`/`preserveWhitespace`). */
   preserve: boolean;
+  /** The content-model parent element the seam lands in (`null` = text allowed),
+   * used to suppress the `{" "}` compensation where text children are invalid. */
+  element: string | null;
 }
 
 /** Realize one {@link decideChain} decision as MagicString edits, keeping the
@@ -465,7 +477,9 @@ function isFullRemoval(decision: ReturnType<typeof decideChain>): boolean {
  * edge-trimmed, so it renders exactly one space wherever it lands, matching the
  * original.  Otherwise plain deletion already preserves space presence (only the
  * run LENGTH can differ, which the SSR oracle normalizes).  Never compensate
- * under preserved whitespace — there plain deletion is byte-exact.
+ * under preserved whitespace — there plain deletion is byte-exact — nor inside a
+ * text-free parent (`<tr>`, `<tbody>`, …), where Svelte rejects the `{" "}` text
+ * child outright and the whitespace rendered nothing to begin with.
  */
 function removeChain(
   removed: Span[],
@@ -475,7 +489,7 @@ function removeChain(
   dead: Span[],
   ctx: ChainContext,
 ): void {
-  if (!ctx.preserve && ctx.parent?.nodes && ctx.index >= 0) {
+  if (!ctx.preserve && !isTextFreeParent(ctx.element) && ctx.parent?.nodes && ctx.index >= 0) {
     const seam = analyzeSeam(ctx.parent.nodes, ctx.index, span, code, dead);
     if (seam) {
       s.overwrite(seam[0], seam[1], '{" "}');
@@ -547,6 +561,51 @@ function isRenderingSibling(node: AnyNode, code: string): boolean {
 /** An element inside which Svelte preserves whitespace verbatim. */
 function isPreserveElement(node: AnyNode): boolean {
   return node.type === 'RegularElement' && (node.name === 'pre' || node.name === 'textarea');
+}
+
+/**
+ * Parent elements whose HTML content model forbids a text child: Svelte's
+ * `is_tag_valid_with_parent('#text', …)` rejects a `#text`/`{" "}` here with
+ * `node_invalid_placement` — these are exactly its `disallowed_children` entries
+ * that carry an `only` list (html/head/frameset/#document can't appear as
+ * elements inside a component, so only the table parts remain).  Svelte never
+ * renders inter-child whitespace inside them either, so a removed chain's seam
+ * needs plain deletion: emitting the `{" "}` compensation would produce a
+ * component that fails to compile. See {@link removeChain}.
+ */
+const TEXT_FREE_PARENTS = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr', 'colgroup']);
+
+/**
+ * Node types that reset the content-model parent to "unknown" (text allowed
+ * again), mirroring svelte's `parent_element: null` reset in the SvelteElement /
+ * SvelteFragment / SnippetBlock / Component visitors.  A `{" "}` seam in any of
+ * these contexts is valid, so the seam compensation may proceed.
+ */
+const PARENT_ELEMENT_RESET = new Set([
+  'SvelteElement',
+  'SvelteFragment',
+  'SnippetBlock',
+  'Component',
+  'SvelteSelf',
+  'SvelteComponent',
+]);
+
+/**
+ * The content-model parent element a seam would land in for `node`'s children,
+ * given the element the walk is currently inside.  Mirrors svelte's
+ * `parent_element` threading: a `RegularElement` becomes the parent, the reset
+ * node types clear it, and every other node (Fragment, blocks, …) is transparent
+ * and inherits.  `null` means "text allowed" (root or a reset context).
+ */
+function childParentElement(node: AnyNode, current: string | null): string | null {
+  if (node.type === 'RegularElement') return node.name ?? null;
+  if (PARENT_ELEMENT_RESET.has(node.type)) return null;
+  return current;
+}
+
+/** True when an `{" "}` seam would be an invalid text child of `element`. */
+function isTextFreeParent(element: string | null): boolean {
+  return element !== null && TEXT_FREE_PARENTS.has(element);
 }
 
 /** Does the component opt into preserved whitespace via `<svelte:options>`? */
