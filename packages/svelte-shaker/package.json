@@ -30,15 +30,18 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./vite": {
       "types": "./dist/vite.d.ts",
-      "import": "./dist/vite.js"
+      "import": "./dist/vite.js",
+      "default": "./dist/vite.js"
     },
     "./node": {
       "types": "./dist/scan.d.ts",
-      "import": "./dist/scan.js"
+      "import": "./dist/scan.js",
+      "default": "./dist/scan.js"
     },
     "./package.json": "./package.json"
   },
