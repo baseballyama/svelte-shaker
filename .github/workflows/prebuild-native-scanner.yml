@@ -40,16 +40,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `napi` = the `${process.platform}-${process.arch}` tag the loader
+          # (`index.cjs`) looks for first.
           - host: macos-latest
             target: x86_64-apple-darwin
+            napi: darwin-x64
           - host: macos-latest
             target: aarch64-apple-darwin
+            napi: darwin-arm64
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            napi: linux-x64
           - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            napi: linux-arm64
           - host: windows-latest
             target: x86_64-pc-windows-msvc
+            napi: win32-x64
     runs-on: ${{ matrix.host }}
     defaults:
       run:
@@ -59,19 +66,17 @@ jobs:
 
       # Skip rsvelte's ecosystem-test submodules — they are NOT part of
       # `rsvelte_core`'s build, and two (`submodules/vize`, `submodules/corsa-bind`)
-      # are private repos cargo can't fetch anonymously. Skipping them keeps the
-      # cargo git checkout from failing on a submodule the build never uses. (rsvelte
-      # itself is public, so no auth is configured.)
+      # are private repos cargo can't fetch anonymously. Marking them inactive +
+      # update=none keeps the cargo git checkout from failing on a submodule the
+      # build never uses. (rsvelte itself is public, so no auth is configured.)
       - name: Skip rsvelte's private test submodules
         shell: bash
         run: |
-          git config --global submodule.submodules/vize.update none
-          git config --global submodule.submodules/corsa-bind.update none
+          for sm in submodules/vize submodules/corsa-bind; do
+            git config --global submodule."$sm".active false
+            git config --global submodule."$sm".update none
+          done
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -84,13 +89,22 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
-      # `--ignore-workspace`: this package lives under the svelte-shaker repo but
-      # is NOT a pnpm workspace member, so install its own devDeps (@napi-rs/cli)
-      # standalone here.
-      - run: pnpm install --ignore-workspace --no-frozen-lockfile
-
+      # `cargo build` produces the napi cdylib directly — `build.rs` runs
+      # `napi_build::setup()` — so we don't need @napi-rs/cli and dodge any CLI
+      # version/flag drift. Then rename the cdylib to the platform `.node` the
+      # loader resolves.
       - name: Build addon
-        run: pnpm exec napi build --platform --release --no-js --target ${{ matrix.target }} --output-dir .
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename cdylib to a platform .node
+        shell: bash
+        run: |
+          out="svelte-shaker-engine-scan-native.${{ matrix.napi }}.node"
+          bin=$(ls "target/${{ matrix.target }}/release"/*.dylib \
+                   "target/${{ matrix.target }}/release"/*.so \
+                   "target/${{ matrix.target }}/release"/*.dll 2>/dev/null | head -n1)
+          echo "binary: $bin -> $out"
+          cp "$bin" "$out"
 
       - uses: actions/upload-artifact@v4
         with:

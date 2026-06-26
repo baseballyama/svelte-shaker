@@ -57,18 +57,16 @@ positive.
 
 ## Build
 
-Local dev / tests build straight off cargo — the loader (`index.cjs`) finds the
-`target/{release,debug}` cdylib automatically:
+Plain `cargo build` produces the napi addon — `build.rs` runs
+`napi_build::setup()`, so no `@napi-rs/cli` is needed. The loader (`index.cjs`)
+finds the `target/{release,debug}` cdylib automatically for local dev / tests:
 
 ```sh
 cargo build --release        # from this directory
 ```
 
-Distribution prebuilds use [`@napi-rs/cli`](https://napi.rs):
-
-```sh
-pnpm build                   # napi build --platform --release --no-js
-```
+Distribution prebuilds rename that cdylib to a platform-tagged `.node` (see the CI
+workflow and Publishing below).
 
 ### rsvelte dependency
 
@@ -99,12 +97,18 @@ the repo + workflow as a Trusted Publisher.
 
 ```sh
 # from packages/svelte-shaker/engine-scan-native, logged in to npm:
-pnpm install --ignore-workspace
-pnpm exec napi build --platform --release --no-js --output-dir .   # builds this host's .node
+cargo build --release                                              # build.rs runs napi_build::setup()
+# rename this host's cdylib to the `.node` the loader resolves (darwin-arm64 shown):
+cp target/release/libsvelte_shaker_engine_scan_native.dylib \
+   svelte-shaker-engine-scan-native.darwin-arm64.node
 npm publish --access public                                        # publishes 0.1.0
 # then: npmjs.com/package/svelte-shaker-engine-scan-native/access -> add Trusted Publisher
 #   (repo baseballyama/svelte-shaker, workflow prebuild-native-scanner.yml)
 ```
+
+(`cargo build` produces the napi addon directly; no `@napi-rs/cli` needed. The cdylib
+extension is `.dylib` on macOS, `.so` on Linux, `.dll` on Windows; the `.node` tag is
+`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64` / `win32-x64`.)
 
 (The bootstrap publish only contains this host's binary; the next workflow run
 republishes a bumped version with all 5 platforms.) From then on, run the workflow
