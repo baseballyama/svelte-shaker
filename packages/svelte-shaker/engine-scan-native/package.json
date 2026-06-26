@@ -1,8 +1,13 @@
 {
   "name": "svelte-shaker-engine-scan-native",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Native (napi) prop-scanner for svelte-shaker: parses with rsvelte and runs the validated never-passed-props engine in-process.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baseballyama/svelte-shaker.git",
+    "directory": "packages/svelte-shaker/engine-scan-native"
+  },
   "files": [
     "index.cjs",
     "index.d.ts",
@@ -10,6 +15,9 @@
   ],
   "main": "index.cjs",
   "types": "index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "napi build --platform --release --no-js --output-dir .",
     "build:debug": "napi build --platform --no-js --output-dir ."

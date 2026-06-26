@@ -1,18 +1,26 @@
-# Prebuild the optional native prop-scanner (`svelte-shaker-engine-scan-native`)
-# for every published platform via @napi-rs/cli.
+# Build the optional native prop-scanner (`svelte-shaker-engine-scan-native`) for
+# every published platform and publish it to npm as a single package that bundles
+# all platform `.node` binaries (loaded by `index.cjs`).
 #
-# Manual / tag-triggered: this is NOT part of the PR gate, because building the
-# addon needs `rsvelte_core`, which is a PRIVATE repo. Before this can run green
-# you must:
-#   1. Switch `engine-scan-native/Cargo.toml`'s `rsvelte_core` from the local
-#      `path` dependency to a pinned `git` + `rev` dependency.
-#   2. Provide credentials for cargo's git fetch (a deploy key / PAT with read
-#      access to rsvelte) and set `CARGO_NET_GIT_FETCH_WITH_CLI=true`.
-# The matrix below mirrors `engine-scan-native/package.json`'s `napi.targets`.
-name: Prebuild native scanner
+# rsvelte is a PRIVATE repo and a cargo git dependency, so the build needs read
+# credentials. Provide these repo secrets before running:
+#   - RSVELTE_READ_TOKEN : a PAT (or fine-grained token) with read access to
+#                          github.com/baseballyama/rsvelte (for `cargo`'s git fetch).
+#   - NPM_TOKEN          : an npm automation token for the publish job. (After the
+#                          first publish you may switch to npm Trusted Publishers /
+#                          OIDC like the main `svelte-shaker` release and drop this.)
+#
+# Trigger manually (workflow_dispatch) or by pushing a
+# `svelte-shaker-engine-scan-native@*` tag.
+name: Prebuild + publish native scanner
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm after building (otherwise just upload artifacts)'
+        type: boolean
+        default: false
   push:
     tags:
       - 'svelte-shaker-engine-scan-native@*'
@@ -20,9 +28,8 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    working-directory: packages/svelte-shaker/engine-scan-native
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
 
 jobs:
   build:
@@ -41,32 +48,46 @@ jobs:
           - host: windows-latest
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.host }}
+    defaults:
+      run:
+        working-directory: packages/svelte-shaker/engine-scan-native
     steps:
       - uses: actions/checkout@v4
 
-      # The private rsvelte source. Requires a token/key with read access; see the
-      # header note. Checked out so the (git-rev or path) dependency resolves.
-      - name: Checkout rsvelte
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ vars.RSVELTE_REPO }}
-          token: ${{ secrets.RSVELTE_READ_TOKEN }}
-          path: .rsvelte
-          fetch-depth: 1
+      # Let cargo's git CLI authenticate to the private rsvelte repo over HTTPS,
+      # and skip rsvelte's ecosystem-test submodules — they are NOT part of
+      # `rsvelte_core`'s build, and two (`submodules/vize`, `submodules/corsa-bind`)
+      # are private SSH repos that an HTTPS token can't fetch. Skipping them keeps
+      # the cargo git checkout from failing on a submodule the build never uses.
+      - name: Configure cargo git auth for rsvelte
+        shell: bash
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.RSVELTE_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git config --global submodule.submodules/vize.update none
+          git config --global submodule.submodules/corsa-bind.update none
 
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - run: pnpm install --no-frozen-lockfile
+      # aarch64 linux needs a cross linker.
+      - name: Install aarch64 linux toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      # `--ignore-workspace`: this package lives under the svelte-shaker repo but
+      # is NOT a pnpm workspace member, so install its own devDeps (@napi-rs/cli)
+      # standalone here.
+      - run: pnpm install --ignore-workspace --no-frozen-lockfile
 
       - name: Build addon
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
         run: pnpm exec napi build --platform --release --no-js --target ${{ matrix.target }} --output-dir .
 
       - uses: actions/upload-artifact@v4
@@ -74,3 +95,33 @@ jobs:
           name: bindings-${{ matrix.target }}
           path: packages/svelte-shaker/engine-scan-native/*.node
           if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/svelte-shaker/engine-scan-native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      # Collect every platform's `.node` next to index.cjs (the loader picks the
+      # matching one at require time) and publish the single bundled package.
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages/svelte-shaker/engine-scan-native/artifacts
+      - name: Gather binaries
+        run: |
+          find artifacts -name '*.node' -exec cp {} . \;
+          ls -la *.node
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
