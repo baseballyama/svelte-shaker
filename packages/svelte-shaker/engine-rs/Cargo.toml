@@ -13,6 +13,12 @@ wasm-bindgen = "0.2.122"
 js-sys = "0.3"
 serde_json = "1.0.150"
 
+# Native callers (e.g. the engine-scan-native napi addon) fan out the
+# embarrassingly-parallel per-file model build across cores. wasm has no thread
+# pool, so rayon is pulled in only off-wasm and the wasm build is unchanged.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1.10"
+
 [profile.release]
 opt-level = "s"
 lto = true

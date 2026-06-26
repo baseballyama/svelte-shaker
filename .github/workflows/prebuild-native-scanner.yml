@@ -1,0 +1,76 @@
+# Prebuild the optional native prop-scanner (`svelte-shaker-engine-scan-native`)
+# for every published platform via @napi-rs/cli.
+#
+# Manual / tag-triggered: this is NOT part of the PR gate, because building the
+# addon needs `rsvelte_core`, which is a PRIVATE repo. Before this can run green
+# you must:
+#   1. Switch `engine-scan-native/Cargo.toml`'s `rsvelte_core` from the local
+#      `path` dependency to a pinned `git` + `rev` dependency.
+#   2. Provide credentials for cargo's git fetch (a deploy key / PAT with read
+#      access to rsvelte) and set `CARGO_NET_GIT_FETCH_WITH_CLI=true`.
+# The matrix below mirrors `engine-scan-native/package.json`'s `napi.targets`.
+name: Prebuild native scanner
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'svelte-shaker-engine-scan-native@*'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: packages/svelte-shaker/engine-scan-native
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: macos-latest
+            target: x86_64-apple-darwin
+          - host: macos-latest
+            target: aarch64-apple-darwin
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The private rsvelte source. Requires a token/key with read access; see the
+      # header note. Checked out so the (git-rev or path) dependency resolves.
+      - name: Checkout rsvelte
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.RSVELTE_REPO }}
+          token: ${{ secrets.RSVELTE_READ_TOKEN }}
+          path: .rsvelte
+          fetch-depth: 1
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - run: pnpm install --no-frozen-lockfile
+
+      - name: Build addon
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+        run: pnpm exec napi build --platform --release --no-js --target ${{ matrix.target }} --output-dir .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: packages/svelte-shaker/engine-scan-native/*.node
+          if-no-files-found: error

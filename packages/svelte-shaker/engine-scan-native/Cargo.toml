@@ -1,0 +1,36 @@
+[package]
+name = "svelte-shaker-engine-scan-native"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Native (napi) prop-scanner for svelte-shaker: parses with rsvelte and runs the validated never-passed-props engine without crossing a JSON AST boundary."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# napi 2.16: the native function `scan` is synchronous and returns a JSON string.
+napi = { version = "2.16", default-features = false, features = ["napi8"] }
+napi-derive = "2.16"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+rayon = "1.10"
+
+# The rsvelte parser. `default-features = false` deliberately drops rsvelte's
+# `native` feature (jemalloc / mimalloc global allocators) so this cdylib keeps
+# the host/napi allocator — only the pure parser + AST surface is pulled in.
+# Local dev uses a path dep; CI pins a git rev (see README / .cargo/config).
+rsvelte_core = { path = "../../../../rsvelte/crates/rsvelte_core", default-features = false }
+
+# The Value-based analysis engine, reused verbatim (rlib): its
+# `find_never_passed_props` is already pinned byte-for-byte to the JS engine by
+# the `wasm-never-passed` differential test, so the native path inherits that
+# soundness for free.
+svelte-shaker-engine = { path = "../engine-rs" }
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
