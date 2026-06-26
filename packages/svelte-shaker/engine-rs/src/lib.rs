@@ -253,31 +253,55 @@ fn sorted(mut v: Vec<String>) -> Vec<String> {
 
 /// Visit every object node depth-first WITH its nearest object parent (arrays are
 /// transparent — an element's parent is the object owning the array), mirroring
-/// zimmerframe's `state.parent`.
-fn walk_parented<'a, F: FnMut(&Value, Option<&Value>)>(
+/// zimmerframe's `state.parent`. `descend` decides whether to enter an object
+/// node: when it returns `false` the node is neither visited nor recursed into —
+/// used to skip TS type-only subtrees in escape detection (see
+/// `is_type_only_node`). Pass `&|_| true` for an unconditional walk.
+fn walk_parented_pruned<'a, D: Fn(&Value) -> bool, F: FnMut(&Value, Option<&Value>)>(
     node: &'a Value,
     parent: Option<&'a Value>,
+    descend: &D,
     f: &mut F,
 ) {
     match node {
         Value::Object(map) => {
+            if !descend(node) {
+                return;
+            }
             f(node, parent);
             for v in map.values() {
-                walk_parented(v, Some(node), f);
+                walk_parented_pruned(v, Some(node), descend, f);
             }
         }
         Value::Array(items) => {
             for v in items {
-                walk_parented(v, parent, f);
+                walk_parented_pruned(v, parent, descend, f);
             }
         }
         _ => {}
     }
 }
 
-/// Like `walk_parented`, but also threads the grandparent (the nearest object
-/// ancestor of the parent).  Arrays are not nodes, so they pass parent and
-/// grandparent through unchanged — matching `walk_parented`'s parent semantics.
+/// A TS type-only subtree the escape walk must NOT descend into: every `TSType*`
+/// node (annotations, references/queries, type-argument and type-parameter
+/// lists, …) plus `interface` declarations. Identifiers inside them — e.g.
+/// `Button` in `ComponentProps<typeof Button>['pattern']`, or `Props` in
+/// `: Props` — are type-level, erased at compile, never runtime value reads, so
+/// descending would falsely flag the component as escaped and bail it whole.
+/// `TSAsExpression` / `TSSatisfiesExpression` / `TSNonNullExpression` /
+/// `TSInstantiationExpression` are NOT pruned (they wrap a real runtime
+/// expression; their own type child is itself a `TSType*` node this prunes).
+/// Mirrors analyze.ts `isTypeOnlyNode`.
+fn is_type_only_node(node: &Value) -> bool {
+    match type_of(node) {
+        Some(t) => t.starts_with("TSType") || t == "TSInterfaceDeclaration",
+        None => false,
+    }
+}
+
+/// Like `walk_parented_pruned`, but always descends and also threads the
+/// grandparent (the nearest object ancestor of the parent).  Arrays are not
+/// nodes, so they pass parent and grandparent through unchanged.
 fn walk_grandparented<'a, F: FnMut(&Value, Option<&Value>, Option<&Value>)>(
     node: &'a Value,
     parent: Option<&'a Value>,
@@ -445,9 +469,11 @@ fn escaped_components(
     namespace_locals: &HashSet<String>,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    let not_type = |n: &Value| !is_type_only_node(n);
     // Template: any imported local read as a value (the dominant `<svelte:component
     // this={X}>` case) — only flag those that resolve to a `.svelte` import.
-    walk_parented(get(ast, "fragment"), None, &mut |node, parent| {
+    // Type-only subtrees are skipped: erased at compile, never a runtime escape.
+    walk_parented_pruned(get(ast, "fragment"), None, &not_type, &mut |node, parent| {
         if str_eq(node, "type", "Identifier") {
             if let Some(name) = node.get("name").and_then(Value::as_str) {
                 if imported.contains(name) && is_value_use(node, parent) {
@@ -458,7 +484,9 @@ fn escaped_components(
     });
     // Instance script: a component assigned to a var, pushed into an array, passed
     // to a function, etc. (import-specifier slots are excluded by `is_value_use`).
-    walk_parented(get(ast, "instance"), None, &mut |node, parent| {
+    // Skip TS type positions (`ComponentProps<typeof X>`, `: Props`): type-level,
+    // not value reads, so descending would falsely escape the component.
+    walk_parented_pruned(get(ast, "instance"), None, &not_type, &mut |node, parent| {
         if str_eq(node, "type", "Identifier") {
             if let Some(name) = node.get("name").and_then(Value::as_str) {
                 if (imports.contains_key(name) || namespace_locals.contains(name))
