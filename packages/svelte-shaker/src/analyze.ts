@@ -283,6 +283,13 @@ export async function buildAnalyzeInput(
     const instance = ast.instance;
     if (!instance) continue;
 
+    // The bare component tags this file renders (`<Local …>`). Resolving a barrel
+    // (a `.js`/`.ts` re-export) means READING and PARSING the target module to
+    // chase the export, so we do it ONLY for named imports actually rendered as a
+    // component here — a named import used as a value (a helper / type) can never
+    // be a `<Local>` call site, so chasing it is pure waste.
+    const renderedTags = renderedComponentTagNames(ast);
+
     // Resolve this file's imports into the three attributable edge kinds.  Direct
     // default `.svelte` and simple barrel/named imports bind a bare local; a
     // namespace import (`import * as ns`) binds no single component, so it is
@@ -303,6 +310,8 @@ export async function buildAnalyzeInput(
         }
         continue;
       }
+      // Not rendered as `<imp.local>` -> not a call site -> skip the costly barrel read.
+      if (!renderedTags.has(imp.local)) continue;
       const childId = await resolveThroughBarrel(imp.value, imp.imported, id, resolve, readFile);
       if (childId) {
         edges.push({ from: id, local: imp.local, to: childId, kind: 'barrel' });
@@ -337,9 +346,9 @@ export async function buildAnalyzeInput(
     }
 
     // Enqueue every child this file renders: direct `.svelte`, the barrel children
-    // it renders, and the namespace members it renders.
-    const rendered = collectBarrelChildIds(ast, barrelLocals);
-    for (const childId of [...directChildren, ...rendered, ...nsChildren]) {
+    // it renders (`barrelLocals` already holds only rendered locals), and the
+    // namespace members it renders.
+    for (const childId of [...directChildren, ...barrelLocals.values(), ...nsChildren]) {
       if (!seen.has(childId)) {
         seen.add(childId);
         queue.push(childId);
@@ -378,6 +387,11 @@ export function buildAnalyzeInputSync(
     const instance = ast.instance;
     if (!instance) continue;
 
+    // See {@link buildAnalyzeInput}: resolve a barrel only for named imports
+    // actually rendered as a `<Local>` component here, to avoid reading+parsing
+    // modules behind value-only named imports.
+    const renderedTags = renderedComponentTagNames(ast);
+
     const barrelLocals = new Map<string, ComponentId>();
     const namespaceSources = new Map<string, string>();
     const directChildren: ComponentId[] = [];
@@ -394,6 +408,7 @@ export function buildAnalyzeInputSync(
         }
         continue;
       }
+      if (!renderedTags.has(imp.local)) continue;
       const childId = resolveThroughBarrelSync(imp.value, imp.imported, id, resolve, readFile);
       if (childId) {
         edges.push({ from: id, local: imp.local, to: childId, kind: 'barrel' });
@@ -415,8 +430,7 @@ export function buildAnalyzeInputSync(
       }
     }
 
-    const rendered = collectBarrelChildIds(ast, barrelLocals);
-    for (const childId of [...directChildren, ...rendered, ...nsChildren]) {
+    for (const childId of [...directChildren, ...barrelLocals.values(), ...nsChildren]) {
       if (!seen.has(childId)) {
         seen.add(childId);
         queue.push(childId);
@@ -1016,25 +1030,25 @@ function collectChildCalls(ast: Root, imports: Map<string, ComponentId>): ChildC
 }
 
 /**
- * The set of barrel-resolved children this file actually RENDERS as `<Comp/>`.
- * Used by the Shell crawl to enqueue only the barrel children a file renders — an
- * unused barrel import resolves to a component nothing instantiates, so following
- * it would pull a never-rendered file into the program for no reason.
+ * The bare component tag names this file RENDERS (`<Local/>`, excluding dotted
+ * `<ns.X/>` member tags). The Shell crawl uses this to resolve a barrel (a
+ * `.js`/`.ts` re-export, which costs a module read+parse) only for named imports
+ * actually rendered as a component — a value-only named import (a helper / type)
+ * is never a `<Local>` call site, so following it would read+parse a module for
+ * nothing. Skipping it only ever drops a non-call-site, so attribution (and the
+ * resulting models) are unchanged.
  */
-function collectBarrelChildIds(
-  ast: Root,
-  barrelLocals: Map<string, ComponentId>,
-): Set<ComponentId> {
-  const ids = new Set<ComponentId>();
-  if (barrelLocals.size === 0) return ids;
+function renderedComponentTagNames(ast: Root): Set<string> {
+  const names = new Set<string>();
   walk<null>(ast.fragment, null, {
     Component(node, { next }) {
-      const childId = node.name ? barrelLocals.get(node.name) : undefined;
-      if (childId) ids.add(childId);
+      if (typeof node.name === 'string' && node.name !== '' && !node.name.includes('.')) {
+        names.add(node.name);
+      }
       next();
     },
   });
-  return ids;
+  return names;
 }
 
 /**
