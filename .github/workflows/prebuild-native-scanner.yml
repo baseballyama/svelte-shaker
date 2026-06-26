@@ -2,13 +2,11 @@
 # every published platform and publish it to npm as a single package that bundles
 # all platform `.node` binaries (loaded by `index.cjs`).
 #
-# rsvelte is a PRIVATE repo and a cargo git dependency, so the build needs read
-# credentials. Provide these repo secrets before running:
-#   - RSVELTE_READ_TOKEN : a PAT (or fine-grained token) with read access to
-#                          github.com/baseballyama/rsvelte (for `cargo`'s git fetch).
-#   - NPM_TOKEN          : an npm automation token for the publish job. (After the
-#                          first publish you may switch to npm Trusted Publishers /
-#                          OIDC like the main `svelte-shaker` release and drop this.)
+# rsvelte (the cargo git dependency) is PUBLIC, so the build fetches it without any
+# credentials. The only secret needed is:
+#   - NPM_TOKEN : an npm automation token for the publish job. (After the first
+#                 publish you may switch to npm Trusted Publishers / OIDC like the
+#                 main `svelte-shaker` release and drop this.)
 #
 # Trigger manually (workflow_dispatch) or by pushing a
 # `svelte-shaker-engine-scan-native@*` tag.
@@ -54,15 +52,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Let cargo's git CLI authenticate to the private rsvelte repo over HTTPS,
-      # and skip rsvelte's ecosystem-test submodules — they are NOT part of
+      # Skip rsvelte's ecosystem-test submodules — they are NOT part of
       # `rsvelte_core`'s build, and two (`submodules/vize`, `submodules/corsa-bind`)
-      # are private SSH repos that an HTTPS token can't fetch. Skipping them keeps
-      # the cargo git checkout from failing on a submodule the build never uses.
-      - name: Configure cargo git auth for rsvelte
+      # are private repos cargo can't fetch anonymously. Skipping them keeps the
+      # cargo git checkout from failing on a submodule the build never uses. (rsvelte
+      # itself is public, so no auth is configured.)
+      - name: Skip rsvelte's private test submodules
         shell: bash
         run: |
-          git config --global url."https://x-access-token:${{ secrets.RSVELTE_READ_TOKEN }}@github.com/".insteadOf "https://github.com/"
           git config --global submodule.submodules/vize.update none
           git config --global submodule.submodules/corsa-bind.update none
 
