@@ -19,8 +19,7 @@ rayon = "1.10"
 # (the corpus oracle test). `default-features = false` deliberately drops
 # rsvelte's `native` feature (jemalloc / mimalloc global allocators) so this
 # cdylib keeps the host/napi allocator — only the pure parser + AST surface is
-# pulled in. rsvelte is private, so cargo's git fetch needs read credentials in
-# CI (`CARGO_NET_GIT_FETCH_WITH_CLI=true` + a token); see the README. For local
+# pulled in. rsvelte is public, so cargo fetches it with no credentials. For local
 # dev against a side-by-side checkout, override with a `[patch]` in a local
 # `.cargo/config.toml` (uncommitted) pointing `rsvelte_core` at the path.
 rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "f5a672b23e98cec1d9505c0b4ac37dc37b1ad051", default-features = false }

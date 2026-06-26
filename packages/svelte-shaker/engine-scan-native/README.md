@@ -73,10 +73,10 @@ pnpm build                   # napi build --platform --release --no-js
 ### rsvelte dependency
 
 This crate depends on `rsvelte_core`, pinned in `Cargo.toml` to the exact **git
-rev** the scanner is validated against. rsvelte is private, so `cargo`'s git fetch
-needs read credentials: set `CARGO_NET_GIT_FETCH_WITH_CLI=true` and authenticate
-git for `github.com` (locally your existing credential helper / SSH works; in CI a
-token — see below).
+rev** the scanner is validated against. rsvelte is public, so `cargo` fetches it
+with no credentials. (The CI workflow sets `CARGO_NET_GIT_FETCH_WITH_CLI=true` only
+to skip rsvelte's private ecosystem-test submodules, which `rsvelte_core`'s build
+doesn't use.)
 
 For local dev against a side-by-side `rsvelte` checkout, override without editing
 `Cargo.toml` via an uncommitted `.cargo/config.toml`:
@@ -89,11 +89,9 @@ rsvelte_core = { path = "../../../../rsvelte/crates/rsvelte_core" }
 ## Publishing
 
 The package bundles every platform's `.node` and is published by the
-`prebuild-native-scanner.yml` workflow (build matrix → one `npm publish`). It needs
-two repo secrets on `svelte-shaker`:
+`prebuild-native-scanner.yml` workflow (build matrix → one `npm publish`). rsvelte is
+public, so the build needs no credentials; the only repo secret is:
 
-- **`RSVELTE_READ_TOKEN`** — a token with read access to `baseballyama/rsvelte`, for
-  cargo's git fetch of the private parser.
 - **`NPM_TOKEN`** — an npm automation token for the first publish. (After the package
   exists you can configure npm Trusted Publishers / OIDC and drop the token, like the
   main `svelte-shaker` release.)
