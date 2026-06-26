@@ -1444,6 +1444,91 @@ pub fn analyze_program(input_json: &str) -> String {
     Value::Object(out).to_string()
 }
 
+/// Per-component props that NO call site in the program passes (explicit,
+/// `bind:`, spread, or body/`{#snippet}` content). The Rust counterpart of
+/// analyze.ts `findNeverPassedProps`: high-confidence only — bailed/escaped
+/// components and zero-call-site entries are skipped, and a prop is flagged only
+/// when EVERY site neither names it nor carries a spread that could set it. Takes
+/// the batched AnalyzeInput Value (files with embedded `ast`, edges) and returns
+/// `{ fileId: [{ name, start, end }] }`. Value-in/Value-out so a native (napi)
+/// caller never serializes the AST across a boundary.
+pub fn find_never_passed_props(input: &Value) -> Value {
+    let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
+    for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        if let Some(from) = e.get("from").and_then(Value::as_str) {
+            edges_by_from.entry(from.to_string()).or_default().push(e.clone());
+        }
+    }
+    let mut models: Vec<Model> = Vec::new();
+    for f in input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        let id = match f.get("id").and_then(Value::as_str) {
+            Some(i) => i.to_string(),
+            None => continue,
+        };
+        let ast = f.get("ast").cloned().unwrap_or(Value::Null);
+        let empty = Vec::new();
+        let edges = edges_by_from.get(&id).unwrap_or(&empty);
+        models.push(build_model_full(&id, ast, edges));
+    }
+    // Program-wide escape bail (analyze.ts §4.1), same as analyze_program.
+    let mut escaped = HashSet::new();
+    for m in &models {
+        for id in &m.escaped {
+            escaped.insert(id.clone());
+        }
+    }
+    for m in &mut models {
+        if escaped.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == ESCAPE_REASON) {
+            m.bail_reasons.push(ESCAPE_REASON.to_string());
+        }
+    }
+    // Every textual call site counts (no dead-span filtering): a prop passed only
+    // at a folded-away site is still author-written, so we do not flag it.
+    let usage = build_usage(&models, &HashMap::new());
+
+    let mut out = serde_json::Map::new();
+    for m in &models {
+        if !m.bail_reasons.is_empty() {
+            continue;
+        }
+        let props = match &m.props_info {
+            Some(p) if !p.props.is_empty() => &p.props,
+            _ => continue,
+        };
+        let sites = match usage.get(&m.id) {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+        let mut arr: Vec<Value> = Vec::new();
+        for decl in props {
+            let maybe_passed =
+                sites.iter().any(|s| s.had_spread || s.explicit.contains_key(&decl.name));
+            if maybe_passed {
+                continue;
+            }
+            arr.push(json!({
+                "name": decl.name,
+                "start": off(&decl.property, "start"),
+                "end": off(&decl.property, "end")
+            }));
+        }
+        if !arr.is_empty() {
+            out.insert(m.id.clone(), Value::Array(arr));
+        }
+    }
+    Value::Object(out)
+}
+
+/// JSON-string wrapper of {@link find_never_passed_props} for the WASM boundary.
+#[wasm_bindgen]
+pub fn find_never_passed_props_json(input_json: &str) -> String {
+    let input: Value = match serde_json::from_str(input_json) {
+        Ok(v) => v,
+        Err(e) => return json!({ "error": e.to_string() }).to_string(),
+    };
+    find_never_passed_props(&input).to_string()
+}
+
 // ======================================================================
 // Transform + emit (docs/RUST-MIGRATION.md M5): the Rust port of transform.ts +
 // css.ts.  Edits the original source by surgical span removal/overwrite via
