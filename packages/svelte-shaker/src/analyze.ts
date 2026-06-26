@@ -26,6 +26,12 @@ export type Resolve = (
 ) => Promise<ComponentId | null> | ComponentId | null;
 export type ReadFile = (id: ComponentId) => Promise<string> | string;
 
+/** Synchronous variants of {@link Resolve}/{@link ReadFile} for callers that
+ * cannot await — e.g. an ESLint rule, which runs synchronously. Used by
+ * {@link buildAnalyzeInputSync}. */
+export type ResolveSync = (source: string, importer: ComponentId) => ComponentId | null;
+export type ReadFileSync = (id: ComponentId) => string;
+
 /** One declared prop in a `$props()` destructuring. */
 export interface PropDecl {
   /** The EXTERNAL prop name — the destructure KEY (`prop` in `prop: alias`).
@@ -345,6 +351,83 @@ export async function buildAnalyzeInput(
 }
 
 /**
+ * Synchronous twin of {@link buildAnalyzeInput} for callers that cannot await
+ * (an ESLint rule runs synchronously). Byte-for-byte the same crawl with sync
+ * `resolve`/`readFile`; the `tests/build-analyze-input-sync` differential test
+ * pins it identical to the async path, so keep the two bodies in lockstep.
+ */
+export function buildAnalyzeInputSync(
+  entries: ComponentId | ComponentId[],
+  resolve: ResolveSync,
+  readFile: ReadFileSync,
+  parseCache?: ParseCache,
+  parse?: Parse,
+): AnalyzeInput {
+  const entryList = Array.isArray(entries) ? [...entries] : [entries];
+  const files: InputFile[] = [];
+  const edges: ResolvedEdge[] = [];
+  const queue: ComponentId[] = [...entryList];
+  const seen = new Set<ComponentId>(queue);
+
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    const code = readFile(id);
+    files.push({ id, code });
+
+    const ast = parseCached(id, code, parseCache, parse);
+    const instance = ast.instance;
+    if (!instance) continue;
+
+    const barrelLocals = new Map<string, ComponentId>();
+    const namespaceSources = new Map<string, string>();
+    const directChildren: ComponentId[] = [];
+    for (const imp of importSources(instance)) {
+      if (imp.imported === '*') {
+        namespaceSources.set(imp.local, imp.value);
+        continue;
+      }
+      if (imp.imported === 'default' && isSvelte(imp.value)) {
+        const childId = resolve(imp.value, id);
+        if (childId) {
+          edges.push({ from: id, local: imp.local, to: childId, kind: 'default-svelte' });
+          directChildren.push(childId);
+        }
+        continue;
+      }
+      const childId = resolveThroughBarrelSync(imp.value, imp.imported, id, resolve, readFile);
+      if (childId) {
+        edges.push({ from: id, local: imp.local, to: childId, kind: 'barrel' });
+        barrelLocals.set(imp.local, childId);
+      }
+    }
+
+    const nsChildren: ComponentId[] = [];
+    if (namespaceSources.size > 0) {
+      for (const tag of memberComponentTags(ast)) {
+        const dot = tag.indexOf('.');
+        const source = namespaceSources.get(tag.slice(0, dot));
+        if (source == null) continue;
+        const childId = resolveThroughBarrelSync(source, tag.slice(dot + 1), id, resolve, readFile);
+        if (childId) {
+          edges.push({ from: id, local: tag, to: childId, kind: 'namespace' });
+          nsChildren.push(childId);
+        }
+      }
+    }
+
+    const rendered = collectBarrelChildIds(ast, barrelLocals);
+    for (const childId of [...directChildren, ...rendered, ...nsChildren]) {
+      if (!seen.has(childId)) {
+        seen.add(childId);
+        queue.push(childId);
+      }
+    }
+  }
+
+  return { files, edges, entries: entryList };
+}
+
+/**
  * Aggregate every component's call sites into per-child {@link Usage}, EXCLUDING
  * any `<Child/>` whose node falls inside a dead `{#if}` span of its containing
  * component.  This is what makes the cascade sound: a folded-away call site does
@@ -455,6 +538,72 @@ export function deadSpansForPlans(
       remapToLocalNames(plan.narrow, model),
     );
     if (spans.length > 0) out.set(model.id, spans);
+  }
+  return out;
+}
+
+/** One declared prop that no call site in the program ever passes. `start`/`end`
+ * are UTF-16 offsets of the prop's `$props()` destructuring property, for direct
+ * source mapping by a consumer (e.g. an ESLint rule). */
+export interface UnpassedProp {
+  /** The external prop name (what a caller would pass). */
+  name: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Declared props that NO call site in the analyzed program ever passes — neither
+ * explicitly (`<C p=…>` / `bind:p`), via a spread, nor as body content/`{#snippet}`.
+ * These are "dead" from the consumer side: the component declares an input no one
+ * supplies, so it is always its default. A lint-oriented counterpart to the
+ * build-time fold (svelte-shaker would const-fold such a prop to its default).
+ *
+ * Soundness — only HIGH-CONFIDENCE reports, mirroring the folder's own caution:
+ *  - a component that BAILED (escaped as a value, `accessors`, etc.) is skipped —
+ *    its prop profile is unknowable;
+ *  - a component with ZERO call sites is skipped — it is an entry/route/unused
+ *    component whose props may be supplied OUTSIDE the analyzed graph (a SvelteKit
+ *    `+page.svelte`'s `data`, a framework mount, a not-yet-rendered component);
+ *  - a prop is reported only when EVERY call site neither names it nor carries a
+ *    spread that could set it (`readCallSite` already folds `bind:`, known
+ *    spreads, and `children`/snippet body into `explicit`/`hadSpread`).
+ *
+ * Because missing an edge (e.g. an unfollowed barrel) only DROPS call sites, it
+ * can only make this UNDER-report (the component looks unused and is skipped),
+ * never over-report — so an incomplete crawl stays false-positive-free.
+ */
+export function findNeverPassedProps(input: AnalyzeInput): Map<ComponentId, UnpassedProp[]> {
+  const models = buildModels(input);
+  // Stamp escape bails up front (same union as `analyzeInput`) so escaped
+  // components are skipped below.
+  const escaped = new Set<ComponentId>();
+  for (const model of models.values()) for (const id of model.escapedComponents) escaped.add(id);
+  for (const id of escaped) {
+    const model = models.get(id);
+    if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
+  }
+
+  // Every textual call site counts (no cascade dead-span filtering): a prop passed
+  // only at a folded-away site is still author-written, so we do not flag it.
+  const usage = buildUsage(models, new Map());
+
+  const out = new Map<ComponentId, UnpassedProp[]>();
+  for (const model of models.values()) {
+    if (model.bailReasons.length > 0) continue;
+    if (!model.props || model.props.length === 0) continue;
+    const sites = usage.get(model.id)?.sites ?? [];
+    if (sites.length === 0) continue;
+
+    const unpassed: UnpassedProp[] = [];
+    for (const decl of model.props) {
+      const maybePassed = sites.some((s) => s.explicit.has(decl.name) || s.hadSpread);
+      if (maybePassed) continue;
+      const prop = decl.property as AnyNode;
+      if (typeof prop.start !== 'number' || typeof prop.end !== 'number') continue;
+      unpassed.push({ name: decl.name, start: prop.start, end: prop.end });
+    }
+    if (unpassed.length > 0) out.set(model.id, unpassed);
   }
   return out;
 }
@@ -1341,6 +1490,81 @@ async function resolveThroughBarrel(
     // `export * from './x'` — the name may live behind the wildcard.
     if (stmt.type === 'ExportAllDeclaration' && stmt.source?.value) {
       const via = await resolveThroughBarrel(
+        String(stmt.source.value),
+        imported,
+        targetId,
+        resolve,
+        readFile,
+        hops + 1,
+      );
+      if (via) return via;
+    }
+  }
+  return null;
+}
+
+/** Synchronous twin of {@link resolveThroughBarrel} (see {@link
+ * buildAnalyzeInputSync}). Keep in lockstep with the async body above. */
+function resolveThroughBarrelSync(
+  source: string,
+  imported: string,
+  importer: ComponentId,
+  resolve: ResolveSync,
+  readFile: ReadFileSync,
+  hops = 0,
+): ComponentId | null {
+  if (hops > MAX_BARREL_HOPS) return null;
+  const targetId = resolve(source, importer);
+  if (!targetId) return null;
+
+  if (isSvelte(source) || isSvelte(targetId)) {
+    return imported === 'default' || imported === '*' ? targetId : null;
+  }
+
+  let code: string;
+  try {
+    code = readFile(targetId);
+  } catch {
+    return null;
+  }
+  const body = parseModuleBody(code, targetId);
+  if (!body) return null;
+
+  for (const stmt of body) {
+    if (stmt.type === 'ExportNamedDeclaration' && stmt.source?.value) {
+      for (const spec of stmt.specifiers ?? []) {
+        if (specName(spec.exported) !== imported) continue;
+        return resolveThroughBarrelSync(
+          String(stmt.source.value),
+          specName(spec.local) ?? 'default',
+          targetId,
+          resolve,
+          readFile,
+          hops + 1,
+        );
+      }
+      continue;
+    }
+    if (stmt.type === 'ExportNamedDeclaration' && !stmt.source) {
+      for (const spec of stmt.specifiers ?? []) {
+        if (specName(spec.exported) !== imported) continue;
+        const localName = specName(spec.local);
+        if (!localName) continue;
+        const found = followLocalImport(body, localName);
+        if (!found) return null;
+        return resolveThroughBarrelSync(
+          found.value,
+          found.imported,
+          targetId,
+          resolve,
+          readFile,
+          hops + 1,
+        );
+      }
+      continue;
+    }
+    if (stmt.type === 'ExportAllDeclaration' && stmt.source?.value) {
+      const via = resolveThroughBarrelSync(
         String(stmt.source.value),
         imported,
         targetId,
