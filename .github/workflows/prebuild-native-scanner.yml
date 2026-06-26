@@ -3,10 +3,15 @@
 # all platform `.node` binaries (loaded by `index.cjs`).
 #
 # rsvelte (the cargo git dependency) is PUBLIC, so the build fetches it without any
-# credentials. The only secret needed is:
-#   - NPM_TOKEN : an npm automation token for the publish job. (After the first
-#                 publish you may switch to npm Trusted Publishers / OIDC like the
-#                 main `svelte-shaker` release and drop this.)
+# credentials. Publishing is TOKENLESS via npm Trusted Publishers (OIDC) — no
+# secret at all — exactly like the main `svelte-shaker` release.
+#
+# One-time bootstrap (because Trusted Publishers can only be configured on a package
+# that already exists): publish `0.1.0` once manually from a local checkout
+# (`pnpm --dir packages/svelte-shaker/engine-scan-native build` then `npm publish`),
+# then add this repo + workflow as a Trusted Publisher at
+# https://www.npmjs.com/package/svelte-shaker-engine-scan-native/access. From then on
+# this workflow publishes new versions tokenlessly.
 #
 # Trigger manually (workflow_dispatch) or by pushing a
 # `svelte-shaker-engine-scan-native@*` tag.
@@ -97,15 +102,20 @@ jobs:
     needs: build
     if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC for npm provenance + trusted publishing (no NPM_TOKEN)
     defaults:
       run:
         working-directory: packages/svelte-shaker/engine-scan-native
     steps:
       - uses: actions/checkout@v4
+      # Node 24 ships npm >= 11.5.1 (OIDC Trusted Publishers require it). Do NOT set
+      # `registry-url` — it writes `_authToken=${NODE_AUTH_TOKEN}` into .npmrc and
+      # forces token auth, blocking the OIDC code path.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
 
       # Collect every platform's `.node` next to index.cjs (the loader picks the
       # matching one at require time) and publish the single bundled package.
@@ -117,8 +127,7 @@ jobs:
           find artifacts -name '*.node' -exec cp {} . \;
           ls -la *.node
 
-      - name: Publish to npm
+      - name: Publish to npm (tokenless, OIDC)
         run: npm publish --provenance --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
