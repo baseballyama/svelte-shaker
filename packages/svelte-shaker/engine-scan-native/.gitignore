@@ -1,5 +1,13 @@
 /target
-# Prebuilt N-API binaries (produced by `napi build` / CI) and the loader's
-# on-demand copies of a local cargo build. Distributed via the npm tarball's
-# `files` allowlist, never committed.
+# Prebuilt N-API binaries (produced by `cargo build` + rename / CI) and the
+# loader's on-demand copies of a local cargo build. Distributed via the npm
+# tarball's `files` allowlist, never committed.
 *.node
+# A no-submodule rsvelte checkout + the `[patch]` config that points the git dep
+# at it (created by the prebuild workflow / local dev). cargo would otherwise try
+# to fetch rsvelte's private ecosystem-test submodules, which it can't.
+/.rsvelte-src
+/.cargo
+# Stray pnpm artifacts (this package has no JS deps; it builds via cargo).
+/node_modules
+/pnpm-lock.yaml

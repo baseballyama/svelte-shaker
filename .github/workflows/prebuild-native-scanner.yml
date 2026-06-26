@@ -64,18 +64,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Skip rsvelte's ecosystem-test submodules — they are NOT part of
-      # `rsvelte_core`'s build, and two (`submodules/vize`, `submodules/corsa-bind`)
-      # are private repos cargo can't fetch anonymously. Marking them inactive +
-      # update=none keeps the cargo git checkout from failing on a submodule the
-      # build never uses. (rsvelte itself is public, so no auth is configured.)
-      - name: Skip rsvelte's private test submodules
+      # cargo unconditionally updates a git dependency's submodules, and rsvelte
+      # has private SSH ecosystem-test submodules (`submodules/{vize,corsa-bind}`)
+      # that CI can't fetch — so a plain `git` dep fails. Instead, clone rsvelte
+      # ourselves WITHOUT submodules at the validated rev and `[patch]` the dep to
+      # that local path. rsvelte_core's build needs none of the submodules (the
+      # workspace members are all `crates/*`), so the output is byte-identical.
+      - name: Vendor rsvelte without submodules + patch the dep
         shell: bash
         run: |
-          for sm in submodules/vize submodules/corsa-bind; do
-            git config --global submodule."$sm".active false
-            git config --global submodule."$sm".update none
-          done
+          git clone --no-checkout --no-recurse-submodules --filter=blob:none \
+            https://github.com/baseballyama/rsvelte .rsvelte-src
+          git -C .rsvelte-src checkout f5a672b23e98cec1d9505c0b4ac37dc37b1ad051
+          mkdir -p .cargo
+          printf '[patch."https://github.com/baseballyama/rsvelte"]\nrsvelte_core = { path = ".rsvelte-src/crates/rsvelte_core" }\n' > .cargo/config.toml
+          cat .cargo/config.toml
 
       - uses: dtolnay/rust-toolchain@stable
         with:
