@@ -22,7 +22,7 @@
       "groupName": "github-actions"
     }
   ],
-  "ignoreDeps": [],
+  "ignoreDeps": ["@rsvelte/compiler"],
   "ignorePaths": ["vendor/**"],
   "lockFileMaintenance": {
     "enabled": true,

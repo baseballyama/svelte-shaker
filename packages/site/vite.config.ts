@@ -1,6 +1,6 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { shaker } from 'svelte-shaker/vite';
-import { defineConfig } from 'vite';
+import { defineConfig, type PluginOption } from 'vite';
 
 export default defineConfig({
   plugins: [
@@ -8,7 +8,11 @@ export default defineConfig({
     // (build-only, enforce:'pre'), then hands the slimmed source to the Svelte
     // compiler — which here is rsvelte (see package.json: @sveltejs/vite-plugin-svelte
     // is aliased to @rsvelte/vite-plugin-svelte).
-    shaker({ include: ['src'] }),
+    //
+    // `shaker` is typed against svelte-shaker's own vite (^5); the site runs on
+    // vite ^6. A vite plugin is structurally identical across these majors, so
+    // the object is a valid plugin at runtime — bridge the two `Plugin` types.
+    shaker({ include: ['src'] }) as PluginOption,
     sveltekit(),
   ],
   // The shaker engine and svelte/compiler are bundled for the browser.
