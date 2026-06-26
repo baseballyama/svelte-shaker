@@ -15,11 +15,15 @@ napi-derive = "2.16"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 rayon = "1.10"
 
-# The rsvelte parser. `default-features = false` deliberately drops rsvelte's
-# `native` feature (jemalloc / mimalloc global allocators) so this cdylib keeps
-# the host/napi allocator — only the pure parser + AST surface is pulled in.
-# Local dev uses a path dep; CI pins a git rev (see README / .cargo/config).
-rsvelte_core = { path = "../../../../rsvelte/crates/rsvelte_core", default-features = false }
+# The rsvelte parser, pinned to the exact rev the scanner is validated against
+# (the corpus oracle test). `default-features = false` deliberately drops
+# rsvelte's `native` feature (jemalloc / mimalloc global allocators) so this
+# cdylib keeps the host/napi allocator — only the pure parser + AST surface is
+# pulled in. rsvelte is private, so cargo's git fetch needs read credentials in
+# CI (`CARGO_NET_GIT_FETCH_WITH_CLI=true` + a token); see the README. For local
+# dev against a side-by-side checkout, override with a `[patch]` in a local
+# `.cargo/config.toml` (uncommitted) pointing `rsvelte_core` at the path.
+rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "f5a672b23e98cec1d9505c0b4ac37dc37b1ad051", default-features = false }
 
 # The Value-based analysis engine, reused verbatim (rlib): its
 # `find_never_passed_props` is already pinned byte-for-byte to the JS engine by
