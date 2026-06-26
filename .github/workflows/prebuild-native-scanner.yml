@@ -134,12 +134,18 @@ jobs:
         working-directory: packages/svelte-shaker/engine-scan-native
     steps:
       - uses: actions/checkout@v4
-      # Node 24 ships npm >= 11.5.1 (OIDC Trusted Publishers require it). Do NOT set
-      # `registry-url` — it writes `_authToken=${NODE_AUTH_TOKEN}` into .npmrc and
-      # forces token auth, blocking the OIDC code path.
+      # Do NOT set `registry-url` — it writes `_authToken=${NODE_AUTH_TOKEN}` into
+      # .npmrc and forces token auth, blocking the OIDC code path.
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
+      # OIDC Trusted Publishing requires npm >= 11.5.1; this Node's bundled npm is
+      # older (the previous run went straight to ENEEDAUTH without attempting OIDC),
+      # so upgrade it explicitly.
+      - name: Ensure OIDC-capable npm
+        run: |
+          npm install -g npm@latest
+          npm --version
 
       # Collect every platform's `.node` next to index.cjs (the loader picks the
       # matching one at require time) and publish the single bundled package.
