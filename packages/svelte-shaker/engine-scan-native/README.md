@@ -90,16 +90,30 @@ rsvelte_core = { path = "../../../../rsvelte/crates/rsvelte_core" }
 
 The package bundles every platform's `.node` and is published by the
 `prebuild-native-scanner.yml` workflow (build matrix → one `npm publish`). rsvelte is
-public, so the build needs no credentials; the only repo secret is:
+public and publishing is **tokenless via npm Trusted Publishers (OIDC)** — no repo
+secret at all, exactly like the main `svelte-shaker` release.
 
-- **`NPM_TOKEN`** — an npm automation token for the first publish. (After the package
-  exists you can configure npm Trusted Publishers / OIDC and drop the token, like the
-  main `svelte-shaker` release.)
+**One-time bootstrap** (Trusted Publishers can only be configured on a package that
+already exists): publish `0.1.0` once manually from a local checkout, then register
+the repo + workflow as a Trusted Publisher.
 
-Then run the workflow (`workflow_dispatch` with `publish: true`, or push a
-`svelte-shaker-engine-scan-native@<version>` tag). Consumers get the speedup
-automatically once it is installed (e.g. as an optional dependency); the ESLint rule
-loads it when present and falls back to the JS/WASM engine otherwise.
+```sh
+# from packages/svelte-shaker/engine-scan-native, logged in to npm:
+pnpm install --ignore-workspace
+pnpm exec napi build --platform --release --no-js --output-dir .   # builds this host's .node
+npm publish --access public                                        # publishes 0.1.0
+# then: npmjs.com/package/svelte-shaker-engine-scan-native/access -> add Trusted Publisher
+#   (repo baseballyama/svelte-shaker, workflow prebuild-native-scanner.yml)
+```
+
+(The bootstrap publish only contains this host's binary; the next workflow run
+republishes a bumped version with all 5 platforms.) From then on, run the workflow
+(`workflow_dispatch` with `publish: true`, or push a
+`svelte-shaker-engine-scan-native@<version>` tag) and it publishes tokenlessly.
+
+Consumers get the speedup automatically once it is installed (e.g. as an optional
+dependency); the ESLint rule loads it when present and falls back to the JS/WASM
+engine otherwise.
 
 ## Performance
 
