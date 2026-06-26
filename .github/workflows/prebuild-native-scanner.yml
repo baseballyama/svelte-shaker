@@ -102,10 +102,17 @@ jobs:
       - name: Rename cdylib to a platform .node
         shell: bash
         run: |
+          rel="target/${{ matrix.target }}/release"
+          # `find` (unlike a multi-glob `ls`) doesn't error under `set -e` when an
+          # extension is absent on this OS.
+          bin=$(find "$rel" -maxdepth 1 -type f \
+            \( -name 'libsvelte_shaker_engine_scan_native.dylib' \
+            -o -name 'libsvelte_shaker_engine_scan_native.so' \
+            -o -name 'svelte_shaker_engine_scan_native.dll' \) | head -n1)
+          if [ -z "$bin" ]; then
+            echo "no cdylib found in $rel"; ls -la "$rel"; exit 1
+          fi
           out="svelte-shaker-engine-scan-native.${{ matrix.napi }}.node"
-          bin=$(ls "target/${{ matrix.target }}/release"/*.dylib \
-                   "target/${{ matrix.target }}/release"/*.so \
-                   "target/${{ matrix.target }}/release"/*.dll 2>/dev/null | head -n1)
           echo "binary: $bin -> $out"
           cp "$bin" "$out"
 
