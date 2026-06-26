@@ -1,6 +1,6 @@
 {
   "name": "svelte-shaker-engine-scan-native",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Native (napi) prop-scanner for svelte-shaker: parses with rsvelte and runs the validated never-passed-props engine in-process.",
   "license": "MIT",
   "repository": {
