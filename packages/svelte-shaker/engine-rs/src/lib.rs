@@ -1459,17 +1459,27 @@ pub fn find_never_passed_props(input: &Value) -> Value {
             edges_by_from.entry(from.to_string()).or_default().push(e.clone());
         }
     }
-    let mut models: Vec<Model> = Vec::new();
-    for f in input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
-        let id = match f.get("id").and_then(Value::as_str) {
-            Some(i) => i.to_string(),
-            None => continue,
-        };
+    // Per-file model building is pure and independent, so on native targets we fan
+    // it out across cores (it dominates the scan's wall-clock). The order of the
+    // resulting `Vec<Model>` is irrelevant — escapes are unioned and usage is keyed
+    // by id below — so this is purely a speedup, not a behavior change. wasm has no
+    // thread pool, so it stays sequential.
+    let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    let build_one = |f: &Value| -> Option<Model> {
+        let id = f.get("id").and_then(Value::as_str)?.to_string();
         let ast = f.get("ast").cloned().unwrap_or(Value::Null);
         let empty = Vec::new();
         let edges = edges_by_from.get(&id).unwrap_or(&empty);
-        models.push(build_model_full(&id, ast, edges));
-    }
+        Some(build_model_full(&id, ast, edges))
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut models: Vec<Model> = {
+        use rayon::prelude::*;
+        files.par_iter().filter_map(build_one).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let mut models: Vec<Model> = files.iter().filter_map(build_one).collect();
+
     // Program-wide escape bail (analyze.ts §4.1), same as analyze_program.
     let mut escaped = HashSet::new();
     for m in &models {

@@ -1,6 +1,6 @@
 {
   "name": "svelte-shaker",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Tree shaking for Svelte components",
   "keywords": [
     "dead-code-elimination",
@@ -68,7 +68,7 @@
     "vite": "^5.4.21"
   },
   "peerDependencies": {
-    "@rsvelte/vite-plugin-svelte-native": ">=0.2.4",
+    "@rsvelte/vite-plugin-svelte-native": ">=0.2.6",
     "svelte": "^5"
   },
   "peerDependenciesMeta": {

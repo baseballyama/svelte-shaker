@@ -1,0 +1,163 @@
+# Build the optional native prop-scanner (`svelte-shaker-engine-scan-native`) for
+# every published platform and publish it to npm as a single package that bundles
+# all platform `.node` binaries (loaded by `index.cjs`).
+#
+# rsvelte (the cargo git dependency) is PUBLIC, so the build fetches it without any
+# credentials. Publishing is TOKENLESS via npm Trusted Publishers (OIDC) — no
+# secret at all — exactly like the main `svelte-shaker` release.
+#
+# One-time bootstrap (because Trusted Publishers can only be configured on a package
+# that already exists): publish `0.1.0` once manually from a local checkout
+# (`pnpm --dir packages/svelte-shaker/engine-scan-native build` then `npm publish`),
+# then add this repo + workflow as a Trusted Publisher at
+# https://www.npmjs.com/package/svelte-shaker-engine-scan-native/access. From then on
+# this workflow publishes new versions tokenlessly.
+#
+# Trigger manually (workflow_dispatch) or by pushing a
+# `svelte-shaker-engine-scan-native@*` tag.
+name: Prebuild + publish native scanner
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm after building (otherwise just upload artifacts)'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'svelte-shaker-engine-scan-native@*'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `napi` = the `${process.platform}-${process.arch}` tag the loader
+          # (`index.cjs`) looks for first.
+          - host: macos-latest
+            target: x86_64-apple-darwin
+            napi: darwin-x64
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            napi: darwin-arm64
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            napi: linux-x64
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            napi: linux-arm64
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            napi: win32-x64
+    runs-on: ${{ matrix.host }}
+    defaults:
+      run:
+        working-directory: packages/svelte-shaker/engine-scan-native
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo unconditionally updates a git dependency's submodules, and rsvelte
+      # has private SSH ecosystem-test submodules (`submodules/{vize,corsa-bind}`)
+      # that CI can't fetch — so a plain `git` dep fails. Instead, clone rsvelte
+      # ourselves WITHOUT submodules at the validated rev and `[patch]` the dep to
+      # that local path. rsvelte_core's build needs none of the submodules (the
+      # workspace members are all `crates/*`), so the output is byte-identical.
+      - name: Vendor rsvelte without submodules + patch the dep
+        shell: bash
+        run: |
+          git clone --no-checkout --no-recurse-submodules --filter=blob:none \
+            https://github.com/baseballyama/rsvelte .rsvelte-src
+          git -C .rsvelte-src checkout f5a672b23e98cec1d9505c0b4ac37dc37b1ad051
+          mkdir -p .cargo
+          printf '[patch."https://github.com/baseballyama/rsvelte"]\nrsvelte_core = { path = ".rsvelte-src/crates/rsvelte_core" }\n' > .cargo/config.toml
+          cat .cargo/config.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # aarch64 linux needs a cross linker.
+      - name: Install aarch64 linux toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      # `cargo build` produces the napi cdylib directly — `build.rs` runs
+      # `napi_build::setup()` — so we don't need @napi-rs/cli and dodge any CLI
+      # version/flag drift. Then rename the cdylib to the platform `.node` the
+      # loader resolves.
+      - name: Build addon
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename cdylib to a platform .node
+        shell: bash
+        run: |
+          rel="target/${{ matrix.target }}/release"
+          # `find` (unlike a multi-glob `ls`) doesn't error under `set -e` when an
+          # extension is absent on this OS.
+          bin=$(find "$rel" -maxdepth 1 -type f \
+            \( -name 'libsvelte_shaker_engine_scan_native.dylib' \
+            -o -name 'libsvelte_shaker_engine_scan_native.so' \
+            -o -name 'svelte_shaker_engine_scan_native.dll' \) | head -n1)
+          if [ -z "$bin" ]; then
+            echo "no cdylib found in $rel"; ls -la "$rel"; exit 1
+          fi
+          out="svelte-shaker-engine-scan-native.${{ matrix.napi }}.node"
+          echo "binary: $bin -> $out"
+          cp "$bin" "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: packages/svelte-shaker/engine-scan-native/*.node
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC for npm provenance + trusted publishing (no NPM_TOKEN)
+    defaults:
+      run:
+        working-directory: packages/svelte-shaker/engine-scan-native
+    steps:
+      - uses: actions/checkout@v4
+      # Do NOT set `registry-url` — it writes `_authToken=${NODE_AUTH_TOKEN}` into
+      # .npmrc and forces token auth, blocking the OIDC code path.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      # OIDC Trusted Publishing requires npm >= 11.5.1; this Node's bundled npm is
+      # older (the previous run went straight to ENEEDAUTH without attempting OIDC),
+      # so upgrade it explicitly.
+      - name: Ensure OIDC-capable npm
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      # Collect every platform's `.node` next to index.cjs (the loader picks the
+      # matching one at require time) and publish the single bundled package.
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages/svelte-shaker/engine-scan-native/artifacts
+      - name: Gather binaries
+        run: |
+          find artifacts -name '*.node' -exec cp {} . \;
+          ls -la *.node
+
+      - name: Publish to npm (tokenless, OIDC)
+        run: npm publish --provenance --access public
+        env:
+          NPM_CONFIG_PROVENANCE: 'true'
