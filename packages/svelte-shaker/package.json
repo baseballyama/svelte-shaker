@@ -61,7 +61,7 @@
     "zimmerframe": "1.1.4"
   },
   "devDependencies": {
-    "@rsvelte/compiler": "0.7.15",
+    "@rsvelte/compiler": "0.6.1",
     "@rsvelte/vite-plugin-svelte-native": "0.2.6",
     "@sveltejs/vite-plugin-svelte": "^4.0.4",
     "svelte": "^5.56.4",

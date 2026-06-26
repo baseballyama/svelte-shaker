@@ -1,3 +1,4 @@
 .svelte-kit/
+.svelte-check/
 build/
 .env
