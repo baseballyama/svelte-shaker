@@ -758,6 +758,8 @@ function collectEscapedComponents(
     { parent: null },
     {
       _(node, { state, next }) {
+        // Type-only subtrees are erased at compile — never a runtime escape.
+        if (isTypeOnlyNode(node)) return;
         if (
           node.type === 'Identifier' &&
           node.name &&
@@ -779,6 +781,10 @@ function collectEscapedComponents(
       { parent: null },
       {
         _(node, { state, next }) {
+          // Skip TS type positions: an identifier in `ComponentProps<typeof X>`
+          // or `: Props` is type-level (erased at compile), not a value read, so
+          // descending would falsely flag the component as escaped.
+          if (isTypeOnlyNode(node)) return;
           if (
             node.type === 'Identifier' &&
             node.name &&
@@ -795,6 +801,26 @@ function collectEscapedComponents(
   }
 
   return escaped;
+}
+
+/**
+ * A TS type-only subtree the escape walk must NOT descend into: every `TSType*`
+ * node (type annotations, type references/queries, type-argument and
+ * type-parameter lists, …) plus `interface` declarations.  Identifiers inside
+ * them — e.g. `Button` in `ComponentProps<typeof Button>['pattern']`, or `Props`
+ * in `: Props` — are type-level, erased at compile, never runtime value reads, so
+ * descending would falsely flag the component as escaped and bail it whole.
+ *
+ * `TSAsExpression` / `TSSatisfiesExpression` / `TSNonNullExpression` /
+ * `TSInstantiationExpression` are deliberately NOT pruned: they wrap a real
+ * runtime expression (`Button as T` IS a value use of `Button`), and their own
+ * type child is itself a `TSType*` node this prunes.
+ */
+function isTypeOnlyNode(node: AnyNode): boolean {
+  return (
+    typeof node.type === 'string' &&
+    (node.type.startsWith('TSType') || node.type === 'TSInterfaceDeclaration')
+  );
 }
 
 /**
