@@ -62,7 +62,7 @@ jobs:
       # blocking the OIDC code path.
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.18.0
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile

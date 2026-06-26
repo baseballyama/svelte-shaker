@@ -129,7 +129,7 @@ jobs:
       # forces token auth, blocking the OIDC code path.
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.18.0
 
       # Collect every platform's `.node` next to index.cjs (the loader picks the
       # matching one at require time) and publish the single bundled package.
