@@ -24,9 +24,17 @@ export type {
   EdgeKind,
   EditResult,
 } from './ir.js';
-export type { Resolve, ReadFile } from './analyze.js';
+export type { Resolve, ReadFile, ResolveSync, ReadFileSync } from './analyze.js';
 export type { Parse, Root } from './parse.js';
-export { analyze, analyzeInput, buildAnalyzeInput } from './analyze.js';
+export {
+  analyze,
+  analyzeInput,
+  buildAnalyzeInput,
+  buildAnalyzeInputSync,
+  deadSpansForPlans,
+  findNeverPassedProps,
+} from './analyze.js';
+export type { UnpassedProp } from './analyze.js';
 export { DevShaker, type DevMode, type DevShakerChange } from './engine.js';
 export { transformAll, transformAllWithMono } from './transform.js';
 export {
