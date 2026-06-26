@@ -104,15 +104,23 @@ pipelines; the Vite plugin is preferred for apps.
 ```ts
 shaker({
   include: ['src'], // dirs (relative to root) holding every .svelte call site
-  level: 1, //  0 | 1 | 2 — default 1 (L0/L1/L1.5 always on). 2 = opt-in L2.
-  monomorphize: false, // L2 tuning; only consulted when level: 2.
+  level: 2, //  0 | 1 | 2 — default 2. L0/L1/L1.5 always on; L2 on by default.
+  monomorphize: true, // L2 tuning (consulted unless L2 is off); default on.
+  engine: 'auto', // 'auto' (default) | 'js' | 'rust' — see below.
   parser: 'svelte', // 'svelte' (default) | 'rsvelte' — see below.
   verbose: false, // true = print a per-file size breakdown — see below.
 });
 
-// Opt into L2 per-call-site monomorphization:
-shaker({ include: ['src'], level: 2, monomorphize: true });
-shaker({ include: ['src'], level: 2, monomorphize: { maxVariants: 16 } });
+// L2 is on by default because its net-win gate guarantees the L2 bundle is never
+// larger than the L1.5 bundle — it only ever specializes when that strictly
+// shrinks the program (docs §3 L2). Turn it OFF only to trade a little
+// compression for a faster build (L2 compiles modules to size them):
+shaker({ include: ['src'], level: 1 }); // L2 off (L0/L1/L1.5 still on)
+shaker({ include: ['src'], monomorphize: false }); // same — L2 off
+
+// Tune L2 without turning it off:
+shaker({ include: ['src'], monomorphize: { maxVariants: 16 } });
+shaker({ include: ['src'], monomorphize: { minSavings: 0.15 } }); // require ≥15% net win
 
 // Opt into the faster rsvelte parser (~1.46x full build, ~2.2x parse).
 // Requires the optional peer `@rsvelte/vite-plugin-svelte-native` (install it
@@ -136,6 +144,19 @@ how much each component shrank at the source level:
 [svelte-shaker]   src/patterns/RestProps.svelte: 0.43 kB → 0.33 kB (-23.0%)
 ...
 ```
+
+### The native (Rust/WASM) engine
+
+`engine` selects which engine runs the whole shake — analysis **and** transform,
+including L2. The default `'auto'` uses the native Rust engine (compiled to WASM)
+when it can be loaded and falls back to the JS engine otherwise. Both are
+differentially tested to produce **byte-identical** output, so the choice only
+affects speed, never what is shaken. Force one with `engine: 'rust'` (throws if
+the WASM module can't load) or `engine: 'js'`.
+
+This is independent of `parser` below: `engine` is the analysis/transform core,
+`parser` is only the front-end that turns `.svelte` text into the offsets the
+engine reads.
 
 ### The rsvelte (Rust) parser
 
@@ -174,7 +195,13 @@ See [`docs/RUST-MIGRATION.md`](./docs/RUST-MIGRATION.md) for the design.
 | **L1**   | Props that collapse to one constant app-wide → fold + drop + strip every call site's attribute                                               | on         |
 | **L1.5** | Value-set **narrowing**: with `variant ∈ {primary, secondary}`, delete provably-dead `{#if}`/`{:else if}` arms (prop stays in the signature) | on         |
 | **CSS**  | `<style>` rules whose class can never be produced given the value sets — the bundler-can't differentiator                                    | on         |
-| **L2**   | Per-call-site monomorphization: specialize a component per prop shape (deduped by residual, capped by `maxVariants`)                         | **opt-in** |
+| **L2**   | Per-call-site monomorphization: specialize a component per prop shape (deduped by residual, capped by `maxVariants`)                         | on¹        |
+
+¹ L2 is on by default but never bloats: a measured **net-win gate**
+(all-sites-or-nothing + `Σ_spec < Σ_base`) only specializes a child when doing so
+strictly shrinks the whole program, so the L2 bundle is always ≤ the L1.5 bundle
+(bytes). Its only cost is build time, so `level: 1` (or `monomorphize: false`)
+turns it off to speed up the build at a small compression cost.
 
 Folding also reaches template ternaries (`{cond ? a : b}`) and class-string
 interpolation when the condition/parts are provable constants.
@@ -217,9 +244,8 @@ The whole point is to **never change observable behavior**.
 - **`include` must cover the whole app.** A call site outside the scanned dirs is
   invisible, so soundness requires every consumer of a prop to be in scope.
 - **Partial-bail boundaries.** Spread/rest/`bind:`/shadowing limit how much can be
-  folded (by design — the engine errs toward keeping code). L2's `minSavings`,
-  and `exclude` / `unsafe` / `report` options, are reserved but not yet
-  implemented.
+  folded (by design — the engine errs toward keeping code). The `exclude` /
+  `unsafe` / `report` options are reserved but not yet implemented.
 
 ## Running the tests
 

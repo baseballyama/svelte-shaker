@@ -4,7 +4,6 @@ export interface Preset {
   id: string;
   name: string;
   blurb: string;
-  l2: boolean; // whether L2 is worth turning on for this one
   files: Files;
 }
 
@@ -14,7 +13,6 @@ export const presets: Preset[] = [
     name: 'Unused props',
     blurb:
       'A 6-prop design-system Button used with two. The unused props fold to their defaults and vanish — markup, classes, and the props themselves.',
-    l2: false,
     files: {
       'App.svelte': `<script>
   import Button from './Button.svelte';
@@ -53,7 +51,6 @@ export const presets: Preset[] = [
     name: 'Variant + dead CSS',
     blurb:
       'Across the app, `tone` is only ever "ok" or "warn". The "danger" branch can never run — and the `.tag-danger` CSS rule can never match. Both go. (A bundler can\'t reach this.)',
-    l2: false,
     files: {
       'App.svelte': `<script>
   import Tag from './Tag.svelte';
@@ -104,7 +101,6 @@ export const presets: Preset[] = [
     name: 'Whole-program cascade',
     blurb:
       'The app never shows the chart, so the `{#if}` folds away — taking the `<Chart>` call site with it. Chart.svelte is now imported by no one and drops out entirely.',
-    l2: false,
     files: {
       'App.svelte': `<script>
   import Panel from './Panel.svelte';
@@ -141,8 +137,7 @@ export const presets: Preset[] = [
     id: 'l2',
     name: 'L2 · correlated condition',
     blurb:
-      'A heavy widget is gated on `row === 1 && col === 1`. App-wide `row` and `col` are each {0,1}, so per-prop narrowing can\'t kill it — but no cell is ever (1,1). Turn on L2: each call site is specialized, the widget is orphaned, and it drops from the bundle.',
-    l2: true,
+      'A heavy widget is gated on `row === 1 && col === 1`. App-wide `row` and `col` are each {0,1}, so per-prop narrowing can\'t kill it — but no cell is ever (1,1). L2 (on by default) specializes each call site, the widget is orphaned, and it drops from the bundle. Toggle L2 off to see it survive.',
     files: {
       'App.svelte': `<script>
   import Cell from './Cell.svelte';
