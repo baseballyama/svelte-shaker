@@ -1,0 +1,5 @@
+/target
+# Prebuilt N-API binaries (produced by `napi build` / CI) and the loader's
+# on-demand copies of a local cargo build. Distributed via the npm tarball's
+# `files` allowlist, never committed.
+*.node

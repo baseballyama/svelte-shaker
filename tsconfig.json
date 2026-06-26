@@ -6,7 +6,8 @@
     "**/.shaker-tmp*/**",
     "**/tests/fixtures/**/actual/**",
     "packages/site/**",
-    "packages/svelte-shaker/engine-rs/**"
+    "packages/svelte-shaker/engine-rs/**",
+    "packages/svelte-shaker/engine-scan-native/**"
   ],
   "compilerOptions": {
     "module": "esnext",
