@@ -97,3 +97,23 @@ value-use only because its parent is an `ExpressionTag` — is handled in
 `expression_escapes`: each embedded expression is walked with its root treated as a
 value position (it always sits in one in the template), matching the engine's
 whole-tree walk. The corpus oracle confirms this is exact.
+
+## Resident daemon (`ScanDaemon`) — incremental re-scan
+
+For an editor / LSP, parsing dominates a scan (~37 ms of the ~41 ms), so the daemon
+caches each file's lightweight model (props, escapes, call sites — no AST) and
+re-parses only what changed:
+
+```js
+const d = new addon.ScanDaemon();
+d.init(JSON.stringify({ files, edges })); // full scan once at startup
+// on edit — pass only the changed files + the full current edges:
+d.update(JSON.stringify({ files: [changed], edges, removed: [deletedId] }));
+```
+
+A single-file edit re-scans in **~1.3 ms** (vs ~41 ms cold) on the 650-component
+corpus, and the result is **byte-identical to a cold `scan`** (`init === scan`,
+`update === scan(edited)` — pinned by `tests/native-daemon.test.ts`). It is sound to
+re-parse only the changed files because a file's edges (`from == id`) derive solely
+from its own imports, so an unchanged file's model can never go stale. Output keys
+are sorted by file id, so cold and incremental scans agree exactly.

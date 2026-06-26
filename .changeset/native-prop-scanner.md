@@ -17,5 +17,9 @@ reused, already-validated Value engine) vs JS corpus check confirms byte-for-byt
 agreement across all 650 files. The ESLint rule prefers the addon when installed and
 falls back to the JS/WASM engine otherwise.
 
+Ships a `ScanDaemon` for editors/LSP: cache each file's model once, then `update`
+re-parses only the changed files and re-runs the cheap whole-program assembly — a
+single-file edit re-scans in ~1.3 ms (vs ~41 ms cold), byte-identical to a cold scan.
+
 Also parallelizes the per-file model build in the Value engine's
 `find_never_passed_props` (rayon, native-only — wasm stays sequential and unchanged).

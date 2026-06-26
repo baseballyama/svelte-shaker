@@ -668,36 +668,38 @@ fn build_model_inner(
     }
 }
 
-const ESCAPE_REASON_MARK: bool = true; // bail flag value; reason text is not surfaced
-
 /// Whole-program never-passed: union escapes -> bail, aggregate call sites per
 /// child, then report each declared prop no site passes. Output shape matches the
 /// Value engine: `{ fileId: [{ name, start, end }] }` with UTF-16 offsets.
-pub fn never_passed(mut models: Vec<FileModel>, codes: &HashMap<String, String>) -> Value {
+///
+/// Borrows the models (never mutates them) so the resident daemon can re-run this
+/// cheap whole-program assembly over its cached model set without rebuilding it.
+pub fn never_passed(models: &[&FileModel], codes: &HashMap<String, String>) -> Value {
     // Program-wide escape bail (analyze.ts §4.1).
-    let mut escaped: HashSet<String> = HashSet::new();
-    for m in &models {
+    let mut escaped: HashSet<&str> = HashSet::new();
+    for m in models {
         for id in &m.escaped {
-            escaped.insert(id.clone());
-        }
-    }
-    for m in &mut models {
-        if escaped.contains(&m.id) {
-            m.bail = ESCAPE_REASON_MARK;
+            escaped.insert(id.as_str());
         }
     }
 
     // Aggregate call sites per child id.
     let mut usage: HashMap<&str, Vec<&CallSite>> = HashMap::new();
-    for m in &models {
+    for m in models {
         for (child_id, site) in &m.child_calls {
             usage.entry(child_id.as_str()).or_default().push(site);
         }
     }
 
+    // Emit reports in sorted-id order so the output is deterministic regardless of
+    // model iteration order — a cold `scan` (parse-order Vec) and the daemon
+    // (HashMap) then produce byte-identical JSON for the same program.
+    let mut sorted: Vec<&&FileModel> = models.iter().collect();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+
     let mut out = serde_json::Map::new();
-    for m in &models {
-        if m.bail {
+    for m in sorted {
+        if m.bail || escaped.contains(m.id.as_str()) {
             continue;
         }
         let props = match &m.props {
