@@ -80,6 +80,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          # The runner's pre-baked toolcache can lag behind the latest patch
+          # (e.g. it ships 22.23.0 while engines requires >=22.23.1). Fetch the
+          # newest patch for each major so `pnpm install` passes the engine check.
+          check-latest: true
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
