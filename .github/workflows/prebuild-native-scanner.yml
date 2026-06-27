@@ -3,13 +3,10 @@
 # all platform `.node` binaries (loaded by `index.cjs`).
 #
 # rsvelte (the cargo git dependency) is PUBLIC, so the build fetches it without any
-# credentials. Publishing uses the `NPM_TOKEN` repo secret (an npm automation token):
-# a raw `npm publish` did not auto-fire npm trusted-publishing OIDC here — npm never
-# attempted the token exchange despite `id-token: write`, npm 11.17, and a configured
-# trusted publisher — so we use a token. (`--provenance` still uses `id-token: write`
-# for the provenance attestation.)
-#
-# Required repo secret: `NPM_TOKEN`.
+# credentials. Publishing is TOKENLESS via npm Trusted Publishing (OIDC) — no repo
+# secret. It needs: `id-token: write`, npm >= 11.5.1 (we upgrade it), and the package's
+# Trusted Publisher registered on npm (this repo + this workflow filename). A 404 on
+# the `/-/npm/v1/oidc/token/exchange` request means that registration is missing/wrong.
 #
 # Trigger manually (workflow_dispatch) or by pushing a
 # `svelte-shaker-engine-scan-native@*` tag.
@@ -152,11 +149,12 @@ jobs:
           find artifacts -name '*.node' -exec cp {} . \;
           ls -la *.node
 
-      # DEBUG: verbose publish + dump npm's debug log on failure so we can see why
-      # OIDC trusted publishing does or doesn't fire.
-      - name: Publish to npm (tokenless, OIDC, verbose)
+      # Tokenless publish via npm Trusted Publishing (OIDC). On failure, dump npm's
+      # debug log (e.g. a 404 token exchange = the package's trusted publisher isn't
+      # registered/matching for this repo+workflow).
+      - name: Publish to npm (tokenless, OIDC)
         run: |
-          npm publish --provenance --access public --loglevel verbose || {
+          npm publish --provenance --access public || {
             echo "================ npm debug log ================"
             cat "$HOME/.npm/_logs/"*-debug-0.log 2>/dev/null || true
             exit 1
