@@ -132,16 +132,15 @@ jobs:
         working-directory: packages/svelte-shaker/engine-scan-native
     steps:
       - uses: actions/checkout@v4
-      # `registry-url` makes setup-node write `//registry.npmjs.org/:_authToken=
-      # ${NODE_AUTH_TOKEN}` into .npmrc, so `npm publish` authenticates with the
-      # NPM_TOKEN secret. (Tokenless OIDC didn't fire here for a raw `npm publish` —
-      # only changesets/action's explicit OIDC path worked for the main package —
-      # so we use a token. `--provenance` still uses `id-token: write` for the
-      # provenance attestation.)
+      # Do NOT set `registry-url` — it writes an (empty) `_authToken` into .npmrc and
+      # forces token auth, blocking OIDC.
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
-          registry-url: 'https://registry.npmjs.org'
+      - name: Ensure OIDC-capable npm
+        run: |
+          npm install -g npm@latest
+          npm --version
 
       # Collect every platform's `.node` next to index.cjs (the loader picks the
       # matching one at require time) and publish the single bundled package.
@@ -153,8 +152,14 @@ jobs:
           find artifacts -name '*.node' -exec cp {} . \;
           ls -la *.node
 
-      - name: Publish to npm
-        run: npm publish --provenance --access public
+      # DEBUG: verbose publish + dump npm's debug log on failure so we can see why
+      # OIDC trusted publishing does or doesn't fire.
+      - name: Publish to npm (tokenless, OIDC, verbose)
+        run: |
+          npm publish --provenance --access public --loglevel verbose || {
+            echo "================ npm debug log ================"
+            cat "$HOME/.npm/_logs/"*-debug-0.log 2>/dev/null || true
+            exit 1
+          }
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
