@@ -88,32 +88,34 @@ rsvelte_core = { path = "../../../../rsvelte/crates/rsvelte_core" }
 
 The package bundles every platform's `.node` and is published by the
 `prebuild-native-scanner.yml` workflow (build matrix → one `npm publish`). rsvelte is
-public and publishing is **tokenless via npm Trusted Publishers (OIDC)** — no repo
-secret at all, exactly like the main `svelte-shaker` release.
+public, so the build needs no credentials; publishing uses the **`NPM_TOKEN`** repo
+secret (an npm automation token).
 
-**One-time bootstrap** (Trusted Publishers can only be configured on a package that
-already exists): publish `0.1.0` once manually from a local checkout, then register
-the repo + workflow as a Trusted Publisher.
+> A raw `npm publish` did not auto-fire npm trusted-publishing OIDC here — npm never
+> attempted the token exchange despite `id-token: write`, npm 11.17, and a configured
+> trusted publisher (only `changesets/action`'s explicit OIDC path worked for the main
+> `svelte-shaker` package). So this package uses a token. `--provenance` still uses
+> `id-token: write` for the provenance attestation.
+
+To publish: add the `NPM_TOKEN` secret, bump the version in `package.json`, then run
+the workflow (`workflow_dispatch` with `publish: true`, or push a
+`svelte-shaker-engine-scan-native@<version>` tag). The build matrix produces all 5
+platforms' `.node`, the publish job bundles them, and `npm publish` ships one package.
+
+For the very first publish (so the package exists), you can also publish a host-only
+build manually:
 
 ```sh
 # from packages/svelte-shaker/engine-scan-native, logged in to npm:
 cargo build --release                                              # build.rs runs napi_build::setup()
-# rename this host's cdylib to the `.node` the loader resolves (darwin-arm64 shown):
 cp target/release/libsvelte_shaker_engine_scan_native.dylib \
-   svelte-shaker-engine-scan-native.darwin-arm64.node
-npm publish --access public                                        # publishes 0.1.0
-# then: npmjs.com/package/svelte-shaker-engine-scan-native/access -> add Trusted Publisher
-#   (repo baseballyama/svelte-shaker, workflow prebuild-native-scanner.yml)
+   svelte-shaker-engine-scan-native.darwin-arm64.node              # darwin-arm64 shown
+npm publish --access public
 ```
 
 (`cargo build` produces the napi addon directly; no `@napi-rs/cli` needed. The cdylib
 extension is `.dylib` on macOS, `.so` on Linux, `.dll` on Windows; the `.node` tag is
 `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64` / `win32-x64`.)
-
-(The bootstrap publish only contains this host's binary; the next workflow run
-republishes a bumped version with all 5 platforms.) From then on, run the workflow
-(`workflow_dispatch` with `publish: true`, or push a
-`svelte-shaker-engine-scan-native@<version>` tag) and it publishes tokenlessly.
 
 Consumers get the speedup automatically once it is installed (e.g. as an optional
 dependency); the ESLint rule loads it when present and falls back to the JS/WASM
