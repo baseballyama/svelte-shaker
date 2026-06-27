@@ -3,15 +3,13 @@
 # all platform `.node` binaries (loaded by `index.cjs`).
 #
 # rsvelte (the cargo git dependency) is PUBLIC, so the build fetches it without any
-# credentials. Publishing is TOKENLESS via npm Trusted Publishers (OIDC) — no
-# secret at all — exactly like the main `svelte-shaker` release.
+# credentials. Publishing uses the `NPM_TOKEN` repo secret (an npm automation token):
+# a raw `npm publish` did not auto-fire npm trusted-publishing OIDC here — npm never
+# attempted the token exchange despite `id-token: write`, npm 11.17, and a configured
+# trusted publisher — so we use a token. (`--provenance` still uses `id-token: write`
+# for the provenance attestation.)
 #
-# One-time bootstrap (because Trusted Publishers can only be configured on a package
-# that already exists): publish `0.1.0` once manually from a local checkout
-# (`pnpm --dir packages/svelte-shaker/engine-scan-native build` then `npm publish`),
-# then add this repo + workflow as a Trusted Publisher at
-# https://www.npmjs.com/package/svelte-shaker-engine-scan-native/access. From then on
-# this workflow publishes new versions tokenlessly.
+# Required repo secret: `NPM_TOKEN`.
 #
 # Trigger manually (workflow_dispatch) or by pushing a
 # `svelte-shaker-engine-scan-native@*` tag.
@@ -134,18 +132,16 @@ jobs:
         working-directory: packages/svelte-shaker/engine-scan-native
     steps:
       - uses: actions/checkout@v4
-      # Do NOT set `registry-url` — it writes `_authToken=${NODE_AUTH_TOKEN}` into
-      # .npmrc and forces token auth, blocking the OIDC code path.
+      # `registry-url` makes setup-node write `//registry.npmjs.org/:_authToken=
+      # ${NODE_AUTH_TOKEN}` into .npmrc, so `npm publish` authenticates with the
+      # NPM_TOKEN secret. (Tokenless OIDC didn't fire here for a raw `npm publish` —
+      # only changesets/action's explicit OIDC path worked for the main package —
+      # so we use a token. `--provenance` still uses `id-token: write` for the
+      # provenance attestation.)
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
-      # OIDC Trusted Publishing requires npm >= 11.5.1; this Node's bundled npm is
-      # older (the previous run went straight to ENEEDAUTH without attempting OIDC),
-      # so upgrade it explicitly.
-      - name: Ensure OIDC-capable npm
-        run: |
-          npm install -g npm@latest
-          npm --version
+          registry-url: 'https://registry.npmjs.org'
 
       # Collect every platform's `.node` next to index.cjs (the loader picks the
       # matching one at require time) and publish the single bundled package.
@@ -157,7 +153,8 @@ jobs:
           find artifacts -name '*.node' -exec cp {} . \;
           ls -la *.node
 
-      - name: Publish to npm (tokenless, OIDC)
+      - name: Publish to npm
         run: npm publish --provenance --access public
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
