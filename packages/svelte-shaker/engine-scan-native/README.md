@@ -88,22 +88,26 @@ rsvelte_core = { path = "../../../../rsvelte/crates/rsvelte_core" }
 
 The package bundles every platform's `.node` and is published by the
 `prebuild-native-scanner.yml` workflow (build matrix → one `npm publish`). rsvelte is
-public, so the build needs no credentials; publishing uses the **`NPM_TOKEN`** repo
-secret (an npm automation token).
+public, so the build needs no credentials, and publishing is **tokenless via npm
+Trusted Publishing (OIDC)** — no repo secret.
 
-> A raw `npm publish` did not auto-fire npm trusted-publishing OIDC here — npm never
-> attempted the token exchange despite `id-token: write`, npm 11.17, and a configured
-> trusted publisher (only `changesets/action`'s explicit OIDC path worked for the main
-> `svelte-shaker` package). So this package uses a token. `--provenance` still uses
-> `id-token: write` for the provenance attestation.
+Prerequisites for the tokenless publish:
 
-To publish: add the `NPM_TOKEN` secret, bump the version in `package.json`, then run
-the workflow (`workflow_dispatch` with `publish: true`, or push a
+- the workflow grants `id-token: write` and upgrades npm to >= 11.5.1, and
+- the package has a **Trusted Publisher** registered on npm for this repo + workflow
+  (npmjs.com → the package → Settings → Trusted Publisher → GitHub Actions:
+  org `baseballyama`, repo `svelte-shaker`, workflow `prebuild-native-scanner.yml`).
+  If the publish fails with a `404` on `/-/npm/v1/oidc/token/exchange`, that
+  registration is missing or doesn't match.
+
+To publish: bump the version in `package.json`, then run the workflow
+(`workflow_dispatch` with `publish: true`, or push a
 `svelte-shaker-engine-scan-native@<version>` tag). The build matrix produces all 5
-platforms' `.node`, the publish job bundles them, and `npm publish` ships one package.
+platforms' `.node`, the publish job bundles them, and `npm publish` ships one package
+tokenlessly (with provenance).
 
-For the very first publish (so the package exists), you can also publish a host-only
-build manually:
+For the very first publish (so the package exists, before a Trusted Publisher can be
+registered), publish a host-only build manually:
 
 ```sh
 # from packages/svelte-shaker/engine-scan-native, logged in to npm:
