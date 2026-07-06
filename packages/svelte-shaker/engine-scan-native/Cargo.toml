@@ -31,7 +31,7 @@ rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "f5a672b
 svelte-shaker-engine = { path = "../engine-rs" }
 
 [build-dependencies]
-napi-build = "2"
+napi-build = "2.3.2"
 
 [profile.release]
 opt-level = 3
