@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 napi = { version = "2.16.17", default-features = false, features = ["napi8"] }
 napi-derive = "2.16"
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
-rayon = "1.10"
+rayon = "1.12.0"
 
 # The rsvelte parser, pinned to the exact rev the scanner is validated against
 # (the corpus oracle test). `default-features = false` deliberately drops
