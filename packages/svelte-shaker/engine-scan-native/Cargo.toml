@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 # napi 2.16: the native function `scan` is synchronous and returns a JSON string.
 napi = { version = "2.16", default-features = false, features = ["napi8"] }
 napi-derive = "2.16"
-serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
 rayon = "1.10"
 
 # The rsvelte parser, pinned to the exact rev the scanner is validated against
