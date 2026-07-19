@@ -262,4 +262,65 @@ describe('unread declared props: drop props the component never reads', () => {
     expect(app).toContain('{...rest} icon={heavy}'); // spread site kept verbatim
     expect(out['/Child.svelte']!).not.toContain('$props'); // (b) still drops the declaration
   });
+
+  it('12. a prop forwarded to a grandchild is a value read -> kept (fragment-walk descent)', async () => {
+    // The middle component never renders `label` itself — it only FORWARDS it via
+    // `<GrandChild inner={label}/>`.  That is still a value-position read, so the
+    // prop must stay declared and passed.  If the template walk stopped descending
+    // into a `<Child>` attribute, `label` would look unread and be wrongly dropped,
+    // dangling the forward — this pins that regression.
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Parent from './Parent.svelte';\n  let outer = $state('hi');\n</script>\n` +
+        `<Parent label={outer} />\n`,
+      '/Parent.svelte':
+        `<script>\n  import GrandChild from './GrandChild.svelte';\n  let { label } = $props();\n</script>\n` +
+        `<GrandChild inner={label} />\n`,
+      '/GrandChild.svelte':
+        `<script>\n  let { inner } = $props();\n</script>\n` + `<span>{inner}</span>\n`,
+    };
+    const out = await shakeSound(files);
+    expect(out['/App.svelte']!).toContain('label={outer}'); // forwarded read -> kept at the call site
+    const parent = out['/Parent.svelte']!;
+    expect(parent).toContain('label'); // declaration kept
+    expect(parent).toContain('inner={label}'); // the forward survives
+  });
+
+  it('13. exotic template reads ({@const} / {@html} / class: / use:) are reads -> kept', async () => {
+    const cases: Record<string, string> = {
+      const: `<script>\n  let { size } = $props();\n</script>\n{#each [0] as n}{@const doubled = size * 2}<span>{doubled}{n}</span>{/each}\n`,
+      html: `<script>\n  let { size } = $props();\n</script>\n<div>{@html size}</div>\n`,
+      klass: `<script>\n  let { size } = $props();\n</script>\n<div class:on={size}>x</div>\n`,
+      use: `<script>\n  let { size } = $props();\n  function act() {}\n</script>\n<div use:act={size}>x</div>\n`,
+    };
+    for (const child of Object.values(cases)) {
+      const files = {
+        '/App.svelte':
+          `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
+          `<Child size={heavy} />\n`,
+        '/Child.svelte': child,
+      };
+      const out = await shakeSound(files);
+      expect(out['/App.svelte']!).toContain('size={heavy}'); // exotic read -> attribute kept
+    }
+  });
+
+  it('14. two adjacent unread props drop together with clean comma tiling', async () => {
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n  let keep = $state('k');\n</script>\n` +
+        `<Child a={heavy} b={heavy} c={keep} />\n`,
+      // `a` and `b` are adjacent unread props; dropping the run must not leave a
+      // dangling comma in the destructure.  `c` is dynamic + read, so it stays.
+      '/Child.svelte':
+        `<script>\n  let { a, b, c } = $props();\n</script>\n` + `<span>{c}</span>\n`,
+    };
+    const out = await shakeSound(files);
+    const app = out['/App.svelte']!;
+    expect(app).not.toContain('a={heavy}'); // both unread attributes removed
+    expect(app).not.toContain('b={heavy}');
+    expect(app).toContain('c={keep}'); // read + dynamic kept
+    const child = out['/Child.svelte']!;
+    expect(child).toContain('let { c } = $props();'); // clean tiling: `a, b` gone, no stray comma
+  });
 });
