@@ -132,4 +132,53 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     expect(viaRust['/Child.svelte']).toContain('width?: number');
     expect(viaRust['/Child.svelte']).not.toContain('36?: number');
   });
+
+  it('interprocedural pass-through: a forwarded folded prop matches the TS engine', async () => {
+    // App -> Mid -> Child: `variant` folds in Mid, so the forwarded
+    // `<Child variant={variant}/>` must fold in Child too and its attribute be
+    // removed. The Rust fixpoint's owner-env evaluation must match the TS engine
+    // byte-for-byte (docs §13.1) — including a ternary and a pure-literal forward.
+    const files: Record<string, string> = {
+      '/App.svelte': `<script>\n  import Mid from './Mid.svelte';\n</script>\n<Mid variant="primary" />`,
+      '/Mid.svelte':
+        `<script>\n  import Child from './Child.svelte';\n  import Leaf from './Leaf.svelte';\n  let { variant } = $props();\n</script>\n` +
+        `<Child variant={variant} />\n<Leaf k={variant === 'primary' ? 'x' : 'y'} m={'a' + 'b'} />`,
+      '/Child.svelte':
+        `<script>\n  let { variant = 'other' } = $props();\n</script>\n` +
+        `{#if variant === 'primary'}<b>P</b>{:else}<i>o</i>{/if}`,
+      '/Leaf.svelte':
+        `<script>\n  let { k = 'z', m = 'z' } = $props();\n</script>\n` +
+        `{#if k === 'x'}<b>X</b>{/if}{#if m === 'ab'}<b>AB</b>{/if}`,
+    };
+    const resolve = (source: string, importer: string): string | null => {
+      if (!source.startsWith('.')) return null;
+      const base = importer.slice(0, importer.lastIndexOf('/'));
+      const parts: string[] = [];
+      for (const seg of `${base}/${source}`.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return `/${parts.join('/')}`;
+    };
+    const readFile = (id: string): string => files[id]!;
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const programInput = {
+      files: input.files.map((f) => ({ id: f.id, ast: parseSvelte(f.code, f.id), code: f.code })),
+      edges: input.edges,
+      entries: input.entries,
+    };
+    const viaRust = JSON.parse(wasm.shake_program(JSON.stringify(programInput))) as Record<
+      string,
+      string
+    >;
+    const viaTs = await svelteShaker('/App.svelte', resolve, readFile);
+    expect(viaRust).toEqual(viaTs);
+    for (const [id, code] of Object.entries(viaRust)) assertCompiles(code, id);
+    // The pass-through actually fired (both engines agree on this, above).
+    expect(viaRust['/Child.svelte']).not.toMatch(/let \{ variant/);
+    expect(viaRust['/Mid.svelte']).not.toContain('variant=');
+    expect(viaRust['/Leaf.svelte']).not.toMatch(/let \{ k/);
+  });
 });

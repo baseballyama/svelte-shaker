@@ -21,6 +21,9 @@ export function transformAll(
   return emit(models, runBasePhases(models, plans));
 }
 
+/** Shared empty local fold env for a bailed owner (nothing forwards a constant). */
+const EMPTY_LOCAL_ENV: ReadonlyMap<string, Literal> = new Map();
+
 /**
  * Phases 1–2, shared by {@link transformAll} and {@link transformAllWithMono}:
  * fold each component body and drop its folded props (phase 1), then strip the
@@ -52,11 +55,18 @@ function runBasePhases(
   // Phase 2 — call sites: remove attributes for props the child actually dropped,
   // skipping any call site phase 1 folded away (its attributes went with it).
   for (const model of models.values()) {
+    const plan = plans.get(model.id)!;
+    // A forwarded expression (`<Child prop={ownerProp}/>`) was substituted to a
+    // literal in phase 1 when `ownerProp` is folded; its attribute is then just
+    // as removable as a written literal.  Give phase 2 the owner's fold env
+    // (local-keyed, as the expression references props) so it can recognize that.
+    const ownerEnv = plan.bail ? EMPTY_LOCAL_ENV : remapToLocalNames(plan.constFold, model);
     removeCallSiteAttributes(
       model,
       dropped,
       strings.get(model.id)!,
       editedSpans.get(model.id) ?? [],
+      ownerEnv,
     );
   }
   return strings;
@@ -1000,6 +1010,7 @@ function removeCallSiteAttributes(
   dropped: Map<ComponentId, Set<string>>,
   s: MagicString,
   editedSpans: Span[],
+  ownerEnv: ReadonlyMap<string, Literal>,
 ): void {
   walk<null>(model.ast.fragment, null, {
     Component(node, { next }) {
@@ -1013,7 +1024,7 @@ function removeCallSiteAttributes(
       if (drop && drop.size > 0) {
         for (const attr of node.attributes ?? []) {
           if (attr.type !== 'Attribute' || !attr.name || !drop.has(attr.name)) continue;
-          if (!isSideEffectFree(attr.value)) continue;
+          if (!isSideEffectFree(attr.value, ownerEnv)) continue;
           removeAttrWithSpace(model.code, attr, s);
         }
       }
@@ -1022,13 +1033,21 @@ function removeCallSiteAttributes(
   });
 }
 
-/** A call-site attribute is safe to delete only if its value has no side effects. */
-function isSideEffectFree(value: unknown): boolean {
+/**
+ * A call-site attribute is safe to delete only if its value has no side effects:
+ * boolean shorthand / plain text / a literal expression, OR a forwarded
+ * expression that the OWNER's fold env proves constant (`prop={ownerConst}`,
+ * `prop={ownerConst === 'x' ? … : …}`).  The latter was substituted to a literal
+ * in phase 1, so deleting the attribute is exactly as sound as for a literal —
+ * and it is the interprocedural pass-through's cleanup (docs §13.1).
+ */
+function isSideEffectFree(value: unknown, ownerEnv: ReadonlyMap<string, Literal>): boolean {
   if (value === true || value == null) return true;
   const parts = (Array.isArray(value) ? value : [value]) as AnyNode[];
   return parts.every((part) => {
     if (part.type === 'Text') return true;
-    if (part.type === 'ExpressionTag') return part.expression?.type === 'Literal';
+    if (part.type === 'ExpressionTag')
+      return part.expression?.type === 'Literal' || evaluate(part.expression, ownerEnv).known;
     return false;
   });
 }

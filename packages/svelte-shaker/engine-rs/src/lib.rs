@@ -194,10 +194,16 @@ pub fn shake_program(input_json: &str) -> String {
     // Phase 2: remove call-site attributes for props the child actually dropped,
     // skipping any call site phase 1 folded away (its attributes went with it).
     for model in &models {
+        // A forwarded expression (`<Child prop={ownerProp}/>`) was substituted to a
+        // literal in phase 1 when `ownerProp` folds; give phase 2 the owner's env so
+        // it recognizes that attribute as removable (interprocedural pass-through).
+        let plan = &plans[&model.id];
+        let owner_env =
+            if plan.bail { HashMap::new() } else { remap_to_local_names(&plan.const_env(), model) };
         if let Some(edits) = edits_map.get_mut(&model.id) {
             let empty = Vec::new();
             let spans = edited_spans.get(&model.id).unwrap_or(&empty);
-            remove_call_site_attributes(model, &dropped, edits, spans);
+            remove_call_site_attributes(model, &dropped, edits, spans, &owner_env);
         }
     }
 
@@ -315,10 +321,13 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         edits_map.insert(model.id.clone(), edits);
     }
     for model in &models {
+        let plan = &plans[&model.id];
+        let owner_env =
+            if plan.bail { HashMap::new() } else { remap_to_local_names(&plan.const_env(), model) };
         if let Some(edits) = edits_map.get_mut(&model.id) {
             let empty = Vec::new();
             let spans = edited_spans.get(&model.id).unwrap_or(&empty);
-            remove_call_site_attributes(model, &dropped, edits, spans);
+            remove_call_site_attributes(model, &dropped, edits, spans, &owner_env);
         }
     }
 
