@@ -86,16 +86,16 @@ async function analyzeWith(
   return analyzeInput(input, cache);
 }
 
-/** The full output of a shake including L2 specialization. */
+/** The full output of a shake including monomorphization specialization. */
 export interface ShakeResult {
   /**
-   * Whole-program output: shaken source per `.svelte` file.  With L2 OFF this is
-   * byte-for-byte identical to {@link svelteShaker}; with L2 ON, owner files
+   * Whole-program output: shaken source per `.svelte` file.  With monomorphization OFF this is
+   * byte-for-byte identical to {@link svelteShaker}; with monomorphization ON, owner files
    * whose call sites were specialized have those sites rewritten to import a
    * variant via `variantSpecifier(variantId)`.
    */
   files: Record<ComponentId, string>;
-  /** L2 specialized variants + call-site bindings (empty when L2 is off). */
+  /** monomorphization specialized variants + call-site bindings (empty when monomorphization is off). */
   mono: MonomorphizeResult;
 }
 
@@ -103,13 +103,13 @@ export interface ShakeResult {
 export type VariantSpecifier = (variantId: string) => string;
 
 /**
- * Whole-program shake WITH optional L2 monomorphization (docs §3 "L2").
+ * Whole-program shake WITH optional monomorphization (docs §3 "monomorphization").
  *
  * `mono` carries the specialized variants (id -> residual source) and the call
  * sites bound to them; `files` is the wired owner source.  The Shell resolves
  * `variantSpecifier(id)` to a virtual module whose source is
  * `mono.variants.get(id)!.code`.  With `mono.enabled` false (default) nothing is
- * specialized and `files` equals the L0/L1/L1.5 output exactly — a strict
+ * specialized and `files` equals the unused-prop fold / constant fold / value-set narrowing output exactly — a strict
  * superset of the default behavior, so existing consumers are unaffected.
  */
 export async function svelteShakerWithMono(
@@ -121,15 +121,16 @@ export async function svelteShakerWithMono(
   parse?: Parse,
 ): Promise<ShakeResult> {
   const { models, plans } = await analyzeWith(entries, resolve, readFile, parse);
-  // The cascade may re-run the transform with force-bailed plans, so recompute L2
-  // inside it: a bailed component must not be specialized either.  `lastResult`
-  // captures the mono result of the final (converged or no-op) pass.  On the no-op
-  // fallback the emitted owner files are the untouched originals — they import no
-  // variant — so any variants `lastResult` still lists are simply never requested.
+  // The cascade may re-run the transform with force-bailed plans, so recompute
+  // monomorphization inside it: a bailed component must not be specialized either.
+  // `lastResult` captures the mono result of the final (converged or no-op) pass.
+  // On the no-op fallback the emitted owner files are the untouched originals —
+  // they import no variant — so any variants `lastResult` still lists are simply
+  // never requested.
   let lastResult!: MonomorphizeResult;
   const files = shakeWithRevertCascade(models, plans, (p) => {
     // Thread the shake entries through so the net-win gate can compute module
-    // reachability from them (docs §3 L2, §13.2).
+    // reachability from them (docs §3 monomorphization, §13.2).
     lastResult = monomorphize(models, p, mono, entries);
     // With no bindings the wired pass and the base pass are identical, so reuse
     // the plain transform to keep the default path byte-for-byte unchanged.

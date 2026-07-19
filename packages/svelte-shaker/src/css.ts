@@ -1,5 +1,5 @@
 // ----------------------------------------------------------------------
-// CSS rule removal (docs/ARCHITECTURE.md §3 "L1.5", "CSS (shaker 独自の価値)").
+// CSS rule removal (docs/ARCHITECTURE.md §3 "value-set narrowing", "CSS (shaker 独自の価値)").
 //
 // The headline differentiator: drop `<style>` rules that target a class the
 // component can PROVABLY never produce, given the value sets we computed.

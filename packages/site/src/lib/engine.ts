@@ -29,7 +29,7 @@ export interface Eliminated {
 
 export interface ShakeOutput {
   shaken: Files; // shaken source per original file
-  variants: { id: string; code: string }[]; // L2 specialized modules
+  variants: { id: string; code: string }[]; // monomorphization specialized modules
   dropped: string[]; // files reachable before but not after — gone from the bundle
   before: Sizes;
   after: Sizes;
@@ -47,7 +47,7 @@ function dirOf(id: string): string {
 /** Resolve `./Child.svelte` (and synthetic variant ids) within the file map. */
 function makeResolve(keys: () => Set<string>) {
   return (source: string, importer: ComponentId): ComponentId | null => {
-    if (keys().has(source)) return source; // synthetic (e.g. an L2 variant id)
+    if (keys().has(source)) return source; // synthetic (e.g. an monomorphization variant id)
     if (!source.startsWith('.')) return null;
     const parts = `${dirOf(importer)}/${source}`.split('/');
     const out: string[] = [];

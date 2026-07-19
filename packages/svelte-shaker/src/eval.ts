@@ -118,7 +118,7 @@ export function evaluate(
 }
 
 // ----------------------------------------------------------------------
-// L1.5 set-aware predicate (docs §3).  Where {@link evaluate} proves a value,
+// value-set narrowing set-aware predicate (docs §3).  Where {@link evaluate} proves a value,
 // this proves a *boolean branch condition* that must hold for EVERY value in a
 // prop's reachable value set.  It is the sound bridge from "variant ∈
 // {'primary','secondary'}" to "the `variant === 'danger'` arm is dead".

@@ -79,8 +79,8 @@ through your plugin's `resolveId`/`load` hooks; the L0/L1/L1.5 shake only needs 
 ```ts
 shaker({
   include: ['src'], // dirs (relative to root) holding every .svelte call site
-  level: 2, // 0 | 1 | 2 — default 2; `level: 1` turns L2 off for faster builds
-  monomorphize: true, // L2 tuning; or { maxVariants: 16, minSavings: 0.15 }
+  monomorphize: true, // default on; `false` disables it for faster builds,
+  // or { maxVariants: 16, minSavings: 0.15 } to tune
   engine: 'auto', // 'auto' (default) | 'js' | 'rust'
   parser: 'svelte', // 'svelte' (default) | 'rsvelte'
   verbose: false, // true = per-file size breakdown after the build
@@ -97,18 +97,19 @@ shaker({
   `@rsvelte/vite-plugin-svelte-native`; if it can't be loaded the plugin
   **throws** instead of silently falling back, so the same source always shakes
   the same on every machine. Soundness is parser-independent.
-- **L2 never bloats** — a measured net-win gate only specializes a component
-  when that strictly shrinks the whole program, so its only cost is build time.
+- **Monomorphization never bloats** — a measured net-win gate only specializes a
+  component when that strictly shrinks the whole program, so its only cost is
+  build time.
 
 ## What it removes
 
-| Level    | What it removes                                                                                                                              | Default |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| **L0**   | Props no call site ever passes → fold to the default, drop from `$props()`, strip the attribute at call sites                                | on      |
-| **L1**   | Props that collapse to one constant app-wide → fold + drop + strip every call site's attribute                                               | on      |
-| **L1.5** | Value-set **narrowing**: with `variant ∈ {primary, secondary}`, delete provably-dead `{#if}`/`{:else if}` arms (prop stays in the signature) | on      |
-| **CSS**  | `<style>` rules whose class can never be produced given the value sets                                                                       | on      |
-| **L2**   | Per-call-site monomorphization: specialize a component per prop shape (deduped by residual, capped by `maxVariants`)                         | on (`level: 1` to disable) |
+| Pass                    | What it removes                                                                                                                              | Default |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| **unused-prop fold**    | Props no call site ever passes → fold to the default, drop from `$props()`, strip the attribute at call sites                                | on      |
+| **constant fold**       | Props that collapse to one constant app-wide → fold + drop + strip every call site's attribute                                               | on      |
+| **value-set narrowing** | With `variant ∈ {primary, secondary}`, delete provably-dead `{#if}`/`{:else if}` arms (prop stays in the signature)                          | on      |
+| **CSS**                 | `<style>` rules whose class can never be produced given the value sets                                                                       | on      |
+| **monomorphization**    | Per-call-site: specialize a component per prop shape (deduped by residual, capped by `maxVariants`)                                          | on (`monomorphize: false` to disable) |
 
 Folding also reaches template ternaries (`{cond ? a : b}`) and class-string
 interpolation when the parts are provable constants.

@@ -52,7 +52,7 @@ export interface ResolvedEdge {
  * The fully-resolved, batched input to the engine (docs §2.1).  `files` is every
  * reachable `.svelte` (barrel `.js`/`.ts` are consumed during resolution and do
  * not appear here); `edges` are already resolved to absolute ids; `entries` is
- * the call-site-completeness set (the Shell's FS scan) and the L2 net-win roots.
+ * the call-site-completeness set (the Shell's FS scan) and the monomorphization net-win roots.
  */
 export interface AnalyzeInput {
   files: InputFile[];
@@ -79,12 +79,12 @@ export interface EditResult {
  *
  * M0 only ever produces `const` (single literal across all sites) and `top`
  * (something we cannot reason about — never fold).  `multi` / `dynamic` are
- * declared now so L1.5 narrowing can be added without reshaping callers.
+ * declared now so value-set narrowing can be added without reshaping callers.
  */
 export type PropAbstraction =
   | { kind: 'bottom' } // no call site has been seen yet
   | { kind: 'const'; value: Literal } // collapses to a single literal
-  | { kind: 'multi'; values: Literal[] } // L1.5: reachable value set
+  | { kind: 'multi'; values: Literal[] } // value-set narrowing: reachable value set
   | { kind: 'dynamic' } // used, value not statically known
   | { kind: 'top'; reason: string }; // cannot be touched (bail this prop)
 
@@ -92,7 +92,7 @@ export type PropAbstraction =
  * The set of literal values one declared prop is seen to take across the whole
  * program (default included for sites that omit it), plus the two ways it can
  * escape the lattice.  This is the value-set foundation later levels narrow on
- * (docs §2.2 `multi`, §3 L1.5): `constFold` is just the `size === 1 && !dynamic
+ * (docs §2.2 `multi`, §3 value-set narrowing): `constFold` is just the `size === 1 && !dynamic
  * && !top` projection of it.  Kept on the plan as groundwork — no level yet
  * consumes the multi-element / `dynamic` cases.
  */
@@ -115,13 +115,13 @@ export interface ComponentPlan {
   bail: boolean;
   reasons: string[];
   /**
-   * L0/L1: props that collapse to a single constant.  Under the "攻め"
+   * unused-prop fold / constant fold: props that collapse to a single constant.  Under the "攻め"
    * default (docs §12-2) these are folded in the body, dropped from the
    * `$props()` signature, and their attributes are removed at every call site.
    */
   constFold: Map<string, Literal>;
   /**
-   * L1.5 value-set narrowing (docs §3): props whose reachable value set is a
+   * value-set narrowing value-set narrowing (docs §3): props whose reachable value set is a
    * known set of >= 2 distinct literals (no `dynamic`/`top` contribution).  We
    * delete branches the prop can provably never reach (e.g. a `variant ===
    * 'danger'` arm when `variant ∈ {'primary','secondary'}`), but — unlike

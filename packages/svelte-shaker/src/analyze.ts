@@ -1435,8 +1435,8 @@ function literalAttrValue(value: unknown): { known: true; value: Literal } | { k
  * name is a different entity, so folding it would corrupt the binding (often
  * invalid Svelte) — or WRITTEN TO (reassigned / `++` / destructure-assigned /
  * `bind:`), in which case it is not a constant and folding it changes what
- * renders after the write. Both L1 planning ({@link buildPlan}) and L2
- * specialization (mono.ts) must honor this identically.
+ * renders after the write. Both constant fold planning ({@link buildPlan}) and
+ * monomorphization specialization (mono.ts) must honor this identically.
  */
 export function isFoldBlockedName(model: FileModel, name: string): boolean {
   return (
@@ -1464,7 +1464,7 @@ function buildPlan(model: FileModel, u: Usage | undefined, ownerEnv: OwnerEnv): 
     // identifier to substitute or drop, so it is never foldable — folding it would
     // delete the inner binding.  The shadow guard tests the LOCAL name (the entity
     // the body actually references): a name also bound elsewhere is a different
-    // entity, so folding it corrupts that binding.  L2 specialization honors the
+    // entity, so folding it corrupts that binding.  monomorphization specialization honors the
     // SAME two predicates (see mono.ts).
     if (decl.local === null || isFoldBlockedName(model, decl.local)) continue;
 
@@ -1476,14 +1476,14 @@ function buildPlan(model: FileModel, u: Usage | undefined, ownerEnv: OwnerEnv): 
     // folding nor narrowing is sound.
     if (set.top || set.dynamic) continue;
 
-    // L1: a clean singleton value set is the foldable case.
+    // constant fold: a clean singleton value set is the foldable case.
     if (set.values.length === 1) {
       plan.constFold.set(decl.name, set.values[0]!);
       continue;
     }
-    // L1.5: >= 2 distinct literals with no dynamic/⊤ contribution is a fully
+    // value-set narrowing: >= 2 distinct literals with no dynamic/⊤ contribution is a fully
     // known reachable value set — branches the prop can never reach are dead
-    // (docs §3 L1.5). The prop stays genuinely used, so it is only recorded for
+    // (docs §3 value-set narrowing). The prop stays genuinely used, so it is only recorded for
     // narrowing, never for substitution/dropping.
     if (set.values.length >= 2) plan.narrow.set(decl.name, set.values);
   }
