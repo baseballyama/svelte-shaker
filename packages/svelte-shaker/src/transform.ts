@@ -354,10 +354,16 @@ export function shakeBody(
   extraDrops?: Set<string>,
 ): Set<string> {
   // Nothing to fold (constant fold) and nothing to narrow (value-set narrowing): no branch/prop edits.
-  // CSS removal still depends only on the value sets the plan carries, so a
-  // component with no foldable/narrowable prop produces an empty class set
-  // bound and removes nothing — leave it untouched entirely.  Reverse removals
-  // then run over pristine source, so no protection is needed on this path.
+  // With no value sets there is nothing to bound a class against, so branch-driven
+  // CSS removal has no purchase and we skip {@link shakeCss} entirely, leaving the
+  // component untouched.  One case this passes up (deliberately): a component whose
+  // ONLY edit is a reverse/unread removal (docs §PR4/§PR7) could, since §PR8, have
+  // an unbounded class source deleted along with that region and thereby become
+  // bounded — running shakeCss with those removed spans as `pruned` might then drop
+  // a now-unreachable rule.  We do NOT do that here: it is a sound MISSED
+  // opportunity, not an unsound one (keeping every rule can never change styling),
+  // and wiring shakeCss into this fold-free path is left as future work.  Reverse
+  // removals then run over pristine source, so no protection is needed on this path.
   if (env.size === 0 && setEnv.size === 0) {
     // …but an unread-prop drop (docs §PR7) still edits the signature, even with
     // nothing to fold.  Apply it and return no folded props (phase 2 does nothing).
@@ -380,7 +386,13 @@ export function shakeBody(
   // `seedDead` pre-loads the reverse-removal regions so every pass below (fold,
   // ternary, substitution) treats them as already-dead and never edits inside.
   const dead: Span[] = seedDead ? [...seedDead] : [];
-  foldIfBlocks(model.ast.fragment, localEnv, localSetEnv, code, s, dead);
+  // `pruned` is the subset of dead regions that genuinely VANISH from the output
+  // (deleted `{#if}` arms + reverse/unread removals), as opposed to `dead`, which
+  // also holds collapse spans whose kept arm is re-emitted verbatim.  Only the
+  // vanished regions may be excluded from the CSS possible-class set (§PR8): a
+  // node inside a re-emitted kept arm still renders, so its class still counts.
+  const pruned: Span[] = seedDead ? [...seedDead] : [];
+  foldIfBlocks(model.ast.fragment, localEnv, localSetEnv, code, s, dead, pruned);
 
   // (1b) Fold template ternaries `{cond ? a : b}` whose `cond` is a provable
   // constant down to the taken arm.  This runs BEFORE substitution: the taken
@@ -430,7 +442,7 @@ export function shakeBody(
     constFold: localEnv,
     narrow: localSetEnv,
   };
-  shakeCss(model, cssView, s);
+  shakeCss(model, cssView, s, pruned);
 
   if (outDead) outDead.push(...dead);
   return droppable;
@@ -458,6 +470,8 @@ function foldIfBlocks(
   code: string,
   s: MagicString,
   dead: Span[],
+  /** Accumulates only the genuinely-removed spans, for CSS pruning (§PR8). */
+  pruned: Span[],
 ): void {
   walk<{ parent: AnyNode | null; preserve: boolean; element: string | null }>(
     fragment,
@@ -480,7 +494,7 @@ function foldIfBlocks(
         // block already inside a region we removed (a dead arm we descended into).
         if (node.elseif || inSpans(node, dead)) return;
         const decision = decideChain(node, env, setEnv);
-        applyChain(decision, env, code, s, dead, {
+        applyChain(decision, env, code, s, dead, pruned, {
           parent: state.parent,
           // `state.parent` is the Fragment that holds this chain (the walk sets a
           // node as its children's parent), so its `nodes` are the chain's siblings.
@@ -519,8 +533,15 @@ function applyChain(
   code: string,
   s: MagicString,
   dead: Span[],
+  /** Genuinely-removed spans for CSS pruning (§PR8). */
+  pruned: Span[],
   ctx: ChainContext,
 ): void {
+  // `decision.removed` is the chain's never-rendered region in EVERY outcome: the
+  // dead arms, the dead prefix before a promoted head, or the parts around a kept
+  // arm — never the kept arm itself.  So it is exactly what CSS may exclude, even
+  // when the chain collapses to a verbatim-re-emitted arm whose span joins `dead`.
+  for (const r of decision.removed) pruned.push(r);
   if (decision.kept) {
     // The chain collapses to a single surviving fragment, re-emitted verbatim.
     // Because we overwrite the whole chain span in one shot, the later
