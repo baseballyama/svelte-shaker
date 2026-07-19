@@ -1,6 +1,6 @@
 import { parseSvelte } from './parse.js';
-import { emptyPlan, type ComponentId, type ComponentPlan } from './ir.js';
-import type { FileModel } from './analyze.js';
+import { type ComponentId, type ComponentPlan } from './ir.js';
+import { planFixpoint, type FileModel } from './analyze.js';
 
 // The engine's last line of defense.  It aims to only ever emit valid,
 // behavior-preserving source, so a component whose slimmed output no longer
@@ -78,27 +78,33 @@ export function revertCascade(
   return original;
 }
 
-/** A copy of `plans` with `ids` force-bailed: those components fold nothing, so
- * the re-run leaves their body untouched AND (because they now drop no prop)
- * keeps every parent's call-site attributes for them. */
-function forceBailPlans(
-  plans: Map<ComponentId, ComponentPlan>,
+/**
+ * Recompute the WHOLE-program fixpoint with `ids` force-bailed: stamp the shared
+ * models (mirroring the Rust engine's `forceBail` handling) and re-run
+ * {@link planFixpoint}.  A force-bailed component folds nothing, so its body is
+ * left untouched AND it drops no prop — but, crucially, a child whose fold was
+ * propagated FROM this owner (docs §13.1 pass-through) also un-folds, because the
+ * owner's now-empty fold env no longer proves the forwarded value.  Stamping is
+ * idempotent and the force-bail set only grows across cascade passes, so the
+ * shared models stay consistent with the plans we return.
+ */
+function recomputeWithForceBail(
+  models: Map<ComponentId, FileModel>,
   ids: Set<ComponentId>,
 ): Map<ComponentId, ComponentPlan> {
-  const next = new Map(plans);
   for (const id of ids) {
-    const plan = next.get(id);
-    if (!plan) continue;
-    next.set(id, { ...emptyPlan(id), bail: true, reasons: [...plan.reasons, REVERT_REASON] });
+    const model = models.get(id);
+    if (model && !model.bailReasons.includes(REVERT_REASON)) model.bailReasons.push(REVERT_REASON);
   }
-  return next;
+  return planFixpoint(models);
 }
 
 /**
  * The JS engine's revert cascade: drive {@link revertCascade} with a transform
- * `runTransform`, force-bailing the plans of any component whose output failed to
- * re-parse before each re-run.  Exposed so the (rare) test that must drive a
- * revert can inject a transform — the engine never triggers it in normal use.
+ * `runTransform`, force-bailing any component whose output failed to re-parse and
+ * RECOMPUTING the fixpoint before each re-run (so a pass-through child un-folds
+ * with its reverted owner).  Exposed so the (rare) test that must drive a revert
+ * can inject a transform — the engine never triggers it in normal use.
  */
 export function shakeWithRevertCascade(
   models: Map<ComponentId, FileModel>,
@@ -106,6 +112,6 @@ export function shakeWithRevertCascade(
   runTransform: (plans: Map<ComponentId, ComponentPlan>) => Record<ComponentId, string>,
 ): Record<ComponentId, string> {
   return revertCascade([...models.values()], (forceBail) =>
-    runTransform(forceBailPlans(plans, forceBail)),
+    runTransform(forceBail.size === 0 ? plans : recomputeWithForceBail(models, forceBail)),
   );
 }

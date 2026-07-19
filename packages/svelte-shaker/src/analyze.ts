@@ -230,6 +230,21 @@ export function analyzeInput(input: AnalyzeInput, parseCache?: ParseCache): Anal
     if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
   }
 
+  return { models, plans: planFixpoint(models) };
+}
+
+/**
+ * Compute every component's plan to a whole-program fixpoint (docs §2.1) from the
+ * models' current `bailReasons` (escape stamps, and — on a revert re-run — the
+ * cascade's force-bail stamps).  Extracted so the revert cascade can RECOMPUTE the
+ * whole fixpoint after force-bailing a component, not just patch that one plan:
+ * with interprocedural pass-through (docs §13.1) a child's fold can depend on an
+ * owner's fold, so force-bailing the owner must un-fold the child too — an
+ * in-place patch of only the owner's plan would leave the child's drop stale
+ * (unsound).  This mirrors the Rust engine, which re-runs `run_fixpoint` after
+ * stamping `forceBail` onto the models.
+ */
+export function planFixpoint(models: Map<ComponentId, FileModel>): Map<ComponentId, ComponentPlan> {
   // Round 0: every call site counts (no dead spans yet) — the plain, non-cascade
   // analysis.  The owner fold env is empty here, so a forwarded expression only
   // folds when it is a pure literal expression (`v={'a' + 'b'}`); owner-prop
@@ -253,7 +268,7 @@ export function analyzeInput(input: AnalyzeInput, parseCache?: ParseCache): Anal
     plans = nextPlans;
   }
 
-  return { models, plans };
+  return plans;
 }
 
 /**
