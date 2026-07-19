@@ -1,6 +1,8 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { svelteShaker } from '../src/index';
 import { analyze } from '../src/analyze';
+import { shakeWithRevertCascade } from '../src/revert-cascade';
+import { transformAll } from '../src/transform';
 import { assertCompiles, cleanTmp, renderGraphHtml } from './diff';
 
 afterAll(() => cleanTmp());
@@ -230,5 +232,55 @@ describe('interprocedural pass-through of folded constants', () => {
     expect(plans.get('/Child.svelte')!.constFold.get('v')).toBe('ab');
     const out = await shakeSound(files);
     expect(out['/Child.svelte']!).toContain('<b>AB</b>');
+  });
+});
+
+// ----------------------------------------------------------------------
+// The revert cascade must RECOMPUTE the fixpoint after force-bailing, not just
+// patch the bailed component's plan.  With pass-through (docs §13.1) a child's
+// fold can depend on its owner's fold, so if a transform bug forces the OWNER to
+// revert, the child must un-fold too — otherwise the reverted owner keeps
+// forwarding an attribute for a prop the child dropped, which then flows into the
+// child's `...rest` and changes what renders (unsound).  This drives the cascade
+// directly with a fault-injecting transform (the engine has no natural trigger).
+// ----------------------------------------------------------------------
+
+describe('revert cascade recomputes pass-through folds', () => {
+  it('force-bailing a forwarding owner un-folds the child so its ...rest stays sound', async () => {
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Mid from './Mid.svelte';\n</script>\n` + `<Mid variant="primary" />\n`,
+      '/Mid.svelte':
+        `<script>\n  import Child from './Child.svelte';\n  let { variant } = $props();\n</script>\n` +
+        `<Child v={variant} />\n`,
+      // `...rest` captures every prop NOT declared. If `v` is (unsoundly) dropped
+      // while Mid still forwards it, `v` leaks into `rest` and this line changes.
+      '/Child.svelte':
+        `<script>\n  let { v = 'default', ...rest } = $props();\n</script>\n` +
+        `<p>v:{v}</p><p>rest:{Object.keys(rest).join(',')}</p>\n`,
+    };
+    const { resolve, readFile } = memGraph(files);
+    const { models, plans } = await analyze('/App.svelte', resolve, readFile);
+    // Without a fault, the pass-through folds Child.v (and would drop it).
+    expect(plans.get('/Child.svelte')!.constFold.get('v')).toBe('primary');
+
+    let pass = 0;
+    const out = shakeWithRevertCascade(models, plans, (p) => {
+      const result = transformAll(models, p);
+      // Fault-inject: Mid's first (folded) output is unparseable, forcing a revert.
+      if (pass++ === 0) result['/Mid.svelte'] = '<script>\n  let x = ;\n</script>\n';
+      return result;
+    });
+
+    // Mid reverted to its original; because the fixpoint was RECOMPUTED (not just
+    // patched), Child un-folded too and keeps `v` declared, so the forwarded `v`
+    // binds to the prop rather than to `...rest`.
+    expect(out['/Mid.svelte']).toBe(files['/Mid.svelte']);
+    expect(out['/Child.svelte']).toMatch(/let \{ v = 'default', \.\.\.rest \}/);
+
+    // The whole graph still renders identically to the untouched original.
+    const before = await graphHtml(files);
+    const after = await graphHtml({ ...files, ...out });
+    expect(after).toBe(before);
   });
 });
