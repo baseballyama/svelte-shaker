@@ -13,6 +13,12 @@ pub(crate) const ESCAPE_REASON: &str = "escapes as value (e.g. <svelte:component
 /// emitted source failed to re-parse (index.ts `REVERT_REASON`).
 pub(crate) const REVERT_REASON: &str = "reverted: transform emitted unparseable source";
 
+/// Bail reason for a component with a consumer OUTSIDE the analyzed `.svelte`
+/// graph — a `.ts`/`.js` call site the crawl cannot parse, or a user `external`
+/// (analyze.ts §4.2, `AnalyzeInput.escaped`).  Kept byte-identical to the TS
+/// engine's `EXTERNAL_ESCAPE_REASON` so the two engines agree.
+pub(crate) const EXTERNAL_ESCAPE_REASON: &str = "has a consumer outside the analyzed .svelte graph";
+
 /// The declared prop names (the `Property` keys of the `let { ... } = $props()`
 /// `ObjectPattern`, a `...rest` skipped) plus whether such a rest element exists
 /// — mirrors `findPropsDeclaration` + the prop loop in analyze.ts.

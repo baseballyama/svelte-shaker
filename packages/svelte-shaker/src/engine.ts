@@ -51,6 +51,10 @@ export class DevShaker {
   private readonly parseCache: ParseCache = new Map();
   /** Last-seen source per file, so an update re-reads only what changed. */
   private readonly codeCache = new Map<ComponentId, string>();
+  /** Components with a consumer outside the `.svelte` graph (docs §4.2): a
+   * `.ts`/`.js` call site or a user `external`.  The Shell recomputes and
+   * {@link setEscaped}s this whenever a non-`.svelte` module changes. */
+  private escaped: ComponentId[];
 
   /** Current slimmed output per `.svelte` id (the live shake result). */
   private output: Record<ComponentId, string> = {};
@@ -61,12 +65,21 @@ export class DevShaker {
     readFile: ReadFile,
     mode: DevMode = 'incremental',
     parse?: Parse,
+    escaped: ComponentId[] = [],
   ) {
     for (const id of Array.isArray(files) ? files : [files]) this.entries.add(id);
     this.resolve = resolve;
     this.readFile = readFile;
     this.mode = mode;
     this.parse = parse;
+    this.escaped = escaped;
+  }
+
+  /** Replace the external-escape set (docs §4.2).  The Shell calls this before
+   * {@link update} when a non-`.svelte` module changed the set of components
+   * reached from `.ts`/`.js`, so the next shake bails them. */
+  setEscaped(escaped: ComponentId[]): void {
+    this.escaped = escaped;
   }
 
   /** Full initial shake of the program.  Returns the slimmed source per file. */
@@ -139,6 +152,7 @@ export class DevShaker {
       read,
       parseCache,
       this.parse,
+      this.escaped,
     );
     const { models, plans } = analyzeInput(input, parseCache);
     return transformAll(models, plans);

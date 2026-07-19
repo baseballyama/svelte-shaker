@@ -87,9 +87,10 @@ export async function svelteShakerWasm(
   resolve: Resolve,
   readFile: ReadFile,
   parse?: Parse,
+  escaped: ComponentId[] = [],
 ): Promise<Record<ComponentId, string>> {
   const cache: ParseCache = new Map();
-  const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse);
+  const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse, escaped);
   const programInput = {
     files: input.files.map((f) => ({
       id: f.id,
@@ -98,6 +99,7 @@ export async function svelteShakerWasm(
     })),
     edges: input.edges,
     entries: input.entries,
+    escaped: input.escaped ?? [],
   };
   return revertCascade(
     input.files,
@@ -130,9 +132,10 @@ export async function svelteShakerWasmWithMono(
   readFile: ReadFile,
   mono: MonomorphizeOptions,
   parse?: Parse,
+  escaped: ComponentId[] = [],
 ): Promise<WasmMonoResult> {
   const cache: ParseCache = new Map();
-  const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse);
+  const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse, escaped);
   const programInput = {
     files: input.files.map((f) => ({
       id: f.id,
@@ -141,6 +144,7 @@ export async function svelteShakerWasmWithMono(
     })),
     edges: input.edges,
     entries: input.entries,
+    escaped: input.escaped ?? [],
   };
   const options = JSON.stringify({
     enabled: mono.enabled,

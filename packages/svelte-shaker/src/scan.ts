@@ -1,12 +1,16 @@
 // ----------------------------------------------------------------------
 // Node-only Shell glue (docs/ARCHITECTURE.md §5).  Kept OUT of `index.ts` so the
 // engine core has no `node:*` imports and runs unchanged in the browser.
-// Exposed to Node consumers via the `svelte-shaker/node` entry point.
+// This is the `svelte-shaker/node` entry point — its exports are a public contract.
 // ----------------------------------------------------------------------
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ComponentId } from './ir.js';
 import type { Resolve, ReadFile } from './analyze.js';
+
+// The escape-scan machinery lives in `./escape-scan.js` (internal); only the single
+// entry helper is part of the public `svelte-shaker/node` surface.
+export { computeEscapedComponents, type EscapeScanResult } from './escape-scan.js';
 
 /** Default filesystem resolver: resolve `source` relative to its importer. */
 export const fsResolve: Resolve = (source, importer) => {

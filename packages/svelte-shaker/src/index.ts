@@ -61,8 +61,9 @@ export async function svelteShaker(
   resolve: Resolve,
   readFile: ReadFile,
   parse?: Parse,
+  escaped: ComponentId[] = [],
 ): Promise<Record<ComponentId, string>> {
-  const { models, plans } = await analyzeWith(entries, resolve, readFile, parse);
+  const { models, plans } = await analyzeWith(entries, resolve, readFile, parse, escaped);
   return shakeWithRevertCascade(models, plans, (p) => transformAll(models, p));
 }
 
@@ -79,10 +80,11 @@ async function analyzeWith(
   resolve: Resolve,
   readFile: ReadFile,
   parse: Parse | undefined,
+  escaped: ComponentId[] = [],
 ): ReturnType<typeof analyze> {
-  if (!parse) return analyze(entries, resolve, readFile);
+  if (!parse) return analyze(entries, resolve, readFile, escaped);
   const cache: ParseCache = new Map();
-  const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse);
+  const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse, escaped);
   return analyzeInput(input, cache);
 }
 
@@ -119,8 +121,9 @@ export async function svelteShakerWithMono(
   mono: MonomorphizeOptions = DEFAULT_MONO_OPTIONS,
   variantSpecifier: VariantSpecifier = (id) => id,
   parse?: Parse,
+  escaped: ComponentId[] = [],
 ): Promise<ShakeResult> {
-  const { models, plans } = await analyzeWith(entries, resolve, readFile, parse);
+  const { models, plans } = await analyzeWith(entries, resolve, readFile, parse, escaped);
   // The cascade may re-run the transform with force-bailed plans, so recompute
   // monomorphization inside it: a bailed component must not be specialized either.
   // `lastResult` captures the mono result of the final (converged or no-op) pass.
