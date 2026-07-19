@@ -225,8 +225,16 @@ function equalityTri(
   return 'unknown';
 }
 
-/** The reachable value set for `node` if it is a bare set-var identifier. */
-function setVar(node: AnyNode | undefined, setEnv: Map<string, Literal[]>): Literal[] | null {
+/**
+ * The reachable value set for `node` if it is a bare set-var identifier, else
+ * `null`.  The single definition of "a bare narrowable prop reference": the
+ * set-aware predicate here, CSS class enumeration (css.ts), and interprocedural
+ * set pass-through (analyze.ts) all decide it through this, so they stay in lockstep.
+ */
+export function setVar(
+  node: AnyNode | undefined,
+  setEnv: ReadonlyMap<string, Literal[]>,
+): Literal[] | null {
   if (node?.type === 'Identifier' && node.name && setEnv.has(node.name))
     return setEnv.get(node.name)!;
   return null;

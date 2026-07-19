@@ -18,7 +18,7 @@ import {
   type ResolvedEdge,
 } from './ir.js';
 import { computeDeadSpans, inSpans, type Span } from './dead.js';
-import { evaluate } from './eval.js';
+import { evaluate, setVar } from './eval.js';
 
 export type Resolve = (
   source: string,
@@ -1579,15 +1579,16 @@ function valueSetFor(decl: PropDecl, sites: CallSite[], ownerEnv: OwnerEnv): Pro
       const env = ownerEnv(site.owner);
       const expr = explicit.expr;
       // A BARE owner-prop reference whose owner narrowed it to a known set
-      // contributes that whole set (mirrors css.ts `expressionStrings`: bare
-      // set-var enumerated, any compound expression must const-fold).  Sound: the
-      // owner keeps the narrowed prop genuinely used (never substituted), so the
-      // residual owner passes each set member as-is -> the child receives ⊆ the set.
+      // contributes that whole set (same `setVar` shape css.ts enumerates for
+      // classes; any compound expression must const-fold below).  Sound: the owner
+      // keeps the narrowed prop genuinely used (never substituted), so the residual
+      // owner passes each set member as-is -> the child receives ⊆ the set.
       // Monotone across rounds: the owner's narrow set only shrinks as its own dead
       // spans grow (see planFixpoint), so this contribution only shrinks -> the
       // fixpoint converges and `plansEqual` (which compares `narrow`) detects it.
-      if (expr && expr.type === 'Identifier' && expr.name && env.narrow.has(expr.name)) {
-        for (const v of env.narrow.get(expr.name)!) add(v);
+      const set = setVar(expr, env.narrow);
+      if (set) {
+        for (const v of set) add(v);
         continue;
       }
       const r = expr ? evaluate(expr, env.fold) : ({ known: false } as const);
