@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
+use crate::props::{count_props_calls, PropsInfo};
 
 /// Imported components LEAKED as a value bail reason (analyze.ts §4.1).
 pub(crate) const ESCAPE_REASON: &str = "escapes as value (e.g. <svelte:component this={X}>)";
@@ -183,6 +184,105 @@ fn collect_written(node: &Value, out: &mut Vec<String>) {
         }
         _ => {}
     }
+}
+
+/// EXTERNAL names of props DECLARED but never READ (docs §PR7) — mirrors
+/// analyze.ts `computeUnreadDeclaredProps`.  A declared prop is unread when no
+/// value-position reference to its LOCAL binding survives anywhere in the instance
+/// script or template (reusing `is_value_use` + the `is_type_only_node` prune, so
+/// TS type positions do not count as reads).  Its own declaration positions in the
+/// pattern are excluded; default expressions ARE scanned.  Conservative: a prop is
+/// kept when the `$props()` shape is not a clean single-call ObjectPattern, when it
+/// binds a nested pattern (`local` is `None`), or when its local is shadowed /
+/// written / a `{@debug}` argument.
+pub(crate) fn compute_unread_declared(
+    ast: &Value,
+    props_info: &Option<PropsInfo>,
+    shadowed: &HashSet<String>,
+    debug: &HashSet<String>,
+    written: &HashSet<String>,
+) -> HashSet<String> {
+    let pi = match props_info {
+        Some(pi) if !pi.props.is_empty() => pi,
+        _ => return HashSet::new(),
+    };
+    // A second `$props()` call can alias the props object and read a prop via
+    // member access the local-name scan cannot see, so only a single clean call is
+    // eligible.  A `...rest` is fine (it never captures a DECLARED prop).
+    if count_props_calls(get(ast, "instance")) != 1 {
+        return HashSet::new();
+    }
+    let mut external_by_local: HashMap<String, String> = HashMap::new();
+    for decl in &pi.props {
+        if let Some(local) = &decl.local {
+            if !shadowed.contains(local) && !debug.contains(local) && !written.contains(local) {
+                external_by_local.insert(local.clone(), decl.name.clone());
+            }
+        }
+    }
+    if external_by_local.is_empty() {
+        return HashSet::new();
+    }
+    // Declaration identifier spans in the `$props()` pattern (each property's key
+    // and its local binding); the scan does not count them as reads, but default
+    // expressions ARE scanned (a `{ a, b = a }` reads `a`).
+    let mut decl_spans: HashSet<(i64, i64)> = HashSet::new();
+    for p in arr(&pi.pattern, "properties") {
+        if type_of(p) != Some("Property") {
+            continue;
+        }
+        let key = get(p, "key");
+        if !key.is_null() {
+            decl_spans.insert((off(key, "start"), off(key, "end")));
+        }
+        let value = get(p, "value");
+        match type_of(value) {
+            Some("Identifier") => {
+                decl_spans.insert((off(value, "start"), off(value, "end")));
+            }
+            Some("AssignmentPattern") => {
+                let left = get(value, "left");
+                if str_eq(left, "type", "Identifier") {
+                    decl_spans.insert((off(left, "start"), off(left, "end")));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut read_locals: HashSet<String> = HashSet::new();
+    scan_reads(get(ast, "instance"), &external_by_local, &decl_spans, &mut read_locals);
+    scan_reads(get(ast, "fragment"), &external_by_local, &decl_spans, &mut read_locals);
+
+    let mut unread = HashSet::new();
+    for (local, name) in &external_by_local {
+        if !read_locals.contains(local) {
+            unread.insert(name.clone());
+        }
+    }
+    unread
+}
+
+/// Record every candidate local read as a value in `root` (outside its own
+/// declaration positions and TS type subtrees).
+fn scan_reads(
+    root: &Value,
+    external_by_local: &HashMap<String, String>,
+    decl_spans: &HashSet<(i64, i64)>,
+    read_locals: &mut HashSet<String>,
+) {
+    let not_type = |n: &Value| !is_type_only_node(n);
+    walk_parented_pruned(root, None, &not_type, &mut |node, parent| {
+        if str_eq(node, "type", "Identifier") {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                if external_by_local.contains_key(name)
+                    && !decl_spans.contains(&(off(node, "start"), off(node, "end")))
+                    && is_value_use(node, parent)
+                {
+                    read_locals.insert(name.to_string());
+                }
+            }
+        }
+    });
 }
 
 /// Whole-component bail reasons: `<svelte:options accessors|customElement>` makes

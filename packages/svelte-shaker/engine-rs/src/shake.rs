@@ -647,8 +647,18 @@ pub(crate) fn shake_body(
     // substitution passes skip anything inside them, so no edit lands in a span
     // the reverse phase then deletes whole.  Empty for the mono path.
     seed_dead: &[Span],
+    // EXTERNAL prop names to also drop from the `$props()` signature — the unread
+    // declared props (docs §PR7).  Folded into the SAME `drop_props` call as the
+    // const-fold drops so consecutive dropped properties tile cleanly, but NOT
+    // returned: an unread prop's call-site attributes are removed by the
+    // reverse/unread phase (spread-aware), not phase 2.  Empty for the mono path.
+    extra_drops: &HashSet<String>,
 ) -> HashSet<String> {
     if env.is_empty() && set_env.is_empty() {
+        // …but an unread-prop drop (docs §PR7) still edits the signature.
+        if !extra_drops.is_empty() {
+            drop_props(model, extra_drops, edits);
+        }
         return HashSet::new();
     }
     let fragment = get(&model.ast, "fragment");
@@ -672,9 +682,15 @@ pub(crate) fn shake_body(
         edits.overwrite(r.start as usize, r.end as usize, &text);
     }
     // The drop matches the destructure KEYS, so it keeps the EXTERNAL names (which
-    // is also what phase 2's call-site attribute removal consumes).
+    // is also what phase 2's call-site attribute removal consumes).  Fold the
+    // unread declared props (docs §PR7) into the SAME `drop_props` call so
+    // consecutive dropped properties tile cleanly, but return only the folded set.
     let droppable: HashSet<String> = env.keys().cloned().collect();
-    drop_props(model, &droppable, edits);
+    if extra_drops.is_empty() {
+        drop_props(model, &droppable, edits);
+    } else {
+        drop_props(model, &droppable.union(extra_drops).cloned().collect(), edits);
+    }
     shake_css(model, &local_env, &local_set_env, edits);
     // Hand phase 2 the regions we edited so it never edits inside a folded-away branch.
     out_dead.extend(dead.iter().copied());
