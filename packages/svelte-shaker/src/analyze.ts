@@ -95,6 +95,16 @@ export interface FileModel {
    */
   debugNames: Set<string>;
   /**
+   * Names the component WRITES TO — reassigns (`p = …`, `p += …`), mutates with
+   * `++`/`--`, destructure-assigns (`({ p } = obj)`), or two-way `bind:`s.  A
+   * written prop is not a constant even when every call site passes the same
+   * literal: the write changes it at runtime, so folding it would substitute the
+   * literal into the write's target (`"a" = …`, `0++`, `bind:value={"a"}`) —
+   * invalid Svelte — and, more importantly, silently change what renders after
+   * the write.  We never fold such a prop, exactly like a shadowed one.
+   */
+  writtenNames: Set<string>;
+  /**
    * Resolved ids of CHILD components this file leaks as a value (escape, docs
    * §4.1) — e.g. `<svelte:component this={Child}>`.  `analyze` unions these
    * across the program and bails every escaped component completely, since its
@@ -738,7 +748,11 @@ function buildModelFromInput(
   }
 
   const childCalls = collectChildCalls(ast, imports);
-  const { shadowedNames, debugNames } = collectTemplateBindings(ast, instance, propsDeclaration);
+  const { shadowedNames, debugNames, writtenNames } = collectTemplateBindings(
+    ast,
+    instance,
+    propsDeclaration,
+  );
 
   // Escape detection (docs §4.1): an imported component referenced as a *value*
   // (most notably `<svelte:component this={X}>`, but also assigned / passed /
@@ -759,6 +773,7 @@ function buildModelFromInput(
     childCalls,
     shadowedNames,
     debugNames,
+    writtenNames,
     escapedComponents,
     bailReasons,
   };
@@ -781,9 +796,10 @@ function collectTemplateBindings(
   ast: Root,
   instance: AnyNode | null | undefined,
   propsDeclaration: AnyNode | undefined,
-): { shadowedNames: Set<string>; debugNames: Set<string> } {
+): { shadowedNames: Set<string>; debugNames: Set<string>; writtenNames: Set<string> } {
   const shadowedNames = new Set<string>();
   const debugNames = new Set<string>();
+  const writtenNames = new Set<string>();
 
   // Instance-script `let` / `function` shadows (the original guard's job).
   if (instance) {
@@ -810,12 +826,31 @@ function collectTemplateBindings(
         ) {
           for (const param of node.params ?? []) addPatternNames(param, shadowedNames);
         }
+        collectWrittenNames(node, writtenNames);
         next();
       },
     });
   }
 
   walk<null>(ast.fragment, null, {
+    // Writes also live in the template: event handlers (`onclick={() => p = 1}`)
+    // and `bind:` directives both reassign their target.
+    BindDirective(node, { next }) {
+      // `bind:value={p}` / `bind:this={el}` writes back to `p`.  A member target
+      // (`bind:value={o.x}`) is an object mutation, not a scalar-prop rebind, so
+      // it is not collected — matching the assignment handling below.
+      if (node.expression?.type === 'Identifier' && node.expression.name)
+        writtenNames.add(node.expression.name);
+      next();
+    },
+    AssignmentExpression(node, { next }) {
+      collectWrittenNames(node, writtenNames);
+      next();
+    },
+    UpdateExpression(node, { next }) {
+      collectWrittenNames(node, writtenNames);
+      next();
+    },
     EachBlock(node, { next }) {
       addPatternNames(node.context, shadowedNames);
       if (typeof node.index === 'string') shadowedNames.add(node.index);
@@ -851,7 +886,22 @@ function collectTemplateBindings(
     },
   });
 
-  return { shadowedNames, debugNames };
+  return { shadowedNames, debugNames, writtenNames };
+}
+
+/**
+ * Add the names an assignment / update expression WRITES to `out`.  Handles a
+ * bare-identifier target (`p = …`, `p += …`, `p++`) and a destructuring
+ * assignment (`({ p } = obj)`, `[p] = xs`) via {@link addPatternNames}.  A
+ * MemberExpression target (`o.x = …`, `o.x++`) is an object mutation, not a
+ * scalar-prop rebind, so it is intentionally skipped (`addPatternNames` ignores
+ * it), matching the fold targets this guard protects.
+ */
+function collectWrittenNames(node: AnyNode, out: Set<string>): void {
+  if (node.type === 'AssignmentExpression') addPatternNames(node.left, out);
+  else if (node.type === 'UpdateExpression' && node.argument?.type === 'Identifier') {
+    if (node.argument.name) out.add(node.argument.name);
+  }
 }
 
 /**
@@ -1268,11 +1318,15 @@ function literalAttrValue(value: unknown): { known: true; value: Literal } | { k
  * (`{#each as}`, snippet params, `{#await then}`, `let:`, `{@const}`), or used as
  * a `{@debug}` argument (Svelte forbids a literal there). In those scopes the
  * name is a different entity, so folding it would corrupt the binding (often
- * invalid Svelte). Both L1 planning ({@link buildPlan}) and L2 specialization
- * (mono.ts) must honor this identically.
+ * invalid Svelte) — or WRITTEN TO (reassigned / `++` / destructure-assigned /
+ * `bind:`), in which case it is not a constant and folding it changes what
+ * renders after the write. Both L1 planning ({@link buildPlan}) and L2
+ * specialization (mono.ts) must honor this identically.
  */
 export function isFoldBlockedName(model: FileModel, name: string): boolean {
-  return model.shadowedNames.has(name) || model.debugNames.has(name);
+  return (
+    model.shadowedNames.has(name) || model.debugNames.has(name) || model.writtenNames.has(name)
+  );
 }
 
 function buildPlan(model: FileModel, u: Usage | undefined): ComponentPlan {
