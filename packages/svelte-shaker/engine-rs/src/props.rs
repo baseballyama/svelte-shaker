@@ -535,3 +535,29 @@ pub(crate) fn value_set_for(decl: &PropDecl, sites: &[CallSite], owner_envs: &Ow
     }
     PropValueSet { values, dynamic, top }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `push_literal_unique` must dedupe by JS `Object.is` (SameValue), the same
+    // rule analyze.ts's `add` uses — so the two engines build byte-identical value
+    // sets. The tricky cases are the numeric ones: -0 and +0 are DISTINCT values
+    // that must both survive, while two NaNs are the SAME value and collapse. This
+    // pins the pass-through set dedupe (props.rs `value_set_for`) matches TS.
+    #[test]
+    fn dedupe_keeps_signed_zero_distinct_and_collapses_nan() {
+        let mut values: Vec<Literal> = Vec::new();
+        push_literal_unique(&mut values, Literal::Num(-0.0));
+        push_literal_unique(&mut values, Literal::Num(0.0));
+        push_literal_unique(&mut values, Literal::Num(f64::NAN));
+        push_literal_unique(&mut values, Literal::Num(f64::NAN)); // dup NaN -> dropped
+        push_literal_unique(&mut values, Literal::Num(-0.0)); // dup -0 -> dropped
+
+        assert_eq!(values.len(), 3);
+        // Order-stable, and -0 kept separate from +0 (bit pattern, like `Object.is`).
+        assert!(matches!(values[0], Literal::Num(z) if z == 0.0 && z.is_sign_negative()));
+        assert!(matches!(values[1], Literal::Num(z) if z == 0.0 && z.is_sign_positive()));
+        assert!(matches!(values[2], Literal::Num(n) if n.is_nan()));
+    }
+}

@@ -149,6 +149,39 @@ describe('interprocedural pass-through of value sets', () => {
     expect(out['/Child.svelte']!).not.toContain('danger'); // danger is unreachable -> dropped
   });
 
+  it('dedupe: -0 stays distinct from +0 and NaN collapses across the union (Object.is)', async () => {
+    // The set join dedupes by `Object.is` (SameValue): -0 and +0 are DISTINCT, but
+    // two NaNs are the SAME.  This pins that the forwarded-set union honors it — and
+    // that the Rust port's bit-level `object_is` agrees (see the engine-rs unit
+    // test).  These values can't ride the plan-JSON wasm differential (`NaN`
+    // serializes to `null`), so the dedupe equivalence is asserted here directly.
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Mid from './Mid.svelte';\n</script>\n` +
+        `<Mid v={-0} />\n<Mid v={0} />\n<Mid v={0 / 0} />\n`,
+      '/Mid.svelte':
+        `<script>\n  import Child from './Child.svelte';\n  let { v } = $props();\n</script>\n` +
+        `<Child v={v} />\n<Child v={0 / 0} />\n`,
+      '/Child.svelte':
+        `<script>\n  let { v = 1 } = $props();\n</script>\n` + `{#if v === 2}<b>two</b>{/if}\n`,
+    };
+    const plans = await plansFor(files);
+    // Mid narrows to the three distinct values (order-stable, source order).
+    const mid = plans.get('/Mid.svelte')!.narrow.get('v')!;
+    expect(mid.length).toBe(3);
+    // The whole set flows into Child; the sibling literal `0 / 0` (NaN) dedupes
+    // against the forwarded NaN, so Child's set is still exactly three values.
+    const child = plans.get('/Child.svelte')!.narrow.get('v')!;
+    expect(child.length).toBe(3);
+    expect(Object.is(child[0], -0)).toBe(true); // -0 preserved, distinct from +0
+    expect(Object.is(child[1], 0)).toBe(true); // +0, kept separate from -0
+    expect(Object.is(child[2], NaN)).toBe(true); // single NaN despite two sources
+
+    const out = await shakeSound(files);
+    // The set is fully known and never equals 2, so the arm is provably dead.
+    expect(out['/Child.svelte']!).not.toContain('<b>two</b>');
+  });
+
   it('conservative: a compound expression over a set-var does NOT propagate', async () => {
     const files = {
       '/App.svelte':
