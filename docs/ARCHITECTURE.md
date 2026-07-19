@@ -323,6 +323,13 @@ whole-program クロールは **`.svelte` しかパースしない**。よって
 動いたときだけ full-reload する（dev が build より unsound にならないため）。両エンジン（JS / Rust WASM）
 は `escaped` を同一セマンティクスで bail し、byte-identical 出力を保つ。
 
+`computeEscapedComponents` は escape 集合に加え **診断を構造化データで返す**：parse できなかった
+モジュール（`.jsx`/`.tsx` の JSX 本文・特殊 TS 等 → そこから mount される component が escape されない
+soundness ホール）と、どの component にもマッチしなかった `external` エントリ（typo で freeze され損ねる）。
+Vite シェルはこれを **`config.logger.warn` で対象パス付きの actionable な警告**として surface する
+（build は失敗させない）。将来の eslint シェルは同じ構造化データを自前で報告できる。silent drop は
+CLAUDE.md「Don't swallow exceptions」に反するため、ここは必ず可視化する。
+
 ---
 
 ## 5. 層構造（Shell / Engine / IR）

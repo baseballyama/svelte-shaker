@@ -111,7 +111,9 @@ shaker({
   component file (with its `.svelte` extension) or a directory of them (same basis
   as `include`). It **freezes** the component — the file stays fully analyzed and
   its own call sites still count; only its own prop folding is turned off. It is not
-  a scan-exclusion filter.
+  a scan-exclusion filter. The build **warns** (with the file path) about any module
+  the scan couldn't parse — so a mounted component isn't silently left unprotected —
+  and about `external` entries that matched no component.
 
 ## What it removes
 

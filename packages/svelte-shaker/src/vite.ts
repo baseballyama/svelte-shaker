@@ -4,12 +4,12 @@ import { compile } from 'svelte/compiler';
 import type { Plugin } from 'vite';
 import { svelteShaker, svelteShakerWithMono, type Parse, type Resolve } from './index.js';
 import { DevShaker, type DevMode } from './engine.js';
+import { collectSvelteFiles, fsResolve } from './scan.js';
 import {
-  collectSvelteFiles,
   computeEscapedComponents,
-  fsResolve,
   isScannableModule,
-} from './scan.js';
+  type EscapeScanResult,
+} from './escape-scan.js';
 import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono.js';
 import { tryLoadRsvelteParser } from './rsvelte-parse.js';
 import { svelteShakerWasm, svelteShakerWasmWithMono, tryLoadWasmEngine } from './wasm-engine.js';
@@ -240,6 +240,31 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   // Vite's logger, captured in `configResolved`; until then fall back to console
   // so the size report still surfaces if `buildStart` somehow runs first.
   let log: (msg: string) => void = (msg) => console.info(`[svelte-shaker] ${msg}`);
+  let warn: (msg: string) => void = (msg) => console.warn(`[svelte-shaker] ${msg}`);
+
+  // Surface the escape scan's diagnostics (docs §4.2) as build warnings: modules the
+  // scan could not parse (a component mounted from one is left un-frozen — a real
+  // soundness hole), and `external` entries that matched no component (a typo leaves
+  // the intended component un-frozen).  Both are actionable and name the offenders,
+  // but never fail the build — the shake is still emitted.
+  const reportEscapeDiagnostics = (result: EscapeScanResult): void => {
+    if (result.unscannable.length > 0) {
+      warn(
+        `external call-site scan could not parse ${result.unscannable.length} module(s), so a ` +
+          `.svelte component mounted from one of them is NOT protected and may be over-shaken. ` +
+          `If a component is mounted from any of these, add it to the \`external\` option:\n` +
+          result.unscannable.map((f) => `  - ${path.relative(root, f) || f}`).join('\n'),
+      );
+    }
+    if (result.unmatchedExternal.length > 0) {
+      warn(
+        `\`external\` matched no component for ${result.unmatchedExternal.length} entr` +
+          `${result.unmatchedExternal.length === 1 ? 'y' : 'ies'} (check the path and that a ` +
+          `file entry keeps its \`.svelte\` extension); the intended component is NOT frozen:\n` +
+          result.unmatchedExternal.map((e) => `  - ${e}`).join('\n'),
+      );
+    }
+  };
 
   // Dev (serve) shaking is opt-in (docs §6.2); `null` keeps dev a pass-through.
   const devMode: DevMode | null =
@@ -293,6 +318,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
     configResolved(config) {
       root = config.root;
       log = (msg) => config.logger.info(`[svelte-shaker] ${msg}`);
+      warn = (msg) => config.logger.warn(`[svelte-shaker] ${msg}`);
     },
 
     // Dev (serve): drive the long-lived incremental engine instead of the
@@ -313,7 +339,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       // escape set skip the reload.
       let escapedKey = '';
       const currentEscaped = async (): Promise<ComponentId[]> => {
-        const set = await computeEscapedComponents({
+        const result = await computeEscapedComponents({
           includeDirs: dirs,
           root,
           external: options.external,
@@ -321,8 +347,9 @@ export function shaker(options: ShakerOptions = {}): Plugin {
           resolve: fsResolve,
           readFile: read,
         });
-        escapedKey = [...set].sort().join('\n');
-        return set;
+        reportEscapeDiagnostics(result);
+        escapedKey = [...result.escaped].sort().join('\n');
+        return result.escaped;
       };
 
       devShaker = new DevShaker(
@@ -438,8 +465,9 @@ export function shaker(options: ShakerOptions = {}): Plugin {
 
       // Components used from OUTSIDE the `.svelte` graph must not be folded (docs
       // §4.2): those a non-`.svelte` module imports (found by the scan) plus any the
-      // user froze via `external`.  Hand the engine that escape set.
-      const escaped = await computeEscapedComponents({
+      // user froze via `external`.  Hand the engine that escape set, and surface the
+      // scan's diagnostics (unparseable modules / unmatched `external`) as warnings.
+      const escapeScan = await computeEscapedComponents({
         includeDirs: dirs,
         root,
         external: options.external,
@@ -447,6 +475,8 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         resolve,
         readFile: read,
       });
+      reportEscapeDiagnostics(escapeScan);
+      const escaped = escapeScan.escaped;
 
       // Decide the engine.  The native Rust engine now implements every pass
       // INCLUDING monomorphization (it calls back to JS only for the compiled-size

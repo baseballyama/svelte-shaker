@@ -7,7 +7,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { shaker } from '../src/vite';
 import { buildAnalyzeInput, findNeverPassedProps } from '../src/index';
 import type { ReadFile, Resolve } from '../src/index';
-import { matchExternal } from '../src/scan';
+import { matchExternal } from '../src/escape-scan';
 
 describe('matchExternal', () => {
   const root = '/proj';
