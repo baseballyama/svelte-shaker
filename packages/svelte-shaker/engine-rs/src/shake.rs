@@ -201,16 +201,24 @@ pub(crate) fn remove_chain(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_chain(
     decision: &ChainDecision,
     env: &Env,
     edits: &mut MagicEdit,
     dead: &mut Vec<Span>,
+    // Genuinely-removed spans for CSS pruning (§PR8).  `decision.removed` is the
+    // chain's never-rendered region in EVERY outcome (dead arms / dead prefix /
+    // the parts around a kept arm — never the kept arm itself), so it is exactly
+    // what CSS may exclude even when the chain collapses to a re-emitted arm whose
+    // span joins `dead`.  Mirrors the `pruned` accumulator in transform.ts.
+    pruned: &mut Vec<Span>,
     siblings: Option<&[Value]>,
     index: usize,
     preserve: bool,
     element: Option<&str>,
 ) {
+    pruned.extend(decision.removed.iter().copied());
     if let Some(frag) = &decision.kept {
         let mut text = fragment_source(edits, frag, env);
         // Strip the kept arm's leading/trailing whitespace (block-fragment edges,
@@ -240,12 +248,15 @@ pub(crate) fn apply_chain(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fold_if_blocks<'a>(
     node: &'a Value,
     env: &Env,
     set_env: &SetEnv,
     edits: &mut MagicEdit,
     dead: &mut Vec<Span>,
+    // Accumulates only the genuinely-removed spans, for CSS pruning (§PR8).
+    pruned: &mut Vec<Span>,
     siblings: Option<&'a [Value]>,
     index: usize,
     preserve: bool,
@@ -254,7 +265,7 @@ pub(crate) fn fold_if_blocks<'a>(
     match node {
         Value::Array(items) => {
             for (i, v) in items.iter().enumerate() {
-                fold_if_blocks(v, env, set_env, edits, dead, Some(items), i, preserve, element);
+                fold_if_blocks(v, env, set_env, edits, dead, pruned, Some(items), i, preserve, element);
             }
         }
         Value::Object(map) => {
@@ -263,12 +274,12 @@ pub(crate) fn fold_if_blocks<'a>(
                     return;
                 }
                 let decision = decide_chain(node, env, set_env);
-                apply_chain(&decision, env, edits, dead, siblings, index, preserve, element);
+                apply_chain(&decision, env, edits, dead, pruned, siblings, index, preserve, element);
                 if decision.recurse {
                     // kept head: the `{#if}` is transparent to the content model, so its
                     // children stay in the same parent element.
                     for v in map.values() {
-                        fold_if_blocks(v, env, set_env, edits, dead, None, 0, preserve, element);
+                        fold_if_blocks(v, env, set_env, edits, dead, pruned, None, 0, preserve, element);
                     }
                 }
                 return;
@@ -276,7 +287,7 @@ pub(crate) fn fold_if_blocks<'a>(
             let child_preserve = preserve || is_preserve_element(node);
             let child_element = child_parent_element(node, element);
             for v in map.values() {
-                fold_if_blocks(v, env, set_env, edits, dead, None, 0, child_preserve, child_element);
+                fold_if_blocks(v, env, set_env, edits, dead, pruned, None, 0, child_preserve, child_element);
             }
         }
         _ => {}
@@ -673,7 +684,12 @@ pub(crate) fn shake_body(
     // Pre-load the reverse-removal regions so every pass below treats them as
     // already-dead and never edits inside a span the reverse phase then removes.
     let mut dead: Vec<Span> = seed_dead.to_vec();
-    fold_if_blocks(fragment, &local_env, &local_set_env, edits, &mut dead, None, 0, has_preserve_whitespace_option(fragment), None);
+    // `pruned` holds only the regions that genuinely VANISH from the output (deleted
+    // `{#if}` arms + the reverse/unread `seed_dead`), as opposed to `dead`, which
+    // also holds collapse spans whose kept arm is re-emitted verbatim.  Only the
+    // vanished regions may be excluded from the CSS possible-class set (§PR8).
+    let mut pruned: Vec<Span> = seed_dead.to_vec();
+    fold_if_blocks(fragment, &local_env, &local_set_env, edits, &mut dead, &mut pruned, None, 0, has_preserve_whitespace_option(fragment), None);
     if !local_env.is_empty() {
         fold_ternaries(fragment, &local_env, edits, &mut dead);
     }
@@ -691,7 +707,7 @@ pub(crate) fn shake_body(
     } else {
         drop_props(model, &droppable.union(extra_drops).cloned().collect(), edits);
     }
-    shake_css(model, &local_env, &local_set_env, edits);
+    shake_css(model, &local_env, &local_set_env, edits, &pruned);
     // Hand phase 2 the regions we edited so it never edits inside a folded-away branch.
     out_dead.extend(dead.iter().copied());
     droppable

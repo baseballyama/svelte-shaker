@@ -93,10 +93,42 @@ pub(crate) fn class_tokens_from_attr(value: &Value, env: &Env, set_env: &SetEnv)
     Some(tokens)
 }
 
-pub(crate) fn compute_possible_classes(model: &Model, env: &Env, set_env: &SetEnv) -> PossibleClasses {
+/// The dead spans sorted by start (ascending), for `contained_in_dead`'s binary
+/// search.  Copies so the caller's slice is left untouched.
+fn sorted_by_start(dead: &[Span]) -> Vec<Span> {
+    let mut v = dead.to_vec();
+    v.sort_by_key(|s| s.0);
+    v
+}
+
+/// Is `node`'s span fully inside any dead span?  `dead_starts` is sorted by start,
+/// so the only candidate that can contain `node.start` is the rightmost span whose
+/// start is `<= node.start` (binary search) — O(log m) per node.  A miss from an
+/// unusual nesting only UNDER-prunes (the sound, conservative direction).  Mirrors
+/// `containedInDead` in css.ts.
+fn contained_in_dead(node: &Value, dead_starts: &[Span]) -> bool {
+    if dead_starts.is_empty() {
+        return false;
+    }
+    let start = off(node, "start");
+    // partition_point gives the count of spans with start <= `start`; the last of
+    // them is the sole candidate.
+    let cand = dead_starts.partition_point(|s| s.0 <= start);
+    cand > 0 && dead_starts[cand - 1].1 >= off(node, "end")
+}
+
+pub(crate) fn compute_possible_classes(model: &Model, env: &Env, set_env: &SetEnv, dead: &[Span]) -> PossibleClasses {
     let mut classes = HashSet::new();
     let mut unbounded = false;
+    let dead_starts = sorted_by_start(dead);
     walk(get(&model.ast, "fragment"), &mut |node| {
+        // Fully inside a deleted region -> never renders, so it carries no class.
+        // (A contained node's descendants are contained too, so a flat walk skips
+        // them just the same — the TS engine additionally prunes the subtree, which
+        // is a perf-only difference that yields the identical class set.)
+        if contained_in_dead(node, &dead_starts) {
+            return;
+        }
         if !is_element_like(type_of(node)) {
             return;
         }
@@ -171,13 +203,13 @@ pub(crate) fn remove_rule(rule: &Value, siblings: &[Value], edits: &mut MagicEdi
     edits.remove(start as usize, off(rule, "end") as usize);
 }
 
-pub(crate) fn shake_css(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit) {
+pub(crate) fn shake_css(model: &Model, env: &Env, set_env: &SetEnv, edits: &mut MagicEdit, dead: &[Span]) {
     let css = get(&model.ast, "css");
     let children = match css.get("children").and_then(Value::as_array) {
         Some(c) => c.clone(),
         None => return,
     };
-    let possible = compute_possible_classes(model, env, set_env);
+    let possible = compute_possible_classes(model, env, set_env, dead);
     if possible.unbounded {
         return; // cannot bound the class set -> removing nothing is the only sound choice
     }
