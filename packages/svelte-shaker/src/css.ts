@@ -21,6 +21,7 @@ import type MagicString from 'magic-string';
 import { walk, type AnyNode } from './parse.js';
 import type { ComponentPlan, Literal } from './ir.js';
 import type { FileModel } from './analyze.js';
+import type { Span } from './dead.js';
 import { evaluate, setVar } from './eval.js';
 
 /**
@@ -45,15 +46,32 @@ const MAX_CLASS_COMBOS = 64;
  *    foldable (constFold) or narrowable (narrow set) -> enumerate the tokens,
  *  - ANY unbounded source (`class={nonFoldable}`, or a `{...spread}` that could
  *    carry `class`) -> the whole set is unbounded.
+ *
+ * `dead` (PR8) holds the source spans the transform actually deletes — folded
+ * `{#if}` arms and reverse/unread removal regions.  A class-bearing node fully
+ * inside one of them never renders, so it contributes NO class and does not make
+ * the set unbounded: pruning it is what lets an unbounded source hiding in a dead
+ * branch stop blocking every rule.  The spans are the SAME ones the transform
+ * emits (no independent recompute), and only genuinely-removed regions are in
+ * them — a chain that collapses to a kept arm contributes just its removed parts,
+ * so a surviving `{:else}` arm's classes are still counted.
  */
-export function computePossibleClasses(model: FileModel, plan: ComponentPlan): PossibleClasses {
+export function computePossibleClasses(
+  model: FileModel,
+  plan: ComponentPlan,
+  dead: readonly Span[] = [],
+): PossibleClasses {
   const classes = new Set<string>();
   let unbounded = false;
   const env = plan.constFold;
   const setEnv = plan.narrow;
+  const deadStarts = sortedByStart(dead);
 
   walk<null>(model.ast.fragment, null, {
     _(node, { next }) {
+      // Fully inside a deleted region -> never renders.  Skip the whole subtree:
+      // every descendant is dead too, so none can carry a class.
+      if (containedInDead(node, deadStarts)) return;
       if (!isElementLike(node.type)) {
         next();
         return;
@@ -79,6 +97,39 @@ export function computePossibleClasses(model: FileModel, plan: ComponentPlan): P
   });
 
   return { classes, unbounded };
+}
+
+/**
+ * The dead spans sorted by start (ascending), for {@link containedInDead}'s binary
+ * search.  Copies before sorting so the caller's array is left untouched.
+ */
+function sortedByStart(dead: readonly Span[]): Span[] {
+  return dead.length === 0 ? [] : [...dead].sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * Is `node`'s span fully inside any dead span?  `deadStarts` is sorted by start,
+ * so the only candidate that can contain `node.start` is the rightmost span whose
+ * start is `<= node.start` (binary search) — O(log m) per node, not O(m).  A miss
+ * from an unusual nesting only UNDER-prunes (counts a source that was actually
+ * dead), which is the sound, conservative direction; it never over-prunes.
+ */
+function containedInDead(node: AnyNode, deadStarts: Span[]): boolean {
+  if (deadStarts.length === 0) return false;
+  const start = node.start;
+  let lo = 0;
+  let hi = deadStarts.length - 1;
+  let cand = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (deadStarts[mid]![0] <= start) {
+      cand = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return cand >= 0 && deadStarts[cand]![1] >= node.end;
 }
 
 /** Sentinel: this class source cannot be enumerated. */
@@ -196,12 +247,20 @@ function isElementLike(type: string): boolean {
  * the rule's selector list contains at least one class `.C` with `C` absent from
  * the possible set (so no selector in the list can match any element this
  * component can render).  Anything else is KEPT.  Returns the number removed.
+ *
+ * `dead` (§PR8) are the spans the transform deletes; class sources inside them
+ * never render and are excluded from the possible set (see {@link computePossibleClasses}).
  */
-export function shakeCss(model: FileModel, plan: ComponentPlan, s: MagicString): number {
+export function shakeCss(
+  model: FileModel,
+  plan: ComponentPlan,
+  s: MagicString,
+  dead: readonly Span[] = [],
+): number {
   const css = model.ast.css;
   if (!css || !css.children) return 0;
 
-  const possible = computePossibleClasses(model, plan);
+  const possible = computePossibleClasses(model, plan, dead);
   // If we cannot bound the class set, every interpolated class might exist:
   // removing nothing is the only sound choice.
   if (possible.unbounded) return 0;
