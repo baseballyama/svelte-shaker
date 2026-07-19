@@ -25,8 +25,8 @@
     svelte&#8209;shaker
   </a>
   <nav>
-    <a href="#playground">playground</a>
-    <a href="#how">how</a>
+    <a href="#playground">try it</a>
+    <a href="#how">how it works</a>
     <a
       class="gh"
       href="https://github.com/baseballyama/svelte-shaker"
