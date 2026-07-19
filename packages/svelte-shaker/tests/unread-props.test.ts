@@ -71,18 +71,19 @@ async function shakeSound(files: Record<string, string>): Promise<Record<string,
 describe('reverse analysis: drop inputs a child can never read', () => {
   it('1. removes an undeclared prop whose value is a bare identifier', async () => {
     const files = {
+      // `label` is dynamic (a `$state`), so forward folding cannot drop it — it
+      // stays declared and passed, isolating the reverse removal of `icon`.
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
-        `<Child icon={heavy} label="hi" />\n`,
+        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n  let label = $state('hi');\n</script>\n` +
+        `<Child icon={heavy} label={label} />\n`,
       '/Child.svelte':
         `<script>\n  let { label } = $props();\n</script>\n` + `<span>{label}</span>\n`,
     };
     const out = await shakeSound(files);
     const app = out['/App.svelte']!;
     expect(app).not.toContain('icon='); // undeclared -> removed
-    expect(app).toContain('label="hi"'); // declared -> kept
-    // The only remaining mention of `heavy` is its (now dead) import/const; no
-    // template reference survives, so a bundler can drop it.
+    expect(app).toContain('label={label}'); // declared + dynamic -> kept
+    // No template reference to `heavy` survives, so a bundler can drop its const.
     expect(app).not.toMatch(/icon=\{heavy\}/);
   });
 
@@ -116,8 +117,7 @@ describe('reverse analysis: drop inputs a child can never read', () => {
       '/App.svelte':
         `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
         `<Child icon={heavy} label="hi" />\n`,
-      '/Child.svelte':
-        `<script>\n  let p = $props();\n</script>\n` + `<span>{p.label}</span>\n`,
+      '/Child.svelte': `<script>\n  let p = $props();\n</script>\n` + `<span>{p.label}</span>\n`,
     };
     const out = await shakeSound(files);
     expect(out['/App.svelte']!).toContain('icon={heavy}'); // p.icon reachable -> kept

@@ -3,6 +3,7 @@ import { walk, type AnyNode } from './parse.js';
 import type { ComponentId, ComponentPlan, Literal } from './ir.js';
 import { remapToLocalNames, type FileModel } from './analyze.js';
 import { decideChain, inSpans, type Span } from './dead.js';
+import { collectReverseRemovals, applyReverseRemovals, type ReverseOp } from './reverse.js';
 import { evaluate } from './eval.js';
 import { shakeCss } from './css.js';
 
@@ -39,6 +40,19 @@ function runBasePhases(
   /** Regions phase 1 edited per component — phase 2 must not edit inside them. */
   const editedSpans = new Map<ComponentId, Span[]>();
 
+  // Phase 0 — reverse analysis (docs §PR4): per owner, the call-site attributes /
+  // `{#snippet}` blocks / body content supplying an input the child can never
+  // read.  Computed BEFORE phase 1 so its regions can be handed to phase 1 as
+  // protected — phase 1 makes no fold/substitution edit inside a span phase 2.5
+  // then deletes whole, which keeps the two phases from touching the same range.
+  const reverse = new Map<ComponentId, ReverseOp[]>();
+  for (const model of models.values()) {
+    const plan = plans.get(model.id)!;
+    if (plan.bail) continue; // a bailed owner is left completely untouched
+    const ops = collectReverseRemovals(model, models, plans);
+    if (ops.length > 0) reverse.set(model.id, ops);
+  }
+
   // Phase 1 — component bodies: fold dead branches, drop folded props.
   for (const model of models.values()) {
     const s = new MagicString(model.code);
@@ -48,7 +62,12 @@ function runBasePhases(
       dropped.set(model.id, new Set());
       continue;
     }
-    const result = transformBody(model, plan, s);
+    const result = transformBody(
+      model,
+      plan,
+      s,
+      reverse.get(model.id)?.map((op) => op.protect),
+    );
     dropped.set(model.id, result.dropped);
     editedSpans.set(model.id, result.dead);
   }
@@ -68,6 +87,13 @@ function runBasePhases(
       editedSpans.get(model.id) ?? [],
       ownerEnv,
     );
+  }
+  // Phase 2.5 — reverse: delete the inputs the child can never read.  Runs after
+  // phase 1/2 and skips any call site folded away in phase 1 (docs §PR4).  A
+  // reverse removal and a dropped-prop removal (phase 2) never target the same
+  // attribute: one names a prop the child does NOT declare, the other one it does.
+  for (const [id, ops] of reverse) {
+    applyReverseRemovals(ops, strings.get(id)!, editedSpans.get(id) ?? []);
   }
   return strings;
 }
@@ -234,9 +260,11 @@ function transformBody(
   model: FileModel,
   plan: ComponentPlan,
   s: MagicString,
+  /** Reverse-removal regions (docs §PR4) the body pass must not edit inside. */
+  seedDead?: Span[],
 ): { dropped: Set<string>; dead: Span[] } {
   const dead: Span[] = [];
-  const dropped = shakeBody(model, plan.constFold, plan.narrow, plan, s, dead);
+  const dropped = shakeBody(model, plan.constFold, plan.narrow, plan, s, dead, seedDead);
   return { dropped, dead };
 }
 
@@ -265,11 +293,19 @@ export function shakeBody(
    * edited").  Mono (L2) does not pass it; it edits fresh strings.
    */
   outDead?: Span[],
+  /**
+   * Reverse-removal regions (docs §PR4) to treat as already-dead: the fold and
+   * substitution passes below skip anything inside them, so no edit lands in a
+   * span the reverse phase then deletes whole (which would overlap in
+   * MagicString).  Only the base transform passes it; mono edits fresh strings.
+   */
+  seedDead?: Span[],
 ): Set<string> {
   // Nothing to fold (L1) and nothing to narrow (L1.5): no branch/prop edits.
   // CSS removal still depends only on the value sets the plan carries, so a
   // component with no foldable/narrowable prop produces an empty class set
-  // bound and removes nothing — leave it untouched entirely.
+  // bound and removes nothing — leave it untouched entirely.  Reverse removals
+  // then run over pristine source, so no protection is needed on this path.
   if (env.size === 0 && setEnv.size === 0) return new Set();
   const code = model.code;
 
@@ -284,7 +320,9 @@ export function shakeBody(
 
   // (1) Fold `{#if <const>}` blocks (L1) and narrow if/else-if chains against
   // the known value sets (L1.5); remember every region we deleted/unwrapped.
-  const dead: Span[] = [];
+  // `seedDead` pre-loads the reverse-removal regions so every pass below (fold,
+  // ternary, substitution) treats them as already-dead and never edits inside.
+  const dead: Span[] = seedDead ? [...seedDead] : [];
   foldIfBlocks(model.ast.fragment, localEnv, localSetEnv, code, s, dead);
 
   // (1b) Fold template ternaries `{cond ? a : b}` whose `cond` is a provable
