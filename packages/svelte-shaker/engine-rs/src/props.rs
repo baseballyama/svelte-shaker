@@ -1,0 +1,383 @@
+//! Props/call-site model: prop declarations with defaults, call-site reading
+//! (last-write-wins + spread tracking), and per-prop value-set joining.
+
+use serde_json::Value;
+use std::collections::HashMap;
+
+use crate::ast::*;
+use crate::eval::{evaluate, Env, Literal};
+
+/// `SameValue` dedup (JS `Object.is`): NaN == NaN, +0 != -0.
+pub(crate) fn object_is(a: &Literal, b: &Literal) -> bool {
+    match (a, b) {
+        (Literal::Num(x), Literal::Num(y)) => {
+            if x.is_nan() && y.is_nan() {
+                true
+            } else {
+                x.to_bits() == y.to_bits()
+            }
+        }
+        _ => a == b,
+    }
+}
+
+pub(crate) fn push_literal_unique(values: &mut Vec<Literal>, v: Literal) {
+    if !values.iter().any(|x| object_is(x, &v)) {
+        values.push(v);
+    }
+}
+
+// ---- prop declarations with defaults --------------------------------------
+
+pub(crate) struct PropDecl {
+    /// The EXTERNAL prop name — the destructure KEY (`prop` in `prop: alias`).
+    /// Call sites pass this name, so value sets / dropping key off it.  Mirrors
+    /// `PropDecl.name` in analyze.ts.
+    pub(crate) name: String,
+    /// The LOCAL binding name the entry introduces in the body — the destructure
+    /// VALUE (`alias` in `prop: alias`, or the bare name for a shorthand `prop`),
+    /// or `None` when the entry binds a NESTED pattern (`prop: { x }`) rather than
+    /// a single identifier.  Body and template references use THIS name, not
+    /// {@link name} (`prop` and its alias `alias` can even be different entities —
+    /// e.g. a same-named import), so folding/substitution must look props up by it.
+    /// A `None` local is never foldable.  Mirrors `PropDecl.local` in analyze.ts.
+    pub(crate) local: Option<String>,
+    /// The default-value expression node, or `Null` when omitted.
+    pub(crate) default: Value,
+    /// The `Property` node inside the `ObjectPattern` (for surgical removal).
+    pub(crate) property: Value,
+}
+
+/// The `$props()` destructuring of a component, when present.
+pub(crate) struct PropsInfo {
+    pub(crate) props: Vec<PropDecl>,
+    pub(crate) has_rest: bool,
+    /// `$props()` is not the sole declarator of its statement (a conservative bail).
+    pub(crate) shares_statement: bool,
+    /// The `ObjectPattern` (for editing) and the whole `VariableDeclaration`.
+    pub(crate) pattern: Value,
+    pub(crate) declaration: Value,
+}
+
+/// `findPropsDeclaration` + the prop loop. `None` when the component has no
+/// `$props()` destructuring.
+pub(crate) fn declared_props_full(ast: &Value) -> Option<PropsInfo> {
+    let body = ast
+        .get("instance")
+        .and_then(|i| i.get("content"))
+        .and_then(|c| c.get("body"))
+        .and_then(Value::as_array)?;
+    for stmt in body {
+        if !str_eq(stmt, "type", "VariableDeclaration") {
+            continue;
+        }
+        let decls = arr(stmt, "declarations");
+        for decl in decls {
+            let init = get(decl, "init");
+            let id = get(decl, "id");
+            let is_props_call = str_eq(init, "type", "CallExpression")
+                && str_eq(get(init, "callee"), "type", "Identifier")
+                && str_eq(get(init, "callee"), "name", "$props");
+            if !is_props_call || !str_eq(id, "type", "ObjectPattern") {
+                continue;
+            }
+            let mut props = Vec::new();
+            let mut has_rest = false;
+            for p in arr(id, "properties") {
+                match type_of(p) {
+                    Some("RestElement") => has_rest = true,
+                    Some("Property") => {
+                        let key = get(p, "key");
+                        if str_eq(key, "type", "Identifier") {
+                            if let Some(name) = key.get("name").and_then(Value::as_str) {
+                                // The destructure VALUE is the local binding.  A bare identifier
+                                // (`prop` shorthand, or `prop: alias`) binds that one name; an
+                                // `AssignmentPattern` (`prop = d` / `prop: alias = d`) binds its
+                                // LEFT and carries the default; anything else (a nested
+                                // Object/Array pattern) binds no single identifier, so `local` is
+                                // `None` and the prop is never foldable.  Mirrors analyze.ts.
+                                let value = get(p, "value");
+                                let mut local: Option<String> = None;
+                                let mut default = Value::Null;
+                                match type_of(value) {
+                                    Some("Identifier") => {
+                                        local = value.get("name").and_then(Value::as_str).map(str::to_string);
+                                    }
+                                    Some("AssignmentPattern") => {
+                                        default = get(value, "right").clone();
+                                        let left = get(value, "left");
+                                        if str_eq(left, "type", "Identifier") {
+                                            local = left.get("name").and_then(Value::as_str).map(str::to_string);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                props.push(PropDecl { name: name.to_string(), local, default, property: p.clone() });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return Some(PropsInfo {
+                props,
+                has_rest,
+                shares_statement: decls.len() > 1,
+                pattern: id.clone(),
+                declaration: stmt.clone(),
+            });
+        }
+    }
+    None
+}
+
+// ---- call-site reading -----------------------------------------------------
+
+pub(crate) struct ExplicitProp {
+    pub(crate) value: Option<Literal>, // None when `dynamic`
+    pub(crate) dynamic: bool,
+    pub(crate) after_last_spread: bool,
+}
+
+pub(crate) struct CallSite {
+    pub(crate) had_spread: bool,
+    pub(crate) explicit: HashMap<String, ExplicitProp>,
+}
+
+pub(crate) fn dynamic_write(index: i64, last_spread: i64) -> ExplicitProp {
+    ExplicitProp { value: None, dynamic: true, after_last_spread: index > last_spread }
+}
+
+/// Read a literal off an attribute `value` (true | node | node[]); `None` => not
+/// statically known. Mirrors `literalAttrValue`.
+pub(crate) fn literal_attr_value(value: &Value) -> Option<Literal> {
+    if value == &Value::Bool(true) {
+        return Some(Literal::Bool(true)); // boolean shorthand
+    }
+    if value.is_null() {
+        return None;
+    }
+    let single;
+    let parts: &[Value] = match value.as_array() {
+        Some(a) => a,
+        None => {
+            single = [value.clone()];
+            &single
+        }
+    };
+    if parts.len() == 1 {
+        let part = &parts[0];
+        return match type_of(part) {
+            Some("Text") => Some(Literal::Str(text_data(part))),
+            Some("ExpressionTag") if str_eq(get(part, "expression"), "type", "Literal") => {
+                Literal::from_node_value(get(part, "expression").get("value")?)
+            }
+            _ => None,
+        };
+    }
+    // Multiple parts: fold only when every part is static text.
+    let mut text = String::new();
+    for part in parts {
+        if type_of(part) != Some("Text") {
+            return None;
+        }
+        text.push_str(&text_data(part));
+    }
+    Some(Literal::Str(text))
+}
+
+pub(crate) fn text_data(node: &Value) -> String {
+    node.get("data")
+        .or_else(|| node.get("raw"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Props supplied through a `<Child>…</Child>` body: `children` for any
+/// renderable content + one per named `{#snippet}`. Mirrors `synthesizedBodyProps`.
+pub(crate) fn synthesized_body_props(component: &Value) -> Vec<String> {
+    let nodes = get(component, "fragment").get("nodes").and_then(Value::as_array);
+    let nodes = match nodes {
+        Some(n) => n,
+        None => return Vec::new(),
+    };
+    let mut names = Vec::new();
+    let mut has_children = false;
+    for node in nodes {
+        match type_of(node) {
+            Some("SnippetBlock") => {
+                let expr = get(node, "expression");
+                if str_eq(expr, "type", "Identifier") {
+                    if let Some(n) = expr.get("name").and_then(Value::as_str) {
+                        names.push(n.to_string());
+                    }
+                }
+            }
+            Some("Comment") => {}
+            Some("Text") => {
+                if !text_data(node).trim().is_empty() {
+                    has_children = true;
+                }
+            }
+            _ => has_children = true,
+        }
+    }
+    if has_children {
+        names.push("children".to_string());
+    }
+    names
+}
+
+/// The `[name, value]` entries a spread contributes IF it is a statically-known
+/// object literal whose complete key set we can see. `None` => an opaque spread
+/// (an identifier/call `{...rest}`, or an object literal carrying a nested spread,
+/// a computed key, or a getter/setter/method) that may set any prop. Each value
+/// is `Some(lit)` for a literal (so it folds) or `None` for a non-literal value
+/// (key known, value dynamic). Mirrors `knownSpreadEntries` in analyze.ts.
+pub(crate) fn known_spread_entries(attr: &Value) -> Option<Vec<(String, Option<Literal>)>> {
+    let obj = get(attr, "expression");
+    if type_of(obj) != Some("ObjectExpression") {
+        return None;
+    }
+    let empty: Env = HashMap::new();
+    let mut entries = Vec::new();
+    for prop in arr(obj, "properties") {
+        // A nested spread, computed key, or accessor/method means the full key set
+        // is not statically knowable -> the whole spread is opaque.
+        if type_of(prop) != Some("Property") {
+            return None;
+        }
+        if bool_field(prop, "computed")
+            || str_eq(prop, "kind", "get")
+            || str_eq(prop, "kind", "set")
+            || bool_field(prop, "method")
+        {
+            return None;
+        }
+        let key = get(prop, "key");
+        let name = match type_of(key) {
+            Some("Identifier") => key.get("name").and_then(Value::as_str).map(str::to_string),
+            Some("Literal") => match key.get("value") {
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(Value::Number(n)) => Some(n.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let name = name?; // unknown key shape -> whole spread opaque
+        entries.push((name, evaluate(get(prop, "value"), &empty)));
+    }
+    Some(entries)
+}
+
+/// Read one `<Child .../>` into a {@link CallSite} (last-write-wins + spread
+/// tracking + synthesized body props). Mirrors `readCallSite`.
+pub(crate) fn read_call_site(component: &Value) -> CallSite {
+    let attrs = arr(component, "attributes");
+    // Only spreads we cannot expand are opaque; a known object literal is expanded
+    // into explicit writes below, so `after_last_spread` is measured against the
+    // last *unknown* spread (mirrors readCallSite).
+    let mut last_spread: i64 = -1;
+    for (i, a) in attrs.iter().enumerate() {
+        if type_of(a) == Some("SpreadAttribute") && known_spread_entries(a).is_none() {
+            last_spread = i as i64;
+        }
+    }
+    let mut explicit: HashMap<String, ExplicitProp> = HashMap::new();
+    for (i, attr) in attrs.iter().enumerate() {
+        let i = i as i64;
+        if type_of(attr) == Some("SpreadAttribute") {
+            // A known object-literal spread expands to one explicit write per key;
+            // an unknown spread is opaque (handled via had_spread/after_last_spread).
+            if let Some(entries) = known_spread_entries(attr) {
+                for (name, val) in entries {
+                    let prop = match val {
+                        Some(v) => ExplicitProp { value: Some(v), dynamic: false, after_last_spread: i > last_spread },
+                        None => dynamic_write(i, last_spread),
+                    };
+                    explicit.insert(name, prop);
+                }
+            }
+            continue;
+        }
+        let name = attr.get("name").and_then(Value::as_str);
+        if type_of(attr) == Some("BindDirective") {
+            if let Some(n) = name {
+                explicit.insert(n.to_string(), dynamic_write(i, last_spread));
+            }
+            continue;
+        }
+        if type_of(attr) != Some("Attribute") {
+            continue;
+        }
+        let name = match name {
+            Some(n) => n,
+            None => continue,
+        };
+        match literal_attr_value(get(attr, "value")) {
+            Some(v) => {
+                explicit.insert(
+                    name.to_string(),
+                    ExplicitProp { value: Some(v), dynamic: false, after_last_spread: i > last_spread },
+                );
+            }
+            None => {
+                explicit.insert(name.to_string(), dynamic_write(i, last_spread));
+            }
+        }
+    }
+    for name in synthesized_body_props(component) {
+        explicit.insert(name, dynamic_write(attrs.len() as i64, last_spread));
+    }
+    CallSite { had_spread: last_spread >= 0, explicit }
+}
+
+// ---- value-set join --------------------------------------------------------
+
+pub(crate) struct PropValueSet {
+    pub(crate) values: Vec<Literal>,
+    pub(crate) dynamic: bool,
+    pub(crate) top: bool,
+}
+
+pub(crate) fn literal_default(expr: &Value) -> Option<Literal> {
+    if expr.is_null() {
+        return Some(Literal::Undefined); // omitted default -> undefined
+    }
+    match type_of(expr) {
+        Some("Literal") => Literal::from_node_value(expr.get("value")?),
+        Some("Identifier") if expr.get("name").and_then(Value::as_str) == Some("undefined") => {
+            Some(Literal::Undefined)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn value_set_for(decl: &PropDecl, sites: &[CallSite]) -> PropValueSet {
+    let mut values = Vec::new();
+    let mut dynamic = false;
+    let mut top = false;
+    for site in sites {
+        match site.explicit.get(&decl.name) {
+            Some(e) if e.after_last_spread => {
+                if e.dynamic {
+                    dynamic = true;
+                } else if let Some(v) = &e.value {
+                    push_literal_unique(&mut values, v.clone());
+                }
+            }
+            _ => {
+                if site.had_spread {
+                    top = true; // a spread may set it -> Unknown
+                } else {
+                    match literal_default(&decl.default) {
+                        Some(v) => push_literal_unique(&mut values, v),
+                        None => dynamic = true,
+                    }
+                }
+            }
+        }
+    }
+    PropValueSet { values, dynamic, top }
+}
