@@ -1,6 +1,6 @@
 import { walk, type AnyNode } from './parse.js';
 import type { ComponentId, ComponentPlan } from './ir.js';
-import type { FileModel } from './analyze.js';
+import type { FileModel, PropDecl } from './analyze.js';
 import { isSideEffectFreeValue, attrOp, type ReverseOp } from './reverse.js';
 
 // ----------------------------------------------------------------------
@@ -68,6 +68,18 @@ export function collectUnread(
   }
   if (effective.size === 0) return { removals, drops };
 
+  // Index each effective child's declarations by external name ONCE, so neither
+  // the eligibility seed below nor `classifySite` does a per-name linear `find`
+  // over `props` inside a loop (CLAUDE.md: build a Map, not a search-in-loop).
+  const declByChild = new Map<ComponentId, Map<string, PropDecl>>();
+  for (const [id, names] of effective) {
+    const byName = new Map<string, PropDecl>();
+    for (const decl of models.get(id)!.props ?? []) {
+      if (names.has(decl.name)) byName.set(decl.name, decl);
+    }
+    declByChild.set(id, byName);
+  }
+
   // (b) eligibility, seeded per child prop from the child-local structural gates
   // (no `...rest`, side-effect-free default).  A call site then VETOES a prop that
   // it passes in a way (a) cannot remove — a `bind:`, or a non-spread site with a
@@ -76,9 +88,10 @@ export function collectUnread(
   const dropEligible = new Map<ComponentId, Map<string, boolean>>();
   for (const [id, names] of effective) {
     const model = models.get(id)!;
+    const decls = declByChild.get(id)!;
     const perProp = new Map<string, boolean>();
     for (const name of names) {
-      const decl = model.props?.find((p) => p.name === name);
+      const decl = decls.get(name);
       const structural = decl !== undefined && !model.hasRestProp && isHarmlessDefault(decl);
       perProp.set(name, structural);
     }
@@ -95,9 +108,9 @@ export function collectUnread(
       Component(node, { next }) {
         const childId = node.name ? model.imports.get(node.name) : undefined;
         const names = childId ? effective.get(childId) : undefined;
-        const child = childId ? models.get(childId) : undefined;
-        if (childId && names && child)
-          classifySite(node, childId, names, model, child, dropEligible, removals);
+        const decls = childId ? declByChild.get(childId) : undefined;
+        if (childId && names && decls)
+          classifySite(node, childId, names, model, decls, dropEligible, removals);
         next();
       },
     });
@@ -127,7 +140,7 @@ function classifySite(
   childId: ComponentId,
   names: Set<string>,
   owner: FileModel,
-  child: FileModel,
+  decls: Map<string, PropDecl>,
   dropEligible: Map<ComponentId, Map<string, boolean>>,
   removals: Map<ComponentId, ReverseOp[]>,
 ): void {
@@ -150,7 +163,7 @@ function classifySite(
     // eagerly when the prop is omitted).  A non-harmless default (a call, …) must
     // therefore keep its attribute — and cannot be dropped either — so this prop
     // is left entirely alone at every site.
-    const decl = child.props?.find((p) => p.name === attr.name);
+    const decl = decls.get(attr.name);
     if (!decl || !isHarmlessDefault(decl)) continue;
     if (hasSpread) continue; // spread site: keep the attribute; do not veto the drop
     if (!isSideEffectFreeValue(attr.value)) {

@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::plan::{Model, Plans};
+use crate::props::PropDecl;
 use crate::reverse::{is_reverse_removable_value, ReverseOp};
 
 /// The unread work for one whole-program transform pass.
@@ -70,19 +71,32 @@ pub(crate) fn collect_unread(models: &[Model], models_by_id: &HashMap<&str, &Mod
         return UnreadPlan { removals, drops };
     }
 
+    // Index each effective child's declarations by external name ONCE, so neither
+    // the eligibility seed nor `classify_site` does a per-name linear `find` over
+    // `props` inside a loop (mirrors unread.ts's `declByChild`).
+    let mut decl_by_child: HashMap<&str, HashMap<&str, &PropDecl>> = HashMap::new();
+    for (id, names) in &effective {
+        if let Some(pi) = &models_by_id[id.as_str()].props_info {
+            let mut by_name: HashMap<&str, &PropDecl> = HashMap::new();
+            for decl in &pi.props {
+                if names.contains(decl.name.as_str()) {
+                    by_name.insert(decl.name.as_str(), decl);
+                }
+            }
+            decl_by_child.insert(id.as_str(), by_name);
+        }
+    }
+
     // (b) eligibility, seeded from the child-local structural gates (no `...rest`,
     // a harmless default).  A call site then vetoes a prop it passes non-removably.
     let mut drop_eligible: HashMap<String, HashMap<String, bool>> = HashMap::new();
     for (id, names) in &effective {
-        let model = models_by_id[id.as_str()];
-        let pi = model.props_info.as_ref();
+        let has_rest = models_by_id[id.as_str()].props_info.as_ref().is_some_and(|p| p.has_rest);
+        let decls = decl_by_child.get(id.as_str());
         let mut per = HashMap::new();
         for name in names {
-            let decl = pi.and_then(|p| p.props.iter().find(|d| d.name.as_str() == name.as_str()));
-            let structural = match (decl, pi) {
-                (Some(d), Some(pinfo)) => !pinfo.has_rest && is_harmless_default(&d.default),
-                _ => false,
-            };
+            let decl = decls.and_then(|m| m.get(name.as_str()));
+            let structural = decl.is_some_and(|d| !has_rest && is_harmless_default(&d.default));
             per.insert(name.clone(), structural);
         }
         drop_eligible.insert(id.clone(), per);
@@ -110,11 +124,11 @@ pub(crate) fn collect_unread(models: &[Model], models_by_id: &HashMap<&str, &Mod
                 Some(n) => n,
                 None => continue,
             };
-            let child = match models_by_id.get(child_id.as_str()) {
-                Some(c) => *c,
+            let decls = match decl_by_child.get(child_id.as_str()) {
+                Some(d) => d,
                 None => continue,
             };
-            classify_site(node, child_id, names, owner, child, &mut drop_eligible, &mut removals);
+            classify_site(node, child_id, names, owner, decls, &mut drop_eligible, &mut removals);
         }
     }
 
@@ -139,7 +153,7 @@ fn classify_site(
     child_id: &str,
     names: &HashSet<String>,
     owner: &Model,
-    child: &Model,
+    decls: &HashMap<&str, &PropDecl>,
     drop_eligible: &mut HashMap<String, HashMap<String, bool>>,
     removals: &mut HashMap<String, Vec<ReverseOp>>,
 ) {
@@ -162,12 +176,7 @@ fn classify_site(
         // Removing the attribute makes the child's DEFAULT run (Svelte evaluates it
         // eagerly when the prop is omitted).  A non-harmless default keeps its
         // attribute — and cannot be dropped either — so leave the prop alone.
-        let harmless = child
-            .props_info
-            .as_ref()
-            .and_then(|p| p.props.iter().find(|d| d.name.as_str() == name))
-            .map(|d| is_harmless_default(&d.default))
-            .unwrap_or(false);
+        let harmless = decls.get(name).is_some_and(|d| is_harmless_default(&d.default));
         if !harmless {
             continue;
         }
