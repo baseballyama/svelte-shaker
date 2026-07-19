@@ -76,4 +76,56 @@ describe('external (.ts/.js) call sites — soundness', () => {
     // `p` IS passed — by `main.ts` — so it must not be flagged as never-passed.
     expect(map.get('/Widget.svelte')).toBeUndefined();
   });
+
+  // Guards the interaction with interprocedural pass-through (docs §13.1): a folded
+  // constant must not propagate THROUGH an escaped owner to its child.  `Mid`
+  // forwards its `v` to `<Leaf label={v}>`; App renders `<Mid/>` without `v`, so
+  // absent any escape `v` folds to 'base' and propagates, folding `Leaf.label`.  If
+  // a `.ts` module mounts `Mid` with a different `v`, escaping `Mid` must un-fold
+  // both `v` AND `Leaf.label` — the escape has to reach through the pass-through.
+  it('an escaped pass-through owner does not propagate a folded constant to its child', async () => {
+    const files: Record<string, string> = {
+      '/App.svelte': "<script>import Mid from './Mid.svelte';</script>\n<Mid />",
+      '/Mid.svelte':
+        "<script>import Leaf from './Leaf.svelte';\n  let { v = 'base' } = $props();</script>\n<Leaf label={v} />",
+      '/Leaf.svelte':
+        "<script>let { label = 'x' } = $props();</script>\n{#if label === 'base'}<b>BASE</b>{/if}\n<span>{label}</span>",
+    };
+    const read: ReadFile = (id) => files[id]!;
+    const entries = ['/App.svelte', '/Mid.svelte', '/Leaf.svelte'];
+
+    // Baseline: with nothing escaped, the pass-through folds `Leaf.label` to 'base'
+    // and proves the `label === 'base'` branch, so the comparison disappears.
+    const plain = await svelteShaker(entries, resolve, read);
+    expect(plain['/Leaf.svelte']).not.toContain('label ===');
+
+    // Escaping `Mid` bails it, so `v` is neither folded nor propagated: `Leaf.label`
+    // stays dynamic and its branch survives.  The escape reaches past the seam.
+    const escaped = await svelteShaker(entries, resolve, read, undefined, ['/Mid.svelte']);
+    expect(escaped['/Leaf.svelte']).toContain('label ===');
+  });
+
+  // Guards the interaction with unread-input elimination (docs §PR4): #106 drops a
+  // call-site input the child never reads AND the unread prop from the child's
+  // signature.  An escaped child must be left COMPLETELY untouched — neither its
+  // signature nor the inputs feeding it may be stripped, since its consumers are
+  // not all observable.  `Child` reads `p` but never `q`.
+  it('an escaped child keeps an unread prop and its call-site input (untouched)', async () => {
+    const child = '<script>let { p = false, q } = $props();</script>\n{#if p}<b>P</b>{/if}\n';
+    const app =
+      "<script>import Child from './Child.svelte';\n  let x = Math.random();</script>\n<Child p={x > 0.5} q={1} />\n";
+    const files: Record<string, string> = { '/App.svelte': app, '/Child.svelte': child };
+    const read: ReadFile = (id) => files[id]!;
+    const entries = ['/App.svelte', '/Child.svelte'];
+
+    // Baseline: `q` is unread, so #106 drops it from `$props()` and from the call site.
+    const plain = await svelteShaker(entries, resolve, read);
+    expect(plain['/Child.svelte']).not.toContain('q');
+    expect(plain['/App.svelte']).not.toContain('q={1}');
+
+    // Escaped: the child is bailed, so it and the inputs feeding it are untouched.
+    const escaped = await svelteShaker(entries, resolve, read, undefined, ['/Child.svelte']);
+    expect(escaped['/Child.svelte']).toBe(child);
+    expect(escaped['/App.svelte']).toContain('q={1}');
+  });
 });
