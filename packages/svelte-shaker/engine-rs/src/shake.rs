@@ -643,6 +643,10 @@ pub(crate) fn shake_body(
     set_env: &SetEnv,
     edits: &mut MagicEdit,
     out_dead: &mut Vec<Span>,
+    // Reverse-removal regions (docs §PR4) to treat as already-dead: the fold and
+    // substitution passes skip anything inside them, so no edit lands in a span
+    // the reverse phase then deletes whole.  Empty for the mono path.
+    seed_dead: &[Span],
 ) -> HashSet<String> {
     if env.is_empty() && set_env.is_empty() {
         return HashSet::new();
@@ -656,7 +660,9 @@ pub(crate) fn shake_body(
     // CSS); the `$props()` signature drop keeps the external names.
     let local_env = remap_to_local_names(env, model);
     let local_set_env = remap_to_local_names(set_env, model);
-    let mut dead: Vec<Span> = Vec::new();
+    // Pre-load the reverse-removal regions so every pass below treats them as
+    // already-dead and never edits inside a span the reverse phase then removes.
+    let mut dead: Vec<Span> = seed_dead.to_vec();
     fold_if_blocks(fragment, &local_env, &local_set_env, edits, &mut dead, None, 0, has_preserve_whitespace_option(fragment), None);
     if !local_env.is_empty() {
         fold_ternaries(fragment, &local_env, edits, &mut dead);

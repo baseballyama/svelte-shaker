@@ -32,6 +32,21 @@ export type ReadFile = (id: ComponentId) => Promise<string> | string;
 export type ResolveSync = (source: string, importer: ComponentId) => ComponentId | null;
 export type ReadFileSync = (id: ComponentId) => string;
 
+/**
+ * The set of input names a child component can ever OBSERVE at runtime (docs
+ * §PR4 reverse analysis).  In runes there is no `$$props`/`$$restProps`, so a
+ * component reads an input only through its `$props()` destructure:
+ *  - `{ kind: 'names' }` — a clean, rest-free ObjectPattern `$props()` (or no
+ *    `$props()` at all, giving the empty set): the child can observe EXACTLY
+ *    these declared external names, so a call-site input NOT in the set can
+ *    never be seen and is safe to drop;
+ *  - `{ kind: 'all' }` — anything we cannot pin down: a `...rest` (captures
+ *    undeclared inputs), an Identifier/Array binding (`let p = $props()`),
+ *    more than one `$props()` call, or `$props()` outside a `let <pat> = …`
+ *    declarator.  Then any input might be observed, so nothing is dropped.
+ */
+export type ReachableInputs = { kind: 'all' } | { kind: 'names'; names: Set<string> };
+
 /** One declared prop in a `$props()` destructuring. */
 export interface PropDecl {
   /** The EXTERNAL prop name — the destructure KEY (`prop` in `prop: alias`).
@@ -72,6 +87,12 @@ export interface FileModel {
   propsDeclaration?: AnyNode | undefined;
   propsPattern?: AnyNode | undefined;
   hasRestProp: boolean;
+  /**
+   * The inputs this component can observe (docs §PR4).  Drives the reverse pass:
+   * a call site of THIS component may drop an input outside {@link
+   * ReachableInputs}.  Computed syntactically from the `$props()` shape.
+   */
+  reachableInputs: ReachableInputs;
   /**
    * Every `<Child .../>` instance THIS component renders, with the child it
    * resolves to and the AST node (so the fixpoint can test whether the site
@@ -816,6 +837,7 @@ function buildModelFromInput(
     }
   }
 
+  const reachableInputs = computeReachableInputs(instance, props, hasRestProp, propsPattern);
   const childCalls = collectChildCalls(ast, imports);
   const { shadowedNames, debugNames, writtenNames } = collectTemplateBindings(
     ast,
@@ -839,6 +861,7 @@ function buildModelFromInput(
     propsDeclaration,
     propsPattern,
     hasRestProp,
+    reachableInputs,
     childCalls,
     shadowedNames,
     debugNames,
@@ -1786,6 +1809,65 @@ function parseModuleBody(code: string, id: ComponentId): AnyNode[] | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Derive the child's {@link ReachableInputs} from its `$props()` shape (docs
+ * §PR4).  `props`/`hasRestProp` come from {@link findPropsDeclaration}, which
+ * matches only a clean top-level ObjectPattern `$props()`; we additionally count
+ * ALL `$props()` calls so that a second call, a non-ObjectPattern binding, or a
+ * call outside a declarator falls back to ALL (any input might be observed).
+ *
+ * `$props.id()` (a member call) is NOT a `$props()` call — the props object never
+ * leaks through it — so it does not count and does not affect the result.
+ */
+function computeReachableInputs(
+  instance: AnyNode | null | undefined,
+  props: PropDecl[] | null,
+  hasRestProp: boolean,
+  propsPattern: AnyNode | undefined,
+): ReachableInputs {
+  // No instance script -> no `$props()` -> the component reads no input at all.
+  if (!instance) return { kind: 'names', names: new Set() };
+  const propsCalls = countPropsCalls(instance);
+  if (propsCalls === 0) return { kind: 'names', names: new Set() };
+  // A single clean ObjectPattern `$props()` is exactly the case where
+  // `findPropsDeclaration` populated `props` (rest-free): its declared external
+  // KEY names are what a call site passes, so those are the reachable inputs.
+  // Everything else (rest, >1 call, non-ObjectPattern / nested binding) is ALL.
+  if (propsCalls !== 1 || hasRestProp || props === null) return { kind: 'all' };
+  // Any property whose external name we could NOT statically capture (a
+  // string-literal key `{ 'aria-label': label }`, or a computed key `{ [k]: v }`)
+  // is a prop the child DOES read but that is absent from `props`, so its call-site
+  // attribute would be wrongly droppable.  Fall back to ALL when one is present.
+  if (hasUnrepresentableKey(propsPattern)) return { kind: 'all' };
+  return { kind: 'names', names: new Set(props.map((p) => p.name)) };
+}
+
+/** True when a `$props()` ObjectPattern binds a prop whose external name is not a
+ * plain identifier (a string-literal or computed key), so {@link declared_props}
+ * did not capture it. */
+function hasUnrepresentableKey(pattern: AnyNode | undefined): boolean {
+  for (const p of pattern?.properties ?? []) {
+    if (p.type === 'RestElement') continue; // handled via hasRestProp
+    if (p.type !== 'Property') return true; // unexpected shape -> conservative ALL
+    if (p.computed === true || p.key?.type !== 'Identifier' || !p.key.name) return true;
+  }
+  return false;
+}
+
+/** Count `$props()` calls (callee is the bare `$props` identifier) in the
+ * instance script.  More than one means the reachable-input set cannot be pinned
+ * to a single destructure, so the reverse pass bails (ALL). */
+function countPropsCalls(instance: AnyNode): number {
+  let count = 0;
+  walk<null>(instance, null, {
+    CallExpression(node, { next }) {
+      if (node.callee?.type === 'Identifier' && node.callee.name === '$props') count++;
+      next();
+    },
+  });
+  return count;
 }
 
 function findPropsDeclaration(instance: AnyNode): {
