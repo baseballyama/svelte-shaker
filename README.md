@@ -25,12 +25,15 @@ proven safe, the code is left untouched (bails).
 ## Why a JS bundler can't do this
 
 Design-system components carry many props (`variant / size / loading / icon …`),
-but any one app uses only a few. The code behind the unused props still ships,
-because Svelte emits **one generic JS module per component**, shared by every
-caller: prop values flow through the runtime, so terser/Rollup can never fold
-`if (loading)` to `if (false)`, and nothing in the pipeline knows which props
-your app never uses. svelte-shaker works one step earlier, on the pre-compile
-source, where call-site values and template structure are still visible.
+but any one app uses only a few — yet the code behind the unused props still
+ships. A minifier _can_ fold a component-local constant (it compiles to plain
+JS). A prop is different: Svelte emits **one generic JS module per component**,
+shared by every caller, and the prop's value reaches it through runtime
+indirection (`$.prop(...)`), so turning `if (loading)` into `if (false)` would
+take constant propagation across component boundaries — something neither
+Rollup nor terser performs, even when every call site passes the same literal.
+svelte-shaker works one step earlier, on the pre-compile source, where
+call-site values and template structure are still visible.
 
 The clearest win is CSS: given `class="btn btn-{variant}"` where the app only
 ever passes `primary` / `secondary`, the class `btn-danger` can never exist at
