@@ -13,13 +13,13 @@ import { assertCompiles, cleanTmp, renderGraphHtml } from './diff';
 afterAll(() => cleanTmp());
 
 // ----------------------------------------------------------------------
-// L2 per-call-site monomorphization (docs §3 "L2", §11, §13.2).  OPT-IN,
+// Per-call-site monomorphization (docs §3 "monomorphization", §11, §13.2).  OPT-IN,
 // BAIL-SAFE, and — the property under test — NEVER BLOATING.
 //
-// L1.5 already removes every arm dead APP-WIDE, so L2 only shrinks the bundle
+// value-set narrowing already removes every arm dead APP-WIDE, so monomorphization only shrinks the bundle
 // when specialization makes a whole MODULE become globally unreferenced — which
-// happens for CORRELATED multi-prop conditions L1.5's per-prop narrowing cannot
-// kill.  L2 therefore runs a MEASURED net-win gate:
+// happens for CORRELATED multi-prop conditions value-set narrowing's per-prop narrowing cannot
+// kill.  monomorphization therefore runs a MEASURED net-win gate:
 //   (1) ALL-SITES-OR-NOTHING: only specialize a child when every live call site
 //       maps to a non-base residual (so the base module becomes unreferenced),
 //   (2) measure the whole-program reachable module bytes (compiled client JS) in
@@ -57,12 +57,12 @@ function memGraph(files: Record<string, string>): {
 const ON = { enabled: true, maxVariants: 8, minSavings: 0 } as const;
 
 // ----------------------------------------------------------------------
-// THE CORRELATED-CONDITION CASE (the win L2 exists for).
+// THE CORRELATED-CONDITION CASE (the win monomorphization exists for).
 //
-// `a`,`b` are app-wide multi-valued (a∈{0,1}, b∈{0,1}), so L1 cannot fold them
-// and L1.5 narrows them INDEPENDENTLY — it cannot prove `a === 1 && b === 1` is
+// `a`,`b` are app-wide multi-valued (a∈{0,1}, b∈{0,1}), so constant fold cannot fold them
+// and value-set narrowing narrows them INDEPENDENTLY — it cannot prove `a === 1 && b === 1` is
 // never both true, so it keeps `<Heavy/>`.  The only sites are (0,1) and (1,0),
-// never (1,1).  L2 freezes a (or b) per site, the correlated `{#if}` folds false
+// never (1,1).  monomorphization freezes a (or b) per site, the correlated `{#if}` folds false
 // in every variant, `<Heavy/>` vanishes from every variant, Heavy is globally
 // unreferenced — and the bundle shrinks.
 // ----------------------------------------------------------------------
@@ -82,7 +82,7 @@ const CORRELATED_FILES: Record<string, string> = {
   '/Heavy.svelte': `<script>\n  let { n = 0 } = $props();\n</script>\n${HEAVY_BODY}\n`,
 };
 
-describe('L2 monomorphize / off-by-default + byte-identical (the contract)', () => {
+describe('monomorphization / off-by-default + byte-identical (the contract)', () => {
   it('OFF by default: no variants, no bindings, base output byte-identical', async () => {
     const { resolve, readFile } = memGraph(CORRELATED_FILES);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
@@ -92,7 +92,7 @@ describe('L2 monomorphize / off-by-default + byte-identical (the contract)', () 
     expect(res.variants.size).toBe(0);
     expect(res.bindings.length).toBe(0);
 
-    // With L2 off, the wired output equals the plain shaker output byte-for-byte.
+    // With monomorphization off, the wired output equals the plain shaker output byte-for-byte.
     const base = await svelteShaker('/App.svelte', resolve, readFile);
     const withMono = await svelteShakerWithMono('/App.svelte', resolve, readFile);
     expect(withMono.files).toEqual(base);
@@ -100,8 +100,8 @@ describe('L2 monomorphize / off-by-default + byte-identical (the contract)', () 
   });
 });
 
-describe('L2 monomorphize / correlated condition (C IS specialized, Heavy removed)', () => {
-  it('L1/L1.5 keep `<Heavy/>`: the correlated `{#if}` cannot be narrowed away', async () => {
+describe('monomorphization / correlated condition (C IS specialized, Heavy removed)', () => {
+  it('constant fold / value-set narrowing keep `<Heavy/>`: the correlated `{#if}` cannot be narrowed away', async () => {
     const { resolve, readFile } = memGraph(CORRELATED_FILES);
     const { plans } = await analyze('/App.svelte', resolve, readFile);
     const childPlan = plans.get('/Child.svelte')!;
@@ -111,12 +111,12 @@ describe('L2 monomorphize / correlated condition (C IS specialized, Heavy remove
     expect([...(childPlan.narrow.get('a') ?? [])].sort()).toEqual([0, 1]);
     expect([...(childPlan.narrow.get('b') ?? [])].sort()).toEqual([0, 1]);
 
-    // The base-shaken Child STILL renders `<Heavy/>` (L1.5 cannot kill it).
+    // The base-shaken Child STILL renders `<Heavy/>` (value-set narrowing cannot kill it).
     const base = await svelteShaker('/App.svelte', resolve, readFile);
     expect(base['/Child.svelte']).toContain('<Heavy');
   });
 
-  it('L2 specializes Child: every variant drops `<Heavy/>` (net win)', async () => {
+  it('monomorphization specializes Child: every variant drops `<Heavy/>` (net win)', async () => {
     const { resolve, readFile } = memGraph(CORRELATED_FILES);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
     const res = monomorphize(models, plans, ON, '/App.svelte');
@@ -164,7 +164,7 @@ describe('L2 monomorphize / correlated condition (C IS specialized, Heavy remove
     // A plain `variant ∈ {primary, secondary, danger}`: three DISTINCT residual
     // shapes, each duplicating a large shared base.  No child module is
     // eliminated, so splitting into three per-shape modules just triplicates the
-    // shared scaffolding -> the gate must DECLINE (and the output equals L1.5).
+    // shared scaffolding -> the gate must DECLINE (and the output equals value-set narrowing).
     const shared = `<section>${Array.from({ length: 30 }, (_, i) => `<p class="row">shared base content line ${i}</p>`).join('')}</section>`;
     const files = {
       '/App.svelte':
@@ -178,7 +178,7 @@ describe('L2 monomorphize / correlated condition (C IS specialized, Heavy remove
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
 
-    // L1.5 cannot remove any arm app-wide (all three values occur).
+    // value-set narrowing cannot remove any arm app-wide (all three values occur).
     expect([...(plans.get('/Btn.svelte')!.narrow.get('variant') ?? [])].sort()).toEqual([
       'danger',
       'primary',
@@ -189,14 +189,14 @@ describe('L2 monomorphize / correlated condition (C IS specialized, Heavy remove
     expect(res.variants.size).toBe(0); // declined: specializing would bloat
     expect(res.bindings.length).toBe(0);
 
-    // And the wired output is byte-identical to the plain L1.5 shake.
+    // And the wired output is byte-identical to the plain value-set narrowing shake.
     const base = await svelteShaker('/App.svelte', resolve, readFile);
     const withMono = await svelteShakerWithMono('/App.svelte', resolve, readFile, ON, (id) => id);
     expect(withMono.files).toEqual(base);
   });
 });
 
-describe('L2 monomorphize / all-sites-or-nothing gate', () => {
+describe('monomorphization / all-sites-or-nothing gate', () => {
   it('a single live site keeping the base disqualifies the whole child', async () => {
     // Two Child sites: one correlated-foldable, one fully dynamic (`a={x} b={y}`)
     // that folds NOTHING and keeps the base.  Because the base module can never
@@ -261,7 +261,7 @@ describe('L2 monomorphize / all-sites-or-nothing gate', () => {
   });
 });
 
-describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => {
+describe('monomorphization / bail-safety (soundness over aggressiveness)', () => {
   it('a fully-bailed child (escape) is never specialized', async () => {
     const files = {
       '/App.svelte':
@@ -348,9 +348,9 @@ describe('L2 monomorphize / bail-safety (soundness over aggressiveness)', () => 
 });
 
 // ----------------------------------------------------------------------
-// End-to-end Vite build: L2 wires the variants to real (virtual) modules and the
+// End-to-end Vite build: monomorphization wires the variants to real (virtual) modules and the
 // net-win gate orphans Heavy.  The control build (no shaker) keeps the shared
-// `Child` conditional AND bundles Heavy; the L2 build specializes both call sites
+// `Child` conditional AND bundles Heavy; the monomorphization build specializes both call sites
 // so the conditional is gone and Heavy is dropped from the bundle.  This is the
 // rollup-can't proof: rollup cannot specialize a component per call site, so it
 // keeps the correlated `{#if}` and therefore keeps Heavy.
@@ -395,7 +395,7 @@ async function bundle(pre: unknown[]): Promise<string> {
   return result.output.map((c) => ('code' in c ? c.code : '')).join('\n');
 }
 
-describe('vite-plugin-svelte-shaker / L2 (end-to-end build)', () => {
+describe('vite-plugin-svelte-shaker / monomorphization (end-to-end build)', () => {
   it('control: the correlated `{#if}` survives and Heavy is bundled', async () => {
     const code = await bundle([]);
     expect(code).toMatch(IF_MACHINERY);

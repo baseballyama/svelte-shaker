@@ -132,7 +132,7 @@ describe('svelte-shaker / soundness (differential SSR)', () => {
     expect(before).toContain('B is truthy');
   });
 
-  it('narrow-variant (L1.5): an unreachable arm is removed, the prop is kept', async () => {
+  it('narrow-variant (value-set narrowing): an unreachable arm is removed, the prop is kept', async () => {
     const dir = join(FIXTURES, 'narrow-variant');
     const entry = join(dir, 'input', 'App.svelte');
 

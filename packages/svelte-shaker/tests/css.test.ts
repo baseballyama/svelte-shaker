@@ -12,7 +12,7 @@ import { computePossibleClasses } from '../src/css';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
 
 // ----------------------------------------------------------------------
-// CSS rule removal (docs §3 "L1.5", "CSS (shaker 独自の価値)").
+// CSS rule removal (docs §3 "value-set narrowing", "CSS (shaker 独自の価値)").
 //
 // The headline differentiator: Svelte's own unused-CSS pruning keeps
 // `.btn-danger` for an interpolated `class="btn btn-{variant}"` because it cannot
