@@ -82,16 +82,6 @@ importers:
         specifier: ^5.4.21
         version: 5.4.21(@types/node@20.19.43)
 
-  packages/rollup-plugin-svelte-shaker:
-    dependencies:
-      svelte-shaker:
-        specifier: workspace:^
-        version: link:../svelte-shaker
-    devDependencies:
-      rollup:
-        specifier: 4.62.2
-        version: 4.62.2
-
   packages/site:
     dependencies:
       shiki:
