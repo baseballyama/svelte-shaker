@@ -30,6 +30,7 @@ export interface Eliminated {
 export interface ShakeOutput {
   shaken: Files; // shaken source per original file
   variants: { id: string; code: string }[]; // L2 specialized modules
+  dropped: string[]; // files reachable before but not after — gone from the bundle
   before: Sizes;
   after: Sizes;
   eliminated: Eliminated;
@@ -93,13 +94,17 @@ export async function shake(files: Files, l2: boolean): Promise<ShakeOutput> {
     for (const v of variants) afterMap[v.id] = v.code;
     const after = measure(afterMap, {});
 
+    const afterLive = reachable(afterMap);
+    const dropped = [...reachable(files)].filter((id) => !afterLive.has(id));
+
     const eliminated = summarize(files, shaken, plans, before, after);
-    return { shaken, variants, before, after, eliminated };
+    return { shaken, variants, dropped, before, after, eliminated };
   } catch (err) {
     const empty: Sizes = { js: 0, css: 0, modules: 0 };
     return {
       shaken: files,
       variants: [],
+      dropped: [],
       before: empty,
       after: empty,
       eliminated: blankEliminated(),

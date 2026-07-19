@@ -1,16 +1,15 @@
-@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
 /* Light (default). Minimal, Svelte/Rollup-warm — one accent (Svelte orange). */
 :root {
   --bg: #ffffff;
   --bg-1: #fafaf8;
-  --bg-2: #f3f3f0;
   --panel: #ffffff;
   --line: #ececea;
-  --line-2: #dededa;
-  --ink: #1a1a17;
-  --ink-dim: #50504a;
-  --ink-faint: #6e6e64;
+  --line-2: #d8d8d3;
+  --ink: #191916;
+  --ink-dim: #45453f;
+  --ink-faint: #5d5d54;
   --accent: #ff3e00;
   --accent-deep: #d33300;
   /* readable orange for inline code / small text (AA on white); brand orange
@@ -33,13 +32,12 @@
 :root[data-theme='dark'] {
   --bg: #0d0f0e;
   --bg-1: #121513;
-  --bg-2: #181c19;
   --panel: #101311;
   --line: #232826;
-  --line-2: #323833;
-  --ink: #e7e9e3;
-  --ink-dim: #aab0a6;
-  --ink-faint: #838a80;
+  --line-2: #363c37;
+  --ink: #ecede8;
+  --ink-dim: #b4bab0;
+  --ink-faint: #929991;
   --accent: #ff5a2c;
   --accent-deep: #ff7a52;
   --code-fg: #ff8a5c;
@@ -66,8 +64,8 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--sans);
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 15px;
+  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   transition:
@@ -123,7 +121,7 @@ textarea {
 
 .mono-label {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 500;
   letter-spacing: 0.12em;
   text-transform: uppercase;
