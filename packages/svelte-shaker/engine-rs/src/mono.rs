@@ -80,7 +80,7 @@ pub(crate) fn render_residual(child: &Model, plan: &ComponentPlan, code: &str, e
     let (env, set_env) = env_with_extra(plan, extra);
     let mut edits = MagicEdit::new(code);
     let mut dead = Vec::new();
-    shake_body(child, &env, &set_env, &mut edits, &mut dead);
+    shake_body(child, &env, &set_env, &mut edits, &mut dead, &[]);
     edits.render()
 }
 

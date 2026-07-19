@@ -129,6 +129,8 @@ pub(crate) struct Model {
     pub(crate) ast: Value,
     pub(crate) imports: HashMap<String, String>, // tag name -> childId (all edge kinds), for call-site edits
     pub(crate) props_info: Option<PropsInfo>,
+    /// The inputs this component can observe (docs §PR4) — drives the reverse pass.
+    pub(crate) reachable_inputs: ReachableInputs,
     pub(crate) shadowed: HashSet<String>,
     pub(crate) debug: HashSet<String>,
     /// Prop names the component WRITES TO — never folded (see `is_fold_blocked`).
@@ -142,6 +144,7 @@ pub(crate) struct Model {
 pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
     let imports = edge_imports(&Value::Array(edges.to_vec()));
     let props_info = declared_props_full(&ast);
+    let reachable_inputs = compute_reachable_inputs(&ast, &props_info);
     let (shadowed_vec, debug_vec, written_vec) = template_bindings(&ast);
     let mut bail_reasons = component_bail(&ast);
     if props_info.as_ref().map(|p| p.shares_statement).unwrap_or(false) {
@@ -162,6 +165,7 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
         ast,
         imports,
         props_info,
+        reachable_inputs,
         shadowed: shadowed_vec.into_iter().collect(),
         debug: debug_vec.into_iter().collect(),
         written: written_vec.into_iter().collect(),

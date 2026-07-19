@@ -2,7 +2,7 @@
 //! (last-write-wins + spread tracking), and per-prop value-set joining.
 
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::eval::{evaluate, Env, Literal};
@@ -129,6 +129,51 @@ pub(crate) fn declared_props_full(ast: &Value) -> Option<PropsInfo> {
         }
     }
     None
+}
+
+// ---- reachable input set (reverse analysis, docs §PR4) ---------------------
+
+/// The inputs a component can OBSERVE at runtime.  In runes there is no
+/// `$$props`, so a component reads an input only through its `$props()`
+/// destructure — mirrors `ReachableInputs` in analyze.ts.
+pub(crate) enum ReachableInputs {
+    /// Any input might be observed (a `...rest`, a non-ObjectPattern binding,
+    /// more than one `$props()` call, or `$props()` outside a declarator).
+    All,
+    /// Exactly these declared external names (a clean rest-free ObjectPattern
+    /// `$props()`, or the empty set when there is no `$props()` at all).
+    Names(HashSet<String>),
+}
+
+/// Derive {@link ReachableInputs} from the `$props()` shape (mirrors
+/// `computeReachableInputs`).  `props_info` is the clean-ObjectPattern match from
+/// {@link declared_props_full}; a second call, a non-ObjectPattern binding, or a
+/// rest falls back to `All`.  `$props.id()` (a member call) is not a `$props()`
+/// call, so it does not count.
+pub(crate) fn compute_reachable_inputs(ast: &Value, props_info: &Option<PropsInfo>) -> ReachableInputs {
+    let calls = count_props_calls(get(ast, "instance"));
+    if calls == 0 {
+        return ReachableInputs::Names(HashSet::new()); // no `$props()` -> reads nothing
+    }
+    match props_info {
+        Some(pi) if calls == 1 && !pi.has_rest => {
+            ReachableInputs::Names(pi.props.iter().map(|p| p.name.clone()).collect())
+        }
+        _ => ReachableInputs::All,
+    }
+}
+
+fn count_props_calls(instance: &Value) -> usize {
+    let mut count = 0;
+    walk(instance, &mut |node| {
+        if str_eq(node, "type", "CallExpression")
+            && str_eq(get(node, "callee"), "type", "Identifier")
+            && str_eq(get(node, "callee"), "name", "$props")
+        {
+            count += 1;
+        }
+    });
+    count
 }
 
 // ---- call-site reading -----------------------------------------------------

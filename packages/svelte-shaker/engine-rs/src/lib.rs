@@ -19,6 +19,7 @@ mod eval;
 mod mono;
 mod plan;
 mod props;
+mod reverse;
 mod shake;
 mod transform;
 
@@ -26,6 +27,7 @@ use crate::analyze::*;
 use crate::ast::*;
 use crate::mono::*;
 use crate::plan::*;
+use crate::reverse::*;
 use crate::shake::*;
 use crate::transform::MagicEdit;
 
@@ -174,6 +176,21 @@ pub fn shake_program(input_json: &str) -> String {
 
     let plans = run_fixpoint(&models);
 
+    // Phase 0: reverse-removal ops per owner (docs §PR4) — the call-site inputs a
+    // child can never read.  Computed before phase 1 so its regions protect phase
+    // 1 from editing inside a span the reverse phase then deletes whole.
+    let models_by_id: HashMap<&str, &Model> = models.iter().map(|m| (m.id.as_str(), m)).collect();
+    let mut reverse: HashMap<String, Vec<ReverseOp>> = HashMap::new();
+    for model in &models {
+        if plans[&model.id].bail {
+            continue; // a bailed owner is left completely untouched
+        }
+        let ops = collect_reverse_removals(model, &models_by_id, &plans);
+        if !ops.is_empty() {
+            reverse.insert(model.id.clone(), ops);
+        }
+    }
+
     // Phase 1: fold each body and drop its folded props.
     let mut edits_map: HashMap<String, MagicEdit> = HashMap::new();
     let mut dropped: HashMap<String, HashSet<String>> = HashMap::new();
@@ -182,10 +199,11 @@ pub fn shake_program(input_json: &str) -> String {
         let plan = &plans[&model.id];
         let mut edits = MagicEdit::new(code_by_id.get(&model.id).map(String::as_str).unwrap_or(""));
         let mut dead: Vec<Span> = Vec::new();
+        let seed = reverse.get(&model.id).map(|ops| protect_spans(ops)).unwrap_or_default();
         let d = if plan.bail {
             HashSet::new()
         } else {
-            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead)
+            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead, &seed)
         };
         dropped.insert(model.id.clone(), d);
         edited_spans.insert(model.id.clone(), dead);
@@ -204,6 +222,14 @@ pub fn shake_program(input_json: &str) -> String {
             let empty = Vec::new();
             let spans = edited_spans.get(&model.id).unwrap_or(&empty);
             remove_call_site_attributes(model, &dropped, edits, spans, &owner_env);
+        }
+    }
+    // Phase 2.5: reverse removals — delete the inputs the child can never read.
+    for (id, ops) in &reverse {
+        if let Some(edits) = edits_map.get_mut(id) {
+            let empty = Vec::new();
+            let spans = edited_spans.get(id).unwrap_or(&empty);
+            apply_reverse_removals(ops, edits, spans);
         }
     }
 
@@ -302,8 +328,20 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         monomorphize(&models, &plans, &code_by_id, &entries, &opts, &mut own_size_fn)
     };
 
-    // Base phases (identical to shake_program): fold bodies + drop props, then
-    // strip dropped-prop attributes at call sites.
+    // Base phases (identical to shake_program): reverse-removal collection, fold
+    // bodies + drop props, strip dropped-prop attributes, then the reverse removals.
+    let models_by_id: HashMap<&str, &Model> = models.iter().map(|m| (m.id.as_str(), m)).collect();
+    let mut reverse: HashMap<String, Vec<ReverseOp>> = HashMap::new();
+    for model in &models {
+        if plans[&model.id].bail {
+            continue;
+        }
+        let ops = collect_reverse_removals(model, &models_by_id, &plans);
+        if !ops.is_empty() {
+            reverse.insert(model.id.clone(), ops);
+        }
+    }
+
     let mut edits_map: HashMap<String, MagicEdit> = HashMap::new();
     let mut dropped: HashMap<String, HashSet<String>> = HashMap::new();
     let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::new();
@@ -311,10 +349,11 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         let plan = &plans[&model.id];
         let mut edits = MagicEdit::new(code_by_id.get(&model.id).map(String::as_str).unwrap_or(""));
         let mut dead: Vec<Span> = Vec::new();
+        let seed = reverse.get(&model.id).map(|ops| protect_spans(ops)).unwrap_or_default();
         let d = if plan.bail {
             HashSet::new()
         } else {
-            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead)
+            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead, &seed)
         };
         dropped.insert(model.id.clone(), d);
         edited_spans.insert(model.id.clone(), dead);
@@ -330,9 +369,15 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
             remove_call_site_attributes(model, &dropped, edits, spans, &owner_env);
         }
     }
+    for (id, ops) in &reverse {
+        if let Some(edits) = edits_map.get_mut(id) {
+            let empty = Vec::new();
+            let spans = edited_spans.get(id).unwrap_or(&empty);
+            apply_reverse_removals(ops, edits, spans);
+        }
+    }
 
     // Phase 3 (L2): rewrite each bound `<Child …>` to its variant.
-    let models_by_id: HashMap<&str, &Model> = models.iter().map(|m| (m.id.as_str(), m)).collect();
     rewrite_bound_call_sites(&models_by_id, &bindings, &code_by_id, &mut edits_map);
 
     let files: serde_json::Map<String, Value> = models
