@@ -14,7 +14,7 @@ import {
   type MonomorphizeOptions,
   type MonomorphizeResult,
 } from './mono.js';
-import type { ComponentId } from './ir.js';
+import type { ComponentId, ComponentPlan } from './ir.js';
 
 export type {
   ComponentId,
@@ -63,7 +63,7 @@ export async function svelteShaker(
   parse?: Parse,
 ): Promise<Record<ComponentId, string>> {
   const { models, plans } = await analyzeWith(entries, resolve, readFile, parse);
-  return revertUnparseable(models, transformAll(models, plans));
+  return shakeWithRevertCascade(models, plans, (p) => transformAll(models, p));
 }
 
 /**
@@ -86,28 +86,91 @@ async function analyzeWith(
   return analyzeInput(input, cache);
 }
 
-/**
- * Self-check the shaken output: if a component's slimmed source does not re-parse
- * as valid Svelte, leave that file UNTOUCHED (revert to its original).  The engine
- * aims to only ever emit valid, behavior-preserving source, so a parse failure is a
- * transform bug — but this last line of defense keeps a single mishandled component
- * shape from breaking the whole build, and reverting one file is always sound (it is
- * just "did not shake this component").  Unchanged files are skipped (cheap).
- */
-function revertUnparseable(
+/** How many times we re-run the transform after force-bailing components whose
+ * output failed to re-parse, before giving up on a whole-program no-op. Small on
+ * purpose: each pass can only bail MORE components (monotone), so a couple of
+ * passes settle any real case; the cap just bounds a pathological transform. */
+const MAX_REVERT_ITERATIONS = 3;
+
+/** Bail reason stamped on a component force-bailed by the revert cascade. */
+const REVERT_REASON = 'reverted: transform emitted unparseable source';
+
+/** The ids in `out` whose emitted source no longer parses as valid Svelte.  A
+ * file left unchanged from its model is skipped (it is the original, already
+ * known-good), so only genuinely edited-then-broken files are collected. */
+function unparseableIds(
   models: Map<ComponentId, FileModel>,
   out: Record<ComponentId, string>,
-): Record<ComponentId, string> {
+): Set<ComponentId> {
+  const failed = new Set<ComponentId>();
   for (const [id, code] of Object.entries(out)) {
     const model = models.get(id);
     if (!model || code === model.code) continue;
     try {
       parseSvelte(code, id);
     } catch {
-      out[id] = model.code;
+      failed.add(id);
     }
   }
-  return out;
+  return failed;
+}
+
+/** A copy of `plans` with `ids` force-bailed: those components fold nothing, so
+ * the re-run leaves their body untouched AND (because they now drop no prop)
+ * keeps every parent's call-site attributes for them. */
+function forceBail(
+  plans: Map<ComponentId, ComponentPlan>,
+  ids: Set<ComponentId>,
+): Map<ComponentId, ComponentPlan> {
+  const next = new Map(plans);
+  for (const id of ids) {
+    const plan = next.get(id);
+    if (!plan) continue;
+    next.set(id, {
+      ...plan,
+      bail: true,
+      reasons: [...plan.reasons, REVERT_REASON],
+      constFold: new Map(),
+      narrow: new Map(),
+      valueSets: new Map(),
+    });
+  }
+  return next;
+}
+
+/**
+ * Run `runTransform` and self-check its output: if any component's slimmed source
+ * does not re-parse as valid Svelte, force-bail every such component and re-run
+ * the WHOLE transform, up to {@link MAX_REVERT_ITERATIONS} times.
+ *
+ * Reverting only the offending child (the old behavior) is unsound: its parent's
+ * call-site edits were already made against the now-discarded folded child, so the
+ * child would render its default with no attribute left to restore it.  Bailing
+ * the child and re-running recomputes those parent edits against a child that
+ * drops nothing, keeping the pair consistent.  Should a transform never converge,
+ * we fall back to the untouched originals for every file — a whole-program no-op,
+ * which is always sound.  The engine aims to only ever emit valid source, so this
+ * is a last line of defense, not a routine path.
+ *
+ * Exposed so the (rare) test that must drive a revert can inject a transform.
+ */
+export function shakeWithRevertCascade(
+  models: Map<ComponentId, FileModel>,
+  plans: Map<ComponentId, ComponentPlan>,
+  runTransform: (plans: Map<ComponentId, ComponentPlan>) => Record<ComponentId, string>,
+): Record<ComponentId, string> {
+  let out = runTransform(plans);
+  for (let i = 0; i < MAX_REVERT_ITERATIONS; i++) {
+    const failed = unparseableIds(models, out);
+    if (failed.size === 0) return out;
+    plans = forceBail(plans, failed);
+    out = runTransform(plans);
+  }
+  if (unparseableIds(models, out).size === 0) return out;
+  // Still broken after the cap: revert every file to its original (no-op shake).
+  const original: Record<ComponentId, string> = {};
+  for (const model of models.values()) original[model.id] = model.code;
+  return original;
 }
 
 /** The full output of a shake including L2 specialization. */
@@ -145,18 +208,24 @@ export async function svelteShakerWithMono(
   parse?: Parse,
 ): Promise<ShakeResult> {
   const { models, plans } = await analyzeWith(entries, resolve, readFile, parse);
-  // Thread the shake entries through so the net-win gate can compute module
-  // reachability from them (docs §3 L2, §13.2).
-  const result = monomorphize(models, plans, mono, entries);
-  // With no bindings the wired pass and the base pass are identical, so reuse
-  // the plain transform to keep the default path byte-for-byte unchanged.
-  const files =
-    result.bindings.length === 0
-      ? transformAll(models, plans)
+  // The cascade may re-run the transform with force-bailed plans, so recompute L2
+  // inside it: a bailed component must not be specialized either.  `lastResult`
+  // captures the mono result of the final (converged or no-op) pass.  On the no-op
+  // fallback the emitted owner files are the untouched originals — they import no
+  // variant — so any variants `lastResult` still lists are simply never requested.
+  let lastResult!: MonomorphizeResult;
+  const files = shakeWithRevertCascade(models, plans, (p) => {
+    // Thread the shake entries through so the net-win gate can compute module
+    // reachability from them (docs §3 L2, §13.2).
+    lastResult = monomorphize(models, p, mono, entries);
+    // With no bindings the wired pass and the base pass are identical, so reuse
+    // the plain transform to keep the default path byte-for-byte unchanged.
+    return lastResult.bindings.length === 0
+      ? transformAll(models, p)
       : transformAllWithMono(
           models,
-          plans,
-          result.bindings.map((b) => ({
+          p,
+          lastResult.bindings.map((b) => ({
             owner: b.owner,
             node: b.node,
             variantId: b.variantId,
@@ -164,5 +233,6 @@ export async function svelteShakerWithMono(
           })),
           variantSpecifier,
         );
-  return { files: revertUnparseable(models, files), mono: result };
+  });
+  return { files, mono: lastResult };
 }
