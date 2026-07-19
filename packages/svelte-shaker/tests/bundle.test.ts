@@ -14,7 +14,7 @@ import { shaker } from '../src/vite';
 // builds the SAME app three ways and sizes each bundle:
 //
 //   control    : [svelte()]                                          — no shaking
-//   L1.5       : [shaker({ include:['.'], level:1 }), svelte()]       — L2 turned off
+//   L1.5       : [shaker({ include:['.'], monomorphize:false }), svelte()] — mono off
 //   L2         : [shaker({ include:['.'] }), svelte()]               — default (L2 ON)
 //
 // total emitted bytes = Σ every output chunk's `code.length`
@@ -70,7 +70,7 @@ async function buildBytes(root: string, pre: unknown[]): Promise<number> {
 /** Build the same app three ways (control / L1.5 / L2) and size each. */
 async function benchAll(root: string): Promise<Sizes> {
   const control = await buildBytes(root, []);
-  const l15 = await buildBytes(root, [shaker({ include: ['.'], level: 1 })]);
+  const l15 = await buildBytes(root, [shaker({ include: ['.'], monomorphize: false })]);
   const l2 = await buildBytes(root, [shaker({ include: ['.'] })]);
   return { control, l15, l2 };
 }
@@ -176,7 +176,7 @@ describe('vite-plugin-svelte-shaker / L2 BYTE BENCH (the ground truth)', () => {
 
     // The marker is the visible proof Heavy is in/out of the bundle.  L1.5 keeps
     // it (cannot kill the correlated `{#if}`); L2 drops it (orphaned module).
-    const code15 = await buildCode(APP_A, [shaker({ include: ['.'], level: 1 })]);
+    const code15 = await buildCode(APP_A, [shaker({ include: ['.'], monomorphize: false })]);
     const code2 = await buildCode(APP_A, [shaker({ include: ['.'] })]);
     expect(code15).toContain(HEAVY_MARK);
     expect(code2).not.toContain(HEAVY_MARK);

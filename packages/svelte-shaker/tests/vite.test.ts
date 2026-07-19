@@ -62,8 +62,8 @@ describe('vite-plugin-svelte-shaker (end-to-end build)', () => {
   });
 
   it('engine: the native Rust engine shakes identically to the JS engine', async () => {
-    const js = await bundle([shaker({ include: ['.'], level: 1, engine: 'js' })]);
-    const rust = await bundle([shaker({ include: ['.'], level: 1, engine: 'rust' })]);
+    const js = await bundle([shaker({ include: ['.'], monomorphize: false, engine: 'js' })]);
+    const rust = await bundle([shaker({ include: ['.'], monomorphize: false, engine: 'rust' })]);
     // The Rust engine removed the dead branch just like the JS engine …
     expect(rust).not.toMatch(IF_MACHINERY);
     expect(rust).toContain('This is Sub Component');
@@ -84,9 +84,10 @@ describe('vite-plugin-svelte-shaker (end-to-end build)', () => {
     expect(warnings).not.toContain('SOURCEMAP_BROKEN');
   });
 
-  it('engine: "rust" shakes with L2 on by default (native L2)', async () => {
-    // The Rust engine implements L2 too, so engine: "rust" with the default level
-    // shakes the dead branch (and would specialize where it wins) rather than throw.
+  it('engine: "rust" shakes with monomorphization on by default (native)', async () => {
+    // The Rust engine implements monomorphization too, so engine: "rust" with the
+    // default options shakes the dead branch (and would specialize where it wins)
+    // rather than throw.
     const code = await bundle([shaker({ include: ['.'], engine: 'rust' })]);
     expect(code).not.toMatch(IF_MACHINERY);
     expect(code).toContain('This is Sub Component');

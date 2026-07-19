@@ -402,35 +402,35 @@ describe('vite-plugin-svelte-shaker / L2 (end-to-end build)', () => {
     expect(code).toContain(HEAVY_MARK);
   });
 
-  it('level 1: L2 is OFF, the conditional and Heavy both survive', async () => {
-    const code = await bundle([shaker({ include: ['.'], level: 1 })]);
+  it('monomorphize false: it is OFF, the conditional and Heavy both survive', async () => {
+    const code = await bundle([shaker({ include: ['.'], monomorphize: false })]);
     expect(code).toMatch(IF_MACHINERY);
     expect(code).toContain(HEAVY_MARK);
   });
 
-  it('default (no level): L2 is ON -> correlated `{#if}` gone AND Heavy dropped', async () => {
+  it('default: monomorphization is ON -> correlated `{#if}` gone AND Heavy dropped', async () => {
     const code = await bundle([shaker({ include: ['.'] })]);
-    // L2 is on by default now: the correlated branch folds false in every variant
-    // -> no conditional, and `<Heavy/>` is orphaned and dropped from the bundle.
+    // Monomorphization is on by default now: the correlated branch folds false in
+    // every variant -> no conditional, and `<Heavy/>` is orphaned and dropped.
     expect(code).not.toMatch(IF_MACHINERY);
     expect(code).not.toContain(HEAVY_MARK);
     expect(code).toContain('base');
   });
 
-  it('level 2 (explicit): correlated sites specialized -> `{#if}` gone AND Heavy dropped', async () => {
-    const code = await bundle([shaker({ include: ['.'], level: 2, monomorphize: true })]);
+  it('monomorphize true (explicit): correlated sites specialized -> `{#if}` gone AND Heavy dropped', async () => {
+    const code = await bundle([shaker({ include: ['.'], monomorphize: true })]);
     // The correlated branch folded false in every variant -> no conditional.
     expect(code).not.toMatch(IF_MACHINERY);
     // ... and `<Heavy/>` is gone from every variant -> Heavy is unreferenced ->
-    // the bundler drops it entirely.  THAT is the L2 win.
+    // the bundler drops it entirely.  THAT is the monomorphization win.
     expect(code).not.toContain(HEAVY_MARK);
     // The base content still renders.
     expect(code).toContain('base');
   });
 
-  it('level 2 bundle is <= the level-1 (L1.5) bundle in bytes (never bloat)', async () => {
-    const l1 = await bundle([shaker({ include: ['.'], level: 1 })]);
-    const l2 = await bundle([shaker({ include: ['.'], level: 2, monomorphize: true })]);
-    expect(l2.length).toBeLessThanOrEqual(l1.length);
+  it('monomorphized bundle is <= the value-set-narrowing bundle in bytes (never bloat)', async () => {
+    const narrowed = await bundle([shaker({ include: ['.'], monomorphize: false })]);
+    const mono = await bundle([shaker({ include: ['.'], monomorphize: true })]);
+    expect(mono.length).toBeLessThanOrEqual(narrowed.length);
   });
 });
