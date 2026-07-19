@@ -156,11 +156,33 @@ pub(crate) fn compute_reachable_inputs(ast: &Value, props_info: &Option<PropsInf
         return ReachableInputs::Names(HashSet::new()); // no `$props()` -> reads nothing
     }
     match props_info {
-        Some(pi) if calls == 1 && !pi.has_rest => {
+        // Any property whose external name we could not statically capture (a
+        // string-literal key `{ 'aria-label': label }` or a computed key `{ [k]: v }`)
+        // is a prop the child DOES read but that is absent from `props`, so its
+        // call-site attribute would be wrongly droppable -> fall back to ALL.
+        Some(pi) if calls == 1 && !pi.has_rest && !has_unrepresentable_key(&pi.pattern) => {
             ReachableInputs::Names(pi.props.iter().map(|p| p.name.clone()).collect())
         }
         _ => ReachableInputs::All,
     }
+}
+
+/// True when a `$props()` ObjectPattern binds a prop whose external name is not a
+/// plain identifier (a string-literal or computed key), so {@link declared_props_full}
+/// did not capture it.
+fn has_unrepresentable_key(pattern: &Value) -> bool {
+    for p in arr(pattern, "properties") {
+        match type_of(p) {
+            Some("RestElement") => continue, // handled via has_rest
+            Some("Property") => {
+                if bool_field(p, "computed") || type_of(get(p, "key")) != Some("Identifier") {
+                    return true;
+                }
+            }
+            _ => return true, // unexpected shape -> conservative ALL
+        }
+    }
+    false
 }
 
 fn count_props_calls(instance: &Value) -> usize {

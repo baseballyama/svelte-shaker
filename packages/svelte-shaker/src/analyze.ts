@@ -837,7 +837,7 @@ function buildModelFromInput(
     }
   }
 
-  const reachableInputs = computeReachableInputs(instance, props, hasRestProp);
+  const reachableInputs = computeReachableInputs(instance, props, hasRestProp, propsPattern);
   const childCalls = collectChildCalls(ast, imports);
   const { shadowedNames, debugNames, writtenNames } = collectTemplateBindings(
     ast,
@@ -1825,6 +1825,7 @@ function computeReachableInputs(
   instance: AnyNode | null | undefined,
   props: PropDecl[] | null,
   hasRestProp: boolean,
+  propsPattern: AnyNode | undefined,
 ): ReachableInputs {
   // No instance script -> no `$props()` -> the component reads no input at all.
   if (!instance) return { kind: 'names', names: new Set() };
@@ -1835,7 +1836,24 @@ function computeReachableInputs(
   // KEY names are what a call site passes, so those are the reachable inputs.
   // Everything else (rest, >1 call, non-ObjectPattern / nested binding) is ALL.
   if (propsCalls !== 1 || hasRestProp || props === null) return { kind: 'all' };
+  // Any property whose external name we could NOT statically capture (a
+  // string-literal key `{ 'aria-label': label }`, or a computed key `{ [k]: v }`)
+  // is a prop the child DOES read but that is absent from `props`, so its call-site
+  // attribute would be wrongly droppable.  Fall back to ALL when one is present.
+  if (hasUnrepresentableKey(propsPattern)) return { kind: 'all' };
   return { kind: 'names', names: new Set(props.map((p) => p.name)) };
+}
+
+/** True when a `$props()` ObjectPattern binds a prop whose external name is not a
+ * plain identifier (a string-literal or computed key), so {@link declared_props}
+ * did not capture it. */
+function hasUnrepresentableKey(pattern: AnyNode | undefined): boolean {
+  for (const p of pattern?.properties ?? []) {
+    if (p.type === 'RestElement') continue; // handled via hasRestProp
+    if (p.type !== 'Property') return true; // unexpected shape -> conservative ALL
+    if (p.computed === true || p.key?.type !== 'Identifier' || !p.key.name) return true;
+  }
+  return false;
 }
 
 /** Count `$props()` calls (callee is the bare `$props` identifier) in the
