@@ -108,7 +108,7 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
   - 軽量な依存追跡レイヤ + 長命エンジン状態。`configureServer` + `handleHotUpdate` の dev plugin。
   - **HMR module widening**: `changed` の各 id → `server.moduleGraph.getModulesByFile(id)`
     （main + `?svelte&type=style/script` サブリソース）を `invalidateModule` し、`handleHotUpdate` から
-    widen した ModuleNode 配列を返す。L2 variant 仮想モジュールは `getModuleById` で無効化。
+    widen した ModuleNode 配列を返す。monomorphization variant 仮想モジュールは `getModuleById` で無効化。
   - add/remove/import 編集は watcher + Extract 再実行で `file_set()`/edges を**同期更新してから**エンジンへ。
   - **dev 差分オラクル**: 各編集後に「インクリメンタル == フルバッチ再解析」を byte 一致でアサート +
     既存差分 SSR オラクル（`tests/diff.ts`）を dev-served 出力にも適用。
@@ -181,7 +181,7 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
   supersede）でサージカル削除/上書き。`decide_chain` を解析と共有（fold が食い違わない）。`shake_program(input with
   ASTs + code) → {id: slimmedSrc}` = 解析 + 変換のフルエンジン。**全 9 フィクスチャ + non-ASCII で Rust 出力 ==
   TS `svelteShaker` 出力（byte 一致）+ compile 可**（`tests/wasm-shake.test.ts`）。
-  → **エンジン全体（解析+変換+emit+CSS）の Rust/WASM 移植は完了**。L0/L1/L1.5 のみ（L2/sourcemap は後続）。
+  → **エンジン全体（解析+変換+emit+CSS）の Rust/WASM 移植は完了**。unused-prop fold / constant fold / value-set narrowing のみ（monomorphization/sourcemap は後続）。
 
 - **M6 dev インクリメンタルを Rust エンジンで検証 — 完了**。content-keyed parse キャッシュ（変更ファイルのみ
   再パース）+ `shake_program`(Rust/WASM) で編集列（callsite 編集 / add / remove / leaf 編集）を駆動し、各ステップで
@@ -203,7 +203,7 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
 | M5 | 変換+emit+CSS を Rust→WASM（`MagicEdit` UTF-16） | 全フィクスチャ + non-ASCII で出力 == TS |
 | M6 | dev インクリメンタルを Rust エンジンで | 編集列で出力 == TS |
 
-**エンジン全体（解析+変換+emit+CSS, L0/L1/L1.5）が Rust/WASM で TS と byte 一致**。`engine-rs/`（自己完結・
+**エンジン全体（解析+変換+emit+CSS, unused-prop fold / constant fold / value-set narrowing）が Rust/WASM で TS と byte 一致**。`engine-rs/`（自己完結・
 rsvelte_core 非依存・serde_json + wasm-bindgen）、`@rsvelte/compiler`(WASM) は差分オラクルの parse 比較用 devDep。
 
 ### プロダクション化の follow-up（本移行のスコープ外・要メンテナ判断）
@@ -225,7 +225,7 @@ rsvelte_core 非依存・serde_json + wasm-bindgen）、`@rsvelte/compiler`(WASM
    - **既定 flip は別判断**: 既定 'rsvelte' は未導入環境への silent fallback が必須＝再現性が崩れる + 出力が変わるので opt-in 据え置き。
    - **envelope（さらに上積み）は [#908](https://github.com/baseballyama/rsvelte/issues/908) 解決待ち**。
    - **WASM（0.61x）/ loc 込み native（0.72x）は不採用**。Rust/WASM エンジン化も速度目的では非推奨（上記 1）。
-3. **L2 モノモーフィズの Rust 化**、**sourcemap**（`TransformResult.map`）、**CI に `cargo test`+`build:wasm`
+3. **monomorphization の Rust 化**、**sourcemap**（`TransformResult.map`）、**CI に `cargo test`+`build:wasm`
    （pinned toolchain）ジョブ追加**。
 4. **`<svelte:options>` accessors/customElement bail の発火**（M4 で記録した既存ギャップ）。
 
@@ -246,10 +246,10 @@ dev で素通しの安全性を捨てる代償への防御:
 - **逆依存の取りこぼし = 無音破壊**（最重要）: `importers_of` は派生クエリ厳守、fixpoint は `file_set()` 全件読み。
 - **vite-plugin-svelte との dev 順序**: 両者が `handleHotUpdate` でモジュール配列を返す競合。`shaken` 更新を
   vps の transform 再実行より前に。plugin 順序の統合テストで担保。
-- **サブリソース（`?svelte&type=style`）**: 無効化時に CSS サブリソースも含めて無効化（L1.5 CSS 除去は
+- **サブリソース（`?svelte&type=style`）**: 無効化時に CSS サブリソースも含めて無効化（value-set narrowing の CSS 除去は
   `type=style` 側）。build の skip ガードと対称に。
-- **L2 の dev は当面しない**: 仮想モジュール + 純減ゲート（ホールプログラム測定）をインクリメンタルに保つのは
-  高コスト。dev は L0/L1/L1.5 のみと文書化。
+- **monomorphization の dev は当面しない**: 仮想モジュール + 純減ゲート（ホールプログラム測定）をインクリメンタルに保つのは
+  高コスト。dev は unused-prop fold / constant fold / value-set narrowing のみと文書化。
 - **sourcemap**: M5 まで dev のマップは近似。`TransformResult.map` 実体化で解消。
 - **未ロードモジュールの ModuleNode 不在**: `shaken` 更新は ModuleNode の有無と独立に常に行う。
 

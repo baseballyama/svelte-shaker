@@ -7,31 +7,34 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { shaker } from '../src/vite';
 
 // ----------------------------------------------------------------------
-// REAL Vite build BYTE BENCH — the GROUND TRUTH for L2 (docs §3 "L2", §13.2).
+// REAL Vite build BYTE BENCH — the GROUND TRUTH for monomorphization (docs §3
+// "monomorphization", §13.2).
 //
-// Every other L2 test proves PRESENCE/ABSENCE of a marker or the engine's
-// gate decision in isolation; this suite measures what actually ships.  It
-// builds the SAME app three ways and sizes each bundle:
+// Every other monomorphization test proves PRESENCE/ABSENCE of a marker or the
+// engine's gate decision in isolation; this suite measures what actually ships.
+// It builds the SAME app three ways and sizes each bundle:
 //
 //   control    : [svelte()]                                          — no shaking
-//   L1.5       : [shaker({ include:['.'], level:1 }), svelte()]       — L2 turned off
-//   L2         : [shaker({ include:['.'] }), svelte()]               — default (L2 ON)
+//   narrowed   : [shaker({ include:['.'], monomorphize:false }), svelte()] — mono off
+//   mono       : [shaker({ include:['.'] }), svelte()]               — default (mono ON)
 //
 // total emitted bytes = Σ every output chunk's `code.length`
 //                     + Σ every emitted `.css` asset's `source.length`.
 //
 // THE TWO ABSOLUTE PROPERTIES under test (docs ABSOLUTE RULES #1):
-//   * L2 must GENUINELY WIN when specialization orphans a heavy module behind a
-//     CORRELATED condition L1.5 cannot kill (CASE A): bytes(L2) < bytes(L1.5).
-//   * L2 must NEVER BLOAT: for a plain inline `variant` where no module is
-//     eliminated (CASE B) the net-win gate DECLINES, so bytes(L2) == bytes(L1.5).
-//   * And shaking never loses to the toolchain: bytes(L1.5) <= bytes(control).
+//   * monomorphization must GENUINELY WIN when specialization orphans a heavy
+//     module behind a CORRELATED condition value-set narrowing cannot kill
+//     (CASE A): bytes(mono) < bytes(narrowed).
+//   * monomorphization must NEVER BLOAT: for a plain inline `variant` where no
+//     module is eliminated (CASE B) the net-win gate DECLINES, so
+//     bytes(mono) == bytes(narrowed).
+//   * And shaking never loses to the toolchain: bytes(narrowed) <= bytes(control).
 // ----------------------------------------------------------------------
 
 interface Sizes {
   control: number;
-  l15: number;
-  l2: number;
+  narrowed: number;
+  mono: number;
 }
 
 /**
@@ -67,12 +70,12 @@ async function buildBytes(root: string, pre: unknown[]): Promise<number> {
   return totalBytes(out);
 }
 
-/** Build the same app three ways (control / L1.5 / L2) and size each. */
+/** Build the same app three ways (control / narrowed / mono) and size each. */
 async function benchAll(root: string): Promise<Sizes> {
   const control = await buildBytes(root, []);
-  const l15 = await buildBytes(root, [shaker({ include: ['.'], level: 1 })]);
-  const l2 = await buildBytes(root, [shaker({ include: ['.'] })]);
-  return { control, l15, l2 };
+  const narrowed = await buildBytes(root, [shaker({ include: ['.'], monomorphize: false })]);
+  const mono = await buildBytes(root, [shaker({ include: ['.'] })]);
+  return { control, narrowed, mono };
 }
 
 function writeApp(root: string, files: Record<string, string>): void {
@@ -88,15 +91,16 @@ const MAIN =
   `mount(App, { target: document.body });\n`;
 
 // ----------------------------------------------------------------------
-// CASE A — L2 GENUINELY WINS.
+// CASE A — monomorphization GENUINELY WINS.
 //
 // `Child` gates a HEAVY child component behind a CORRELATED multi-prop condition
 // `{#if a === 1 && b === 1}<Heavy .../>{/if}`.  App-wide a,b each ∈ {0,1} via the
-// only sites (a=0,b=1) and (a=1,b=0) — (1,1) NEVER occurs.  L1.5 narrows a and b
-// INDEPENDENTLY and cannot prove `a && b` is never both 1, so it keeps `<Heavy/>`
-// and Heavy stays in the bundle.  L2 freezes a (or b) per site -> the correlated
-// `{#if}` folds false in BOTH variants -> `<Heavy/>` is gone from every variant
-// -> Heavy is globally unreferenced -> the bundler drops it.  THAT is the win.
+// only sites (a=0,b=1) and (a=1,b=0) — (1,1) NEVER occurs.  value-set narrowing
+// narrows a and b INDEPENDENTLY and cannot prove `a && b` is never both 1, so it
+// keeps `<Heavy/>` and Heavy stays in the bundle.  monomorphization freezes a
+// (or b) per site -> the correlated `{#if}` folds false in BOTH variants ->
+// `<Heavy/>` is gone from every variant -> Heavy is globally unreferenced ->
+// the bundler drops it.  THAT is the win.
 //
 // Heavy is large and distinctive (a big unique string marker) so its removal is
 // both measurable in bytes and detectable by marker presence.
@@ -126,13 +130,13 @@ const CASE_A: Record<string, string> = {
 };
 
 // ----------------------------------------------------------------------
-// CASE B — L2 must NOT BLOAT.
+// CASE B — monomorphization must NOT BLOAT.
 //
 // A plain `variant ∈ {primary, secondary}` with INLINE arms only — no child
 // module is eliminated by specializing.  Splitting `Btn` into per-shape modules
 // would just duplicate the shared scaffolding and GROW the bundle, so the
-// measured net-win gate must DECLINE and the L2 output must equal the L1.5
-// output byte-for-byte.
+// measured net-win gate must DECLINE and the monomorphization output must equal
+// the value-set-narrowing output byte-for-byte.
 // ----------------------------------------------------------------------
 
 const SHARED = `<section>${Array.from(
@@ -152,7 +156,7 @@ const CASE_B: Record<string, string> = {
     `{#if variant === 'primary'}<b>P</b>{:else}<i>S</i>{/if}\n`,
 };
 
-describe('vite-plugin-svelte-shaker / L2 BYTE BENCH (the ground truth)', () => {
+describe('vite-plugin-svelte-shaker / monomorphization BYTE BENCH (the ground truth)', () => {
   const APP_A = join(HERE, '.shaker-tmp-bundle-a');
   const APP_B = join(HERE, '.shaker-tmp-bundle-b');
 
@@ -166,44 +170,50 @@ describe('vite-plugin-svelte-shaker / L2 BYTE BENCH (the ground truth)', () => {
     rmSync(APP_B, { recursive: true, force: true });
   });
 
-  it('CASE A: L2 wins — correlated condition orphans Heavy, bytes(L2) < bytes(L1.5)', async () => {
-    const { control, l15, l2 } = await benchAll(APP_A);
+  it('CASE A: mono wins — correlated condition orphans Heavy, bytes(mono) < bytes(narrowed)', async () => {
+    const { control, narrowed, mono } = await benchAll(APP_A);
 
-    console.log(`[BUNDLE BENCH / CASE A] control=${control}B  L1.5=${l15}B  L2=${l2}B`);
+    console.log(
+      `[BUNDLE BENCH / CASE A] control=${control}B  narrowed=${narrowed}B  mono=${mono}B`,
+    );
 
     // Shaking never loses to the toolchain.
-    expect(l15).toBeLessThanOrEqual(control);
+    expect(narrowed).toBeLessThanOrEqual(control);
 
-    // The marker is the visible proof Heavy is in/out of the bundle.  L1.5 keeps
-    // it (cannot kill the correlated `{#if}`); L2 drops it (orphaned module).
-    const code15 = await buildCode(APP_A, [shaker({ include: ['.'], level: 1 })]);
-    const code2 = await buildCode(APP_A, [shaker({ include: ['.'] })]);
-    expect(code15).toContain(HEAVY_MARK);
-    expect(code2).not.toContain(HEAVY_MARK);
+    // The marker is the visible proof Heavy is in/out of the bundle.  value-set
+    // narrowing keeps it (cannot kill the correlated `{#if}`); monomorphization
+    // drops it (orphaned module).
+    const codeNarrowed = await buildCode(APP_A, [shaker({ include: ['.'], monomorphize: false })]);
+    const codeMono = await buildCode(APP_A, [shaker({ include: ['.'] })]);
+    expect(codeNarrowed).toContain(HEAVY_MARK);
+    expect(codeMono).not.toContain(HEAVY_MARK);
 
     // The headline assertion: specialization shrinks the real bundle.
-    expect(l2).toBeLessThan(l15);
+    expect(mono).toBeLessThan(narrowed);
 
     // Soundness: the app never rendered Heavy anyway (its values never hit the
     // correlated branch), so the visible markup is unchanged — the base text
     // survives both builds and Heavy's markup is in neither.
-    expect(code15).toContain('base');
-    expect(code2).toContain('base');
+    expect(codeNarrowed).toContain('base');
+    expect(codeMono).toContain('base');
   });
 
-  it('CASE B: L2 must not bloat — plain inline variant declines, bytes(L2) == bytes(L1.5)', async () => {
-    const { control, l15, l2 } = await benchAll(APP_B);
+  it('CASE B: mono must not bloat — plain inline variant declines, bytes(mono) == bytes(narrowed)', async () => {
+    const { control, narrowed, mono } = await benchAll(APP_B);
 
-    console.log(`[BUNDLE BENCH / CASE B] control=${control}B  L1.5=${l15}B  L2=${l2}B`);
+    console.log(
+      `[BUNDLE BENCH / CASE B] control=${control}B  narrowed=${narrowed}B  mono=${mono}B`,
+    );
 
     // Shaking never loses to the toolchain.
-    expect(l15).toBeLessThanOrEqual(control);
+    expect(narrowed).toBeLessThanOrEqual(control);
 
     // No module is eliminated, so the net-win gate DECLINES to specialize and the
-    // L2 bundle is byte-identical to the L1.5 bundle — the never-bloat guarantee.
-    expect(l2).toBe(l15);
-    // And, absolutely, L2 never exceeds L1.5.
-    expect(l2).toBeLessThanOrEqual(l15);
+    // monomorphization bundle is byte-identical to the value-set-narrowing bundle
+    // — the never-bloat guarantee.
+    expect(mono).toBe(narrowed);
+    // And, absolutely, monomorphization never exceeds value-set narrowing.
+    expect(mono).toBeLessThanOrEqual(narrowed);
   });
 });
 

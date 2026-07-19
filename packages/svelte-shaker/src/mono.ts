@@ -1,25 +1,25 @@
 // ----------------------------------------------------------------------
-// L2 per-call-site monomorphization (docs/ARCHITECTURE.md §3 "L2", §11, §13.2).
+// Per-call-site monomorphization (docs/ARCHITECTURE.md §3 "monomorphization", §11, §13.2).
 //
 // OPT-IN, BAIL-SAFE, and — the property this module guarantees — NEVER BLOATING.
-// Where L1 folds a prop only when it is the SAME constant across the whole app,
-// and L1.5 narrows a multi-valued prop without folding it, L2 specializes a call
+// Where constant fold folds a prop only when it is the SAME constant across the whole app,
+// and value-set narrowing narrows a multi-valued prop without folding it, monomorphization specializes a call
 // site: `<Btn variant="primary"/>` could get a private copy of `Btn` in which
 // `variant` is the constant `'primary'`, so every non-primary branch and CSS rule
 // folds away — even though `variant` is app-wide multi-valued and therefore NOT
-// foldable by L1/L1.5.
+// foldable by constant fold / value-set narrowing.
 //
-// THE KEY INSIGHT (docs §3 L2, §11) — why we do NOT specialize everything:
-//   L1.5 already removes every arm that is dead APP-WIDE.  So splitting a
+// THE KEY INSIGHT (docs §3 monomorphization, §11) — why we do NOT specialize everything:
+//   value-set narrowing already removes every arm that is dead APP-WIDE.  So splitting a
 //   component into per-shape copies only ever SHRINKS the bundle when the
 //   specialization makes a whole MODULE become globally unreferenced — which
-//   happens for CORRELATED multi-prop conditions that L1.5's independent
+//   happens for CORRELATED multi-prop conditions that value-set narrowing's independent
 //   per-prop narrowing cannot kill.  Canonical example:
 //     Child: {#if a === 1 && b === 1}<Heavy/>{/if}<p>base</p>
 //     app-wide a∈{0,1}, b∈{0,1}, sites are only <Child a={0} b={1}/> and
 //     <Child a={1} b={0}/> — never (1,1).
-//   L1.5 keeps <Heavy/> (it narrows a and b independently and cannot prove
-//   `a && b` is never both 1), so Heavy stays in the bundle.  L2 specializes each
+//   value-set narrowing keeps <Heavy/> (it narrows a and b independently and cannot prove
+//   `a && b` is never both 1), so Heavy stays in the bundle.  monomorphization specializes each
 //   site (a or b becomes a constant) -> in BOTH variants `{#if a===1&&b===1}`
 //   folds false -> <Heavy/> is gone from every variant -> Heavy is globally
 //   unreferenced -> the bundler drops Heavy entirely.  THAT is the win.
@@ -34,10 +34,11 @@
 //     override (`afterLastSpread && !dynamic`) — the partial-bail rule (docs §4.1).
 //   * We never specialize a BAILED component (escape / barrel / accessors), a
 //     prop shadowed by a binding, a `{@debug}` prop, or a prop already folded by
-//     L1.  The residual is produced by the SAME audited body pipeline as
-//     L0/L1/L1.5 ({@link shakeBody}); L2 only chooses a richer fold environment.
+//     constant fold.  The residual is produced by the SAME audited body pipeline as
+//     unused-prop fold / constant fold / value-set narrowing ({@link shakeBody});
+//     monomorphization only chooses a richer fold environment.
 //
-// NEVER-BLOAT, MEASURED NET-WIN GATE (docs §3 L2, §13.2 — replaces the old
+// NEVER-BLOAT, MEASURED NET-WIN GATE (docs §3 monomorphization, §13.2 — replaces the old
 // "specialize any folding site" behaviour):
 //   1. ALL-SITES-OR-NOTHING per child C: we only consider specializing C if
 //      EVERY live call site of C across the whole program maps to a NON-base
@@ -68,7 +69,7 @@ import {
 import { parseSvelte, walk, type AnyNode } from './parse.js';
 import type { ComponentId, ComponentPlan, Literal } from './ir.js';
 
-/** Tuning knobs for L2 (docs §8.1, §13.2).  All have sound defaults. */
+/** Tuning knobs for monomorphization (docs §8.1, §13.2).  All have sound defaults. */
 export interface MonomorphizeOptions {
   /** Master switch.  Default OFF — every existing behavior is unchanged. */
   enabled: boolean;
@@ -84,7 +85,7 @@ export interface MonomorphizeOptions {
    * save before we apply it (docs §13.2 "measured net-win").  `0` (default) means
    * specialize on ANY strict net reduction (`Sigma_spec < Sigma_base`); `0.15`
    * would require a >=15% reduction.  Higher is more conservative; it can never
-   * make L2 bloat, only decline more.
+   * make monomorphization bloat, only decline more.
    */
   minSavings: number;
 }
@@ -134,7 +135,7 @@ export interface CallSiteBinding {
   foldedProps: Map<string, Literal>;
 }
 
-/** The complete L2 result the Shell consumes. */
+/** The complete monomorphization result the Shell consumes. */
 export interface MonomorphizeResult {
   /** Every generated variant, keyed by its id. */
   variants: Map<string, Variant>;
@@ -153,7 +154,7 @@ interface Candidate {
 
 /**
  * Compute per-call-site specialized residuals and the dedup'd variant set under
- * a MEASURED, never-bloat net-win gate (docs §3 L2, §13.2).
+ * a MEASURED, never-bloat net-win gate (docs §3 monomorphization, §13.2).
  *
  * Pure over `models`/`plans`: it reads the already-computed plans, finds the
  * live call sites whose extra literal props fold, groups them per child, and —
@@ -161,7 +162,7 @@ interface Candidate {
  * a non-base residual (all-sites-or-nothing, so the base module becomes
  * unreferenced) and (b) replacing the child with its variants strictly shrinks
  * the whole-program module bytes reachable from `entries`.  It never mutates the
- * inputs and never touches the base transform, so with L2 off (or when no child
+ * inputs and never touches the base transform, so with monomorphization off (or when no child
  * passes the gate) the default whole-program output is byte-for-byte unchanged.
  */
 export function monomorphize(
@@ -227,7 +228,7 @@ export function monomorphize(
   for (const model of models.values())
     baseChildrenOf.set(model.id, liveChildIds(baseSource.get(model.id)!, model));
 
-  // Reachability roots = the shake entries (docs §3 L2, §13.2), narrowed to the
+  // Reachability roots = the shake entries (docs §3 monomorphization, §13.2), narrowed to the
   // TRUE import-graph roots.  The Shell seeds the crawl with EVERY `.svelte` file
   // (so it can attribute every call site), which would make every module its own
   // root and defeat reachability — so we drop any entry that is itself rendered
@@ -264,7 +265,7 @@ export function monomorphize(
   // child), so the base child stays referenced.  Specializing it anyway would
   // emit its variants AND keep its base = bloat.  Declining nested
   // specialization is the conservative, never-bloat choice (candidate
-  // interactions are a documented followup, docs §3 L2 / §13.2); the owner's own
+  // interactions are a documented followup, docs §3 monomorphization / §13.2); the owner's own
   // net-win already accounts for rendering the base child.
   const candidateChildren = new Set<ComponentId>();
   for (const childId of liveSitesByChild.keys())
@@ -337,7 +338,7 @@ export function monomorphize(
 }
 
 /**
- * The measured net-win gate (docs §3 L2, §13.2).  Returns true iff replacing the
+ * The measured net-win gate (docs §3 monomorphization, §13.2).  Returns true iff replacing the
  * base child `childId` with its `variantSources` strictly shrinks the total
  * module bytes reachable from `roots`:
  *
@@ -493,10 +494,10 @@ function liveChildIds(source: string, model: FileModel): ComponentId[] {
 /**
  * The set of EXTRA props this call site freezes to a literal — props that:
  *   - are declared by the child (`...rest` only holds undeclared props, so a
- *     declared prop is always safe to fold — same as L0/L1),
+ *     declared prop is always safe to fold — same as unused-prop fold / constant fold),
  *   - are passed a literal at this site that no spread can override
  *     (`afterLastSpread && !dynamic`) — the partial-bail rule (docs §4.1),
- *   - are NOT already folded by L1 (`constFold`) — those carry no extra info,
+ *   - are NOT already folded by constant fold (`constFold`) — those carry no extra info,
  *   - are NOT shadowed by a template/instance binding or used in `{@debug}` —
  *     the analysis already refuses to fold those, and so must we.
  *
@@ -516,9 +517,9 @@ function specializableShape(
   for (const [name, explicit] of site.explicit) {
     const decl = declared.get(name);
     if (!decl) continue; // undeclared -> flows to `...rest`, skip
-    if (plan.constFold.has(name)) continue; // already an app-wide L1 constant
+    if (plan.constFold.has(name)) continue; // already an app-wide constant-folded prop
     // A nested-pattern entry (`null` local) is unfoldable, and a prop whose LOCAL
-    // binding is shadowed / used in `{@debug}` must not fold — both exactly as L1.
+    // binding is shadowed / used in `{@debug}` must not fold — both exactly as constant fold.
     if (decl.local === null || isFoldBlockedName(child, decl.local)) continue;
     // The value must be a literal this site genuinely passes and no spread can
     // override — exactly the analysis's "safely explicit" condition.
@@ -530,8 +531,9 @@ function specializableShape(
 
 /**
  * Render a component's residual for an augmented fold environment.  Reuses the
- * exact L0/L1/L1.5 pipeline: `env` = the child's app-wide L1 constants PLUS this
- * site's extra literals; `setEnv` = the child's narrow sets MINUS any prop now
+ * exact unused-prop fold / constant fold / value-set narrowing pipeline: `env` =
+ * the child's app-wide constant-folded values PLUS this site's extra literals;
+ * `setEnv` = the child's narrow sets MINUS any prop now
  * frozen by `env` (a frozen prop is a constant, no longer a set).
  */
 function renderResidual(
@@ -551,7 +553,7 @@ function renderResidual(
 
 /**
  * The child's BASE residual (what the whole-program transform already emits for
- * it under L1/L1.5 alone).  Used to detect a no-op specialization: if the extra
+ * it under constant fold / value-set narrowing alone).  Used to detect a no-op specialization: if the extra
  * literals fold nothing the base did not, the residual equals this and the site
  * keeps the base component (no pointless variant).  Memoized per child.
  */

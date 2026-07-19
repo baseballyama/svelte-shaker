@@ -7,12 +7,12 @@ import { parseSvelte } from '../src/parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 
 // ----------------------------------------------------------------------
-// L2 in Rust (docs/RUST-MIGRATION.md): `shake_program_with_mono` is the Rust→WASM
+// monomorphization in Rust (docs/RUST-MIGRATION.md): `shake_program_with_mono` is the Rust→WASM
 // port of `svelteShakerWithMono` (mono.ts + the transform.ts call-site rewrite).
 // The only thing crossing back to JS is the `ownSize` size proxy (svelte compile),
 // so feeding BOTH engines the same compiler makes the result byte-identical. This
 // is the gate: for every fixture, Rust's `files` AND its variant set must match the
-// TS engine exactly — a byte match means the Rust L2 is sound (the TS output is the
+// TS engine exactly — a byte match means the Rust monomorphization is sound (the TS output is the
 // audited, differential-SSR-tested reference).
 // ----------------------------------------------------------------------
 
@@ -71,10 +71,10 @@ async function rustMono(entry: ComponentId): Promise<{
 
 const FIXTURES = resolvePath(__dirname, 'fixtures');
 
-describe('Rust (WASM) L2 monomorphization matches the TS engine', () => {
+describe('Rust (WASM) monomorphization matches the TS engine', () => {
   for (const name of [
-    'mono-correlated', // L2 genuinely fires: variants emitted, owner rewritten
-    'basic1', // no L2 candidate: variants empty, files == base shake
+    'mono-correlated', // monomorphization genuinely fires: variants emitted, owner rewritten
+    'basic1', // no monomorphization candidate: variants empty, files == base shake
     'cascade',
     'narrow-variant',
     'fold-ternary',

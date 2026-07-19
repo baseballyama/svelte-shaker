@@ -19,27 +19,23 @@ export interface ShakerOptions {
    */
   include?: string[];
   /**
-   * Optimization level (docs §3).  L0/L1/L1.5 are always on; `level: 2`
-   * additionally enables L2 per-call-site monomorphization.  **Default `2`** — L2
-   * is ON by default because it is bail-safe and never bloats (the measured
-   * net-win gate, docs §3 L2).  Set `level: 1` (or `0`) to turn L2 OFF, e.g. to
-   * trade a little compression for faster builds.
-   */
-  level?: 0 | 1 | 2;
-  /**
-   * L2 monomorphization tuning (docs §13.2).  Consulted whenever L2 is active
-   * (i.e. not turned off via `level: 1`/`0`).  `true`/omitted enables it with
-   * defaults; an object overrides `maxVariants` / `minSavings`; `false` turns L2
-   * OFF (same as `level: 1`).  Raising `maxVariants` lets children with more
-   * distinct call-site shapes be specialized — affordable now that the net-win
-   * gate only sizes the modules that actually differ (docs §13.2).
+   * Per-call-site monomorphization tuning (docs §13.2).  Monomorphization is ON
+   * by default because it is bail-safe and never bloats (the measured net-win
+   * gate, docs §3).  `true`/omitted enables it with defaults; an object overrides
+   * `maxVariants` / `minSavings`; `false` is the ONLY way to turn it OFF, e.g. to
+   * trade a little compression for faster builds.  Raising `maxVariants` lets
+   * children with more distinct call-site shapes be specialized — affordable now
+   * that the net-win gate only sizes the modules that actually differ (docs §13.2).
+   * The always-on passes (unused-prop fold / constant fold / value-set narrowing)
+   * have no switch: they are bail-safe and never grow the output.
    */
   monomorphize?: boolean | Partial<Omit<MonomorphizeOptions, 'enabled'>>;
   /**
-   * Which engine runs the whole shake (analysis + transform, INCLUDING L2).
-   * Default `'auto'`.  The native Rust (WASM) engine implements every level — for
-   * L2 it calls back into JS only for the per-module compiled-size proxy the
-   * net-win gate needs — so it is the default fast path:
+   * Which engine runs the whole shake (analysis + transform, including
+   * monomorphization).  Default `'auto'`.  The native Rust (WASM) engine
+   * implements every pass — for monomorphization it calls back into JS only for
+   * the per-module compiled-size proxy the net-win gate needs — so it is the
+   * default fast path:
    *  - `'auto'` — use the native Rust engine when it can be loaded; otherwise fall
    *    back to the JS engine.
    *  - `'rust'` — force the Rust engine; throws if the WASM module can't be loaded.
@@ -56,7 +52,8 @@ export interface ShakerOptions {
    *    fixpoint over a long-lived {@link DevShaker} (fast, the intended mode);
    *  - `'coarse'` — re-analyzes the whole program on every change (the slow but
    *    trivially-correct safety valve).
-   * L2 is NOT applied in dev (L0/L1/L1.5 only — docs §5 risks).
+   * Monomorphization is NOT applied in dev (unused-prop fold / constant fold /
+   * value-set narrowing only — docs §5 risks).
    */
   dev?: false | DevMode;
   /**
@@ -181,14 +178,13 @@ function reportSizes(
 const VARIANT_QUERY = 'shaker_variant';
 
 /**
- * Resolve the {@link MonomorphizeOptions} from the public option surface.  L2 is
- * ON by default (it is bail-safe and never bloats); it is disabled only by an
- * explicit opt-out — `level: 1`/`0` or `monomorphize: false`.  An object
- * `monomorphize` overrides the tuning knobs (`maxVariants` / `minSavings`).
+ * Resolve the {@link MonomorphizeOptions} from the public option surface.
+ * Monomorphization is ON by default (it is bail-safe and never bloats); it is
+ * disabled only by an explicit `monomorphize: false`.  An object `monomorphize`
+ * overrides the tuning knobs (`maxVariants` / `minSavings`).
  */
 function resolveMono(options: ShakerOptions): MonomorphizeOptions {
-  const optedOut = options.level === 0 || options.level === 1 || options.monomorphize === false;
-  if (optedOut) return DEFAULT_MONO_OPTIONS;
+  if (options.monomorphize === false) return DEFAULT_MONO_OPTIONS;
   const overrides = typeof options.monomorphize === 'object' ? options.monomorphize : {};
   return { ...DEFAULT_MONO_OPTIONS, enabled: true, ...overrides };
 }
@@ -204,7 +200,7 @@ function resolveMono(options: ShakerOptions): MonomorphizeOptions {
  * us before `@sveltejs/vite-plugin-svelte` in both modes, so we hand it
  * already-slimmed `.svelte` source and stay decoupled from Svelte's codegen.
  *
- * L2 wiring (opt-in, `level: 2`): a specialized variant is exposed as a request
+ * Monomorphization wiring: a specialized variant is exposed as a request
  * for the ORIGINAL child file with a `?shaker_variant=<id>` query.  Keeping the
  * real `.svelte` path means the variant's own relative imports (`./Icon.svelte`)
  * resolve exactly as they would in the unspecialized child, and vite-plugin-svelte
@@ -323,7 +319,8 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         for (const m of mods) {
           // Invalidate so vite-plugin-svelte re-runs our `transform` (now serving
           // the new `shaken[id]`) and recompiles — including the extracted CSS in
-          // the `?svelte&type=style` sub-resource (L1.5 rule removal lives there).
+          // the `?svelte&type=style` sub-resource (value-set narrowing's CSS rule
+          // removal lives there).
           ctx.server.moduleGraph.invalidateModule(m);
           widened.add(m);
         }
@@ -366,8 +363,9 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         return resolved.id.split('?')[0]!;
       };
 
-      // Decide the engine.  The native Rust engine now implements every level
-      // INCLUDING L2 (it calls back to JS only for the compiled-size proxy), so it
+      // Decide the engine.  The native Rust engine now implements every pass
+      // INCLUDING monomorphization (it calls back to JS only for the compiled-size
+      // proxy), so it
       // is the default: `'auto'` uses it whenever it can be loaded and falls back
       // to JS otherwise, `'rust'` forces it (throwing if it can't load), `'js'`
       // forces the JS engine.  Both engines produce byte-identical output.
@@ -385,7 +383,8 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       }
 
       if (wasm) {
-        // Native Rust engine — byte-identical to the JS engine, including L2.
+        // Native Rust engine — byte-identical to the JS engine, including
+        // monomorphization.
         if (mono.enabled) {
           const result = await svelteShakerWasmWithMono(
             wasm,
@@ -406,7 +405,8 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       }
 
       if (!mono.enabled) {
-        // JS engine, L2 off: byte-for-byte the L0/L1/L1.5 output.
+        // JS engine, monomorphization off: byte-for-byte the unused-prop fold /
+        // constant fold / value-set narrowing output.
         shaken = await svelteShaker(entries, resolve, read, getParse());
         variantSources = new Map();
         reportSizes(shaken, read, root, options.verbose === true, log);

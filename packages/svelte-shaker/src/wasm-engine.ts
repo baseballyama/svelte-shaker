@@ -14,10 +14,10 @@ const require = createRequire(import.meta.url);
 
 /** The subset of the WASM exports the plugin uses (docs/RUST-MIGRATION.md M5+). */
 interface WasmEngine {
-  /** Whole-program L0/L1/L1.5 shake: input JSON in, `{id: shakenCode}` JSON out. */
+  /** Whole-program unused-prop fold / constant fold / value-set narrowing shake: input JSON in, `{id: shakenCode}` JSON out. */
   shake_program: (inputJson: string) => string;
   /**
-   * Whole-program shake WITH L2 monomorphization.  `ownSize(id, source)` is the
+   * Whole-program shake WITH monomorphization.  `ownSize(id, source)` is the
    * per-module compiled-byte proxy the net-win gate calls back into JS for (the
    * Svelte compiler has no in-WASM equivalent); returns
    * `{ files: {id: code}, variants: {specifier: code} }` JSON.
@@ -58,7 +58,7 @@ export function tryLoadWasmEngine(): WasmEngine | null {
   return null;
 }
 
-/** The compiled-byte size proxy the L2 net-win gate uses — the same call
+/** The compiled-byte size proxy the monomorphization net-win gate uses — the same call
  * `mono.ts` makes, so the Rust gate decides byte-for-byte like the JS engine. */
 function ownSize(id: ComponentId, source: string): number | null {
   try {
@@ -69,8 +69,8 @@ function ownSize(id: ComponentId, source: string): number | null {
 }
 
 /**
- * Whole-program shake via the native Rust engine — the L0/L1/L1.5 counterpart of
- * {@link svelteShaker} (L2 lives only in the JS engine).  The crawl/resolution
+ * Whole-program shake via the native Rust engine — the unused-prop fold / constant fold / value-set narrowing counterpart of
+ * {@link svelteShaker} (monomorphization lives only in the JS engine).  The crawl/resolution
  * stays in JS ({@link buildAnalyzeInput}); we hand the Rust engine the resolved
  * graph plus each file's AST and source as JSON, exactly as the differential
  * `wasm-shake` test does — so the output is byte-identical to the JS engine.
@@ -108,7 +108,7 @@ export async function svelteShakerWasm(
   );
 }
 
-/** The output of a Rust L2 shake: the wired owner files + the variant residuals
+/** The output of a Rust monomorphization shake: the wired owner files + the variant residuals
  * keyed by their request specifier (what the Shell's `load` hook serves). */
 export interface WasmMonoResult {
   files: Record<ComponentId, string>;
@@ -116,9 +116,9 @@ export interface WasmMonoResult {
 }
 
 /**
- * Whole-program shake WITH L2 monomorphization, run entirely in the native Rust
+ * Whole-program shake WITH monomorphization, run entirely in the native Rust
  * engine — the counterpart of {@link svelteShakerWithMono}.  The crawl/resolution
- * stays in JS; the Rust engine does the analysis, the L2 graph/gate, and the
+ * stays in JS; the Rust engine does the analysis, the monomorphization graph/gate, and the
  * call-site rewrite, calling back into JS only for {@link ownSize} (the Svelte
  * compiler).  Feeding it the same compiler the JS engine uses makes the result
  * byte-identical (pinned by the differential `wasm-mono` test).

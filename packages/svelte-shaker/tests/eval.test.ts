@@ -15,11 +15,11 @@ const consts = (o: Record<string, Literal>) => new Map(Object.entries(o));
 const sets = (o: Record<string, Literal[]>) => new Map(Object.entries(o));
 
 /**
- * The L1.5 set-aware predicate must be SOUND: it may only return a known boolean
+ * The value-set narrowing set-aware predicate must be SOUND: it may only return a known boolean
  * when that boolean holds for EVERY value in every prop's reachable set. A value
  * reachable through the set must leave the branch live (`{ known:false }`).
  */
-describe('evaluateWithSets (L1.5 set-aware predicate)', () => {
+describe('evaluateWithSets (value-set narrowing set-aware predicate)', () => {
   const variant = sets({ variant: ['primary', 'secondary'] });
   const empty = consts({});
 

@@ -35,9 +35,9 @@ export interface DevShakerChange {
  * change.  `update` returns the components whose SLIMMED OUTPUT changed, which the
  * Shell turns into the widened HMR boundary.
  *
- * L2 monomorphization is intentionally NOT applied in dev (its net-win gate is a
+ * monomorphization is intentionally NOT applied in dev (its net-win gate is a
  * whole-program measurement that is expensive to keep incrementally correct); dev
- * covers L0/L1/L1.5 only (docs §5 risks).
+ * covers unused-prop fold / constant fold / value-set narrowing only (docs §5 risks).
  */
 export class DevShaker {
   private readonly entries = new Set<ComponentId>();

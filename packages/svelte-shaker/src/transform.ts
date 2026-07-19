@@ -29,7 +29,7 @@ const EMPTY_LOCAL_ENV: ReadonlyMap<string, Literal> = new Map();
  * Phases 1–2, shared by {@link transformAll} and {@link transformAllWithMono}:
  * fold each component body and drop its folded props (phase 1), then strip the
  * now-pointless attribute at every call site of a dropped prop (phase 2).
- * Returns the per-file MagicStrings, ready for the optional L2 phase 3.
+ * Returns the per-file MagicStrings, ready for the optional monomorphization phase 3.
  */
 function runBasePhases(
   models: Map<ComponentId, FileModel>,
@@ -109,7 +109,7 @@ function emit(
 }
 
 /**
- * Like {@link transformAll}, but additionally rewrites the L2-bound call sites in
+ * Like {@link transformAll}, but additionally rewrites the monomorphization-bound call sites in
  * each owner to import a specialized variant from a virtual module.  The base
  * phases are unchanged (so files with no binding are byte-identical to
  * {@link transformAll}); phase 3 only edits regions phase 2 never touches — a
@@ -127,7 +127,7 @@ export function transformAllWithMono(
   variantImport: (variantId: string) => string,
 ): Record<ComponentId, string> {
   const strings = runBasePhases(models, plans);
-  // Phase 3 — L2: rewrite each bound `<Child …>` site to a specialized variant.
+  // Phase 3 — monomorphization: rewrite each bound `<Child …>` site to a specialized variant.
   rewriteBoundCallSites(models, bindings, variantImport, strings);
   return emit(models, strings);
 }
@@ -271,10 +271,10 @@ function transformBody(
 /**
  * Slim one component's body against the given fold (`env`) and narrow (`setEnv`)
  * environments, editing `s` in place, and return the set of props that left the
- * `$props()` signature.  Factored out of {@link transformBody} so L2
+ * `$props()` signature.  Factored out of {@link transformBody} so monomorphization
  * monomorphization (see `mono.ts`) can re-run the SAME pipeline with an augmented
  * `env` (a call site's extra literal props) on a fresh MagicString — guaranteeing
- * a specialized residual is produced by exactly the audited L0/L1/L1.5 machinery,
+ * a specialized residual is produced by exactly the audited unused-prop fold / constant fold / value-set narrowing machinery,
  * never a parallel code path.  `cssPlan` carries the value sets CSS removal reads
  * (its `constFold`/`narrow` are overridden by `env`/`setEnv` before use).
  */
@@ -290,7 +290,7 @@ export function shakeBody(
    * removal) needs these so it never edits inside a region we already changed — a
    * `<Child dropped={…}/>` sitting in a folded-away branch would otherwise produce
    * an overlapping MagicString edit ("Cannot split a chunk that has already been
-   * edited").  Mono (L2) does not pass it; it edits fresh strings.
+   * edited").  Monomorphization does not pass it; it edits fresh strings.
    */
   outDead?: Span[],
   /**
@@ -301,7 +301,7 @@ export function shakeBody(
    */
   seedDead?: Span[],
 ): Set<string> {
-  // Nothing to fold (L1) and nothing to narrow (L1.5): no branch/prop edits.
+  // Nothing to fold (constant fold) and nothing to narrow (value-set narrowing): no branch/prop edits.
   // CSS removal still depends only on the value sets the plan carries, so a
   // component with no foldable/narrowable prop produces an empty class set
   // bound and removes nothing — leave it untouched entirely.  Reverse removals
@@ -310,7 +310,7 @@ export function shakeBody(
   const code = model.code;
 
   // `env`/`setEnv` arrive keyed by the EXTERNAL prop name (that is what the plan
-  // and the L2 call-site shapes carry).  Every body/template reference, however,
+  // and the monomorphization call-site shapes carry).  Every body/template reference, however,
   // uses the prop's LOCAL binding name (`prop: alias` -> `alias`), and the two can
   // even be different entities (a same-named import).  Remap ONCE to local-keyed
   // maps for every name-matched pass below (branch folding, ternaries, reference
@@ -318,8 +318,8 @@ export function shakeBody(
   const localEnv = remapToLocalNames(env, model);
   const localSetEnv = remapToLocalNames(setEnv, model);
 
-  // (1) Fold `{#if <const>}` blocks (L1) and narrow if/else-if chains against
-  // the known value sets (L1.5); remember every region we deleted/unwrapped.
+  // (1) Fold `{#if <const>}` blocks (constant fold) and narrow if/else-if chains against
+  // the known value sets (value-set narrowing); remember every region we deleted/unwrapped.
   // `seedDead` pre-loads the reverse-removal regions so every pass below (fold,
   // ternary, substitution) treats them as already-dead and never edits inside.
   const dead: Span[] = seedDead ? [...seedDead] : [];
@@ -352,14 +352,14 @@ export function shakeBody(
   const droppable = new Set(env.keys()); // every surviving ref is an expression position
   dropProps(model, droppable, s);
 
-  // (4) CSS rule removal (docs §3 "L1.5", "CSS (shaker 独自の価値)"): drop
+  // (4) CSS rule removal (docs §3 "value-set narrowing", "CSS (shaker 独自の価値)"): drop
   // `<style>` rules targeting a class the component can provably never produce
   // given the value sets.  Sound and independent of the branch edits above:
   // it only reads the possible class set and removes rules no element can match.
   // Svelte's own unused-CSS pruning still runs afterwards on what remains.
   //
   // CSS removal reads the value sets through the plan; rebuild a plan view whose
-  // `constFold`/`narrow` are the ENVIRONMENTS we actually folded with (for L2 a
+  // `constFold`/`narrow` are the ENVIRONMENTS we actually folded with (for monomorphization a
   // call site's extra literals shrink the possible class set further), reusing
   // `cssPlan` for everything else (id, valueSets of untouched props).
   // CSS matches the value-set maps against TEMPLATE identifiers (`class={alias}`),
