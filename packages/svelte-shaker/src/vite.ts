@@ -465,7 +465,14 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       if (!file.endsWith('.svelte')) return null;
       const out = shaken[file];
       if (out == null || out === code) return null;
-      return out;
+      // Real shaken→original mappings are a later engine milestone
+      // (docs/RUST-MIGRATION.md — `TransformResult.map`). Until then we replace
+      // the source without a map, so we return the `{ mappings: '' }` sentinel that
+      // Rollup's public `SourceMapInput` type carries as an explicit member: its
+      // runtime (`decodedSourcemap`) special-cases that value as "no map declared"
+      // and skips it instead of setting the missing-map flag, so SOURCEMAP_BROKEN
+      // never fires. A bare string would leave the flag set and trigger the warning.
+      return { code: out, map: { mappings: '' } };
     },
   };
 }
