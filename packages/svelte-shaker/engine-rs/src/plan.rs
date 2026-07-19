@@ -100,7 +100,7 @@ pub(crate) fn build_plan(
         // single identifier to substitute or drop, so it is never foldable.  The
         // shadow guard tests the LOCAL name (the entity the body references): a
         // name also bound elsewhere is a different entity, so folding it corrupts
-        // that binding.  L2 specialization honors the SAME two predicates (mono.ts).
+        // that binding.  Monomorphization honors the SAME two predicates (mono.ts).
         // Value sets and const_fold/narrow stay keyed by the EXTERNAL name below.
         match &decl.local {
             Some(local) if !is_fold_blocked(model, local) => {}

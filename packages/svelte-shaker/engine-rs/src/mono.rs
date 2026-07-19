@@ -1,8 +1,8 @@
-//! L2 per-call-site monomorphization (mono.ts + the transform.ts call-site
+//! Per-call-site monomorphization (mono.ts + the transform.ts call-site
 //! rewrite): specialize a child into per-site variants when the measured net-win
 //! gate proves it strictly shrinks the reachable module bytes.
 //!
-//! The graph/gate logic is native and reuses the L0/L1/L1.5 substrate
+//! The graph/gate logic is native and reuses the always-on-folds substrate
 //! (`shake_body`, `compute_dead_spans`, `read_call_site`, `dead_spans_for_plans`),
 //! so the ONLY thing crossing back to JS is the per-module size proxy `ownSize`
 //! (svelte compile), passed as a callback.  Using the SAME compiler the TS engine
@@ -57,7 +57,7 @@ pub(crate) fn variant_id(child_id: &str, n: usize) -> String {
     format!("{}::v{}", child_id, n)
 }
 
-/// (env, set_env) for a child's L1 constants PLUS a call site's extra literals;
+/// (env, set_env) for a child's constant-fold constants PLUS a call site's extra literals;
 /// a prop frozen by `extra`/constFold is a constant, so it leaves the narrow set.
 pub(crate) fn env_with_extra(plan: &ComponentPlan, extra: &[(String, Literal)]) -> (Env, SetEnv) {
     let mut env: Env = plan.const_env();
@@ -74,7 +74,7 @@ pub(crate) fn env_with_extra(plan: &ComponentPlan, extra: &[(String, Literal)]) 
 }
 
 /// The residual source for a child under an augmented fold environment — the SAME
-/// L0/L1/L1.5 pipeline (`shake_body`) the whole-program transform uses.  Mirrors
+/// always-on-folds pipeline (`shake_body`) the whole-program transform uses.  Mirrors
 /// `renderResidual`; `extra = []` yields the base residual.
 pub(crate) fn render_residual(child: &Model, plan: &ComponentPlan, code: &str, extra: &[(String, Literal)]) -> String {
     let (env, set_env) = env_with_extra(plan, extra);
@@ -122,7 +122,7 @@ pub(crate) fn specializable_shape(node: &Value, child: &Model, plan: &ComponentP
             None => continue, // undeclared -> flows to `...rest`
         };
         if const_keys.contains(name.as_str()) {
-            continue; // already an app-wide L1 constant
+            continue; // already an app-wide constant-fold constant
         }
         let local = match &decl.local {
             Some(l) => l,
@@ -263,7 +263,7 @@ pub(crate) fn net_win(
     spec_side + shared < (base_side + shared) * (1.0 - min_savings)
 }
 
-/// Compute the L2 variants + call-site bindings.  Mirrors `monomorphize` in
+/// Compute the monomorphization variants + call-site bindings.  Mirrors `monomorphize` in
 /// mono.ts; pure over models/plans except the JS `own_size` callback.
 pub(crate) fn monomorphize(
     models: &[Model],

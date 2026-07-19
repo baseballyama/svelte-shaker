@@ -1,4 +1,4 @@
-//! Constant evaluator + L1.5 set-aware predicate, ported faithfully from
+//! Constant evaluator + value-set narrowing predicate, ported faithfully from
 //! `src/eval.ts`. A total (never-panicking) over-approximation: anything it
 //! cannot prove is `None`. The boolean results must be SOUND — `evaluate_with_sets`
 //! returns a known value only when it holds for every value in every set var's
@@ -284,7 +284,7 @@ fn relational(l: &Literal, r: &Literal, want: impl Fn(std::cmp::Ordering) -> boo
     }
 }
 
-// ---- L1.5 set-aware (Kleene three-valued) — `None` means "unknown / keep" ----
+// ---- value-set narrowing (Kleene three-valued) — `None` means "unknown / keep" ----
 
 /// Sound set-aware predicate (`evaluateWithSets`): a known value ONLY when the
 /// boolean holds for the whole reachable set.
