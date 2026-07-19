@@ -88,15 +88,17 @@ describe('unread declared props: drop props the component never reads', () => {
     };
     const out = await shakeSound(files);
     expect(out['/App.svelte']!).not.toContain('icon='); // (a) attribute removed
-    expect(out['/App.svelte']!).not.toContain('Heavy'); // owner no longer references the import value
+    expect(out['/App.svelte']!).not.toContain('{Heavy}'); // the import VALUE is no longer referenced
     expect(out['/Child.svelte']!).not.toContain('$props'); // (b) empty signature dropped
   });
 
   it('2. literal default: removes the attribute AND drops the declaration', async () => {
     const files = {
+      // `label` is a `$state`, so it stays dynamic and is neither folded nor
+      // dropped — isolating the unread removal of `icon`.
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
-        `<Child icon={heavy} label="hi" />\n`,
+        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n  let label = $state('hi');\n</script>\n` +
+        `<Child icon={heavy} label={label} />\n`,
       '/Child.svelte':
         `<script>\n  let { icon = 'default', label } = $props();\n</script>\n` +
         `<span>{label}</span>\n`,
@@ -138,7 +140,7 @@ describe('unread declared props: drop props the component never reads', () => {
     };
     const out = await shakeSound(files);
     expect(out['/App.svelte']!).not.toContain('icon='); // (a) attribute removed
-    expect(out['/App.svelte']!).not.toContain('Heavy'); // owner drops the import value reference
+    expect(out['/App.svelte']!).not.toContain('{Heavy}'); // the import VALUE is no longer referenced
     expect(out['/Child.svelte']!).toContain('icon'); // (b) declaration kept (rest present)
   });
 
@@ -147,7 +149,8 @@ describe('unread declared props: drop props the component never reads', () => {
       '/App.svelte':
         `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
         `<Child icon={heavy} />\n`,
-      '/Child.svelte': `<script>\n  let { icon } = $props();\n</script>\n` + `<span>{icon}</span>\n`,
+      '/Child.svelte':
+        `<script>\n  let { icon } = $props();\n</script>\n` + `<span>{icon}</span>\n`,
     };
     expect((await shakeSound(template))['/App.svelte']!).toContain('icon={heavy}');
 
@@ -228,7 +231,7 @@ describe('unread declared props: drop props the component never reads', () => {
     };
     const out = await shakeSound(files);
     expect(out['/App.svelte']!).not.toContain('color='); // (a) attribute removed
-    expect(out['/App.svelte']!).not.toContain('Heavy');
+    expect(out['/App.svelte']!).not.toContain('{Heavy}'); // the import VALUE is no longer referenced
     expect(out['/Child.svelte']!).not.toContain('$props'); // (b) declaration dropped
   });
 
