@@ -14,7 +14,10 @@ const UNKNOWN: EvalResult = { known: false };
  * docs/ARCHITECTURE.md §13 — same contract (sound over-approximation, falls to
  * unknown on non-distributive ops), just without the interprocedural lattice.
  */
-export function evaluate(node: AnyNode | null | undefined, env: Map<string, Literal>): EvalResult {
+export function evaluate(
+  node: AnyNode | null | undefined,
+  env: ReadonlyMap<string, Literal>,
+): EvalResult {
   if (!node) return UNKNOWN;
   switch (node.type) {
     case 'Literal':
@@ -25,6 +28,15 @@ export function evaluate(node: AnyNode | null | undefined, env: Map<string, Lite
       if (name === 'undefined') return { known: true, value: undefined };
       if (env.has(name)) return { known: true, value: env.get(name)! };
       return UNKNOWN;
+    }
+
+    case 'ConditionalExpression': {
+      // `test ? a : b` — sound only when the test itself is proven: pick the
+      // taken arm and evaluate it, leaving the other unevaluated (its value is
+      // unreachable, so its own unknowns must not poison the result).
+      const test = evaluate(node.test, env);
+      if (!test.known) return UNKNOWN;
+      return evaluate(test.value ? node.consequent : node.alternate, env);
     }
 
     case 'UnaryExpression': {

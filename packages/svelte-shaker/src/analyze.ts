@@ -137,6 +137,14 @@ export interface ExplicitProp {
   value: Literal;
   dynamic: boolean;
   afterLastSpread: boolean;
+  /**
+   * For a `dynamic` write whose value is a single expression (`prop={expr}`, or a
+   * known-spread key `{...{prop: expr}}`), the raw expression node — kept so the
+   * fixpoint can try to fold it against the OWNING component's constFold env
+   * (interprocedural pass-through, docs §13.1).  Absent for a literal write, a
+   * `bind:` (a two-way write that must never fold), or a multi-part value.
+   */
+  expr?: AnyNode | undefined;
 }
 
 /** How a child component is called at one `<Child .../>` site. */
@@ -150,6 +158,13 @@ export interface CallSite {
   hadSpread: boolean;
   /** Last-write-wins explicit props at this site, keyed by prop name. */
   explicit: Map<string, ExplicitProp>;
+  /**
+   * The component that OWNS this call site (renders the `<Child .../>`).  The
+   * fixpoint uses it to evaluate a forwarded expression (`prop={ownerProp}`)
+   * against the owner's fold env — interprocedural pass-through (docs §13.1).
+   * `undefined` for callers that read a site outside the graph fixpoint (mono).
+   */
+  owner?: ComponentId | undefined;
 }
 
 /** Mutable accumulator of how a child component is called across the program. */
@@ -216,14 +231,18 @@ export function analyzeInput(input: AnalyzeInput, parseCache?: ParseCache): Anal
   }
 
   // Round 0: every call site counts (no dead spans yet) — the plain, non-cascade
-  // analysis.  Each subsequent round recomputes dead spans from the previous
-  // plans and re-derives plans from the call sites that survive, layering the
-  // cascade on top, until the plans stop changing.
-  let plans = buildPlans(models, buildUsage(models, new Map()));
+  // analysis.  The owner fold env is empty here, so a forwarded expression only
+  // folds when it is a pure literal expression (`v={'a' + 'b'}`); owner-prop
+  // references stay dynamic until a later round has folded them.  Each subsequent
+  // round recomputes dead spans from the previous plans and re-derives plans from
+  // the surviving call sites, evaluating forwarded expressions against the
+  // PREVIOUS round's owner folds, until the plans stop changing.
+  const noPlans = new Map<ComponentId, ComponentPlan>();
+  let plans = buildPlans(models, buildUsage(models, new Map()), noPlans);
 
   for (let i = 0; i < MAX_FIXPOINT_ITERATIONS; i++) {
     const deadSpans = deadSpansForPlans(models, plans);
-    const nextPlans = buildPlans(models, buildUsage(models, deadSpans));
+    const nextPlans = buildPlans(models, buildUsage(models, deadSpans), plans);
     // Convergence is monotone: excluding a folded-away call site can only shrink
     // a child's value set (or clear `dynamic`/`top`), never grow it, so dead
     // spans only grow. Equal plans => a true fixpoint; we then stop.
@@ -477,20 +496,55 @@ function buildUsage(
       // Soundness: only EXCLUDE a site that is provably inside a dead span (by
       // the SAME predicate the transform uses). Live sites always count.
       if (dead.length > 0 && inSpans(call.node, dead)) continue;
-      usageOf(call.childId).sites.push(readCallSite(call.node));
+      usageOf(call.childId).sites.push(readCallSite(call.node, model.id));
     }
   }
   return usage;
 }
 
-/** Recompute every component's plan from the (cascade-filtered) usage. */
+/** Shared empty owner env (a forwarded expression sees no constants). */
+const EMPTY_ENV: ReadonlyMap<string, Literal> = new Map();
+
+/**
+ * A forwarded call-site expression is evaluated against its OWNER component's
+ * fold env: the owner's `constFold`, remapped to the LOCAL binding names the
+ * expression references.  {@link OwnerEnv} looks that up by owner id.
+ */
+type OwnerEnv = (owner: ComponentId | undefined) => ReadonlyMap<string, Literal>;
+
+/**
+ * Recompute every component's plan from the (cascade-filtered) usage, evaluating
+ * forwarded call-site expressions against `prevPlans` — the PREVIOUS fixpoint
+ * round's folds (docs §13.1 interprocedural pass-through).  Using the previous
+ * round (never the plans being built) keeps the derivation order-independent and
+ * sound: `prevPlans` describes the owner's runtime for real, so a forwarded
+ * expression that evaluates to a literal is a value the child provably receives.
+ * The remap-to-local of each owner's env is memoized per round, so it runs once
+ * per owner however many children it forwards to (no O(n²)).
+ */
 function buildPlans(
   models: Map<ComponentId, FileModel>,
   usage: Map<ComponentId, Usage>,
+  prevPlans: Map<ComponentId, ComponentPlan>,
 ): Map<ComponentId, ComponentPlan> {
+  const envCache = new Map<ComponentId, ReadonlyMap<string, Literal>>();
+  const ownerEnv: OwnerEnv = (owner) => {
+    if (owner === undefined) return EMPTY_ENV;
+    const cached = envCache.get(owner);
+    if (cached) return cached;
+    const model = models.get(owner);
+    const plan = prevPlans.get(owner);
+    const env =
+      model && plan && !plan.bail && plan.constFold.size > 0
+        ? remapToLocalNames(plan.constFold, model)
+        : EMPTY_ENV;
+    envCache.set(owner, env);
+    return env;
+  };
+
   const plans = new Map<ComponentId, ComponentPlan>();
   for (const model of models.values()) {
-    plans.set(model.id, buildPlan(model, usage.get(model.id)));
+    plans.set(model.id, buildPlan(model, usage.get(model.id), ownerEnv));
   }
   return plans;
 }
@@ -1127,7 +1181,7 @@ function memberComponentTags(ast: Root): Set<string> {
  * both contributes those literals AND does not poison props it cannot set (docs
  * §4.1, "{...obj} が object literal ならキー展開").
  */
-export function readCallSite(component: AnyNode): CallSite {
+export function readCallSite(component: AnyNode, owner?: ComponentId): CallSite {
   const attrs = component.attributes ?? [];
   // Only spreads we CANNOT expand are opaque (may set any prop).  Classify first
   // so `afterLastSpread` is measured against the last *unknown* spread, not a
@@ -1152,7 +1206,7 @@ export function readCallSite(component: AnyNode): CallSite {
             name,
             value.known
               ? { value: value.value, dynamic: false, afterLastSpread: i > lastSpreadIndex }
-              : dynamicWrite(i, lastSpreadIndex),
+              : dynamicWrite(i, lastSpreadIndex, value.expr),
           );
         }
       }
@@ -1175,7 +1229,7 @@ export function readCallSite(component: AnyNode): CallSite {
             dynamic: false,
             afterLastSpread: i > lastSpreadIndex,
           }
-        : dynamicWrite(i, lastSpreadIndex),
+        : dynamicWrite(i, lastSpreadIndex, singleExprValue(attr.value)),
     );
   }
 
@@ -1194,7 +1248,23 @@ export function readCallSite(component: AnyNode): CallSite {
     explicit.set(name, dynamicWrite(attrs.length, lastSpreadIndex));
   }
 
-  return { hadSpread: lastSpreadIndex >= 0, explicit };
+  return { hadSpread: lastSpreadIndex >= 0, explicit, owner };
+}
+
+/**
+ * The single expression node behind a non-literal attribute value
+ * (`prop={expr}`), or `undefined` when the value is a boolean shorthand, a plain
+ * text run, or a multi-part text/expression concatenation.  Only a lone
+ * `ExpressionTag` yields a node the fixpoint can fold against the owner env; a
+ * concatenation has no single expression, so it stays dynamic.
+ */
+function singleExprValue(value: unknown): AnyNode | undefined {
+  if (value === true || value == null) return undefined;
+  const parts = (Array.isArray(value) ? value : [value]) as AnyNode[];
+  if (parts.length === 1 && parts[0]!.type === 'ExpressionTag') {
+    return (parts[0]!.expression as AnyNode | undefined) ?? undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -1228,11 +1298,12 @@ function synthesizedBodyProps(component: AnyNode): string[] {
   return names;
 }
 
-function dynamicWrite(index: number, lastSpreadIndex: number): ExplicitProp {
+function dynamicWrite(index: number, lastSpreadIndex: number, expr?: AnyNode): ExplicitProp {
   return {
     value: undefined,
     dynamic: true,
     afterLastSpread: index > lastSpreadIndex,
+    expr,
   };
 }
 
@@ -1249,10 +1320,14 @@ function dynamicWrite(index: number, lastSpreadIndex: number): ExplicitProp {
  */
 function knownSpreadEntries(
   attr: AnyNode,
-): Array<[string, { known: true; value: Literal } | { known: false }]> | null {
+): Array<
+  [string, { known: true; value: Literal } | { known: false; expr?: AnyNode | undefined }]
+> | null {
   const obj = attr.expression;
   if (obj?.type !== 'ObjectExpression') return null;
-  const entries: Array<[string, { known: true; value: Literal } | { known: false }]> = [];
+  const entries: Array<
+    [string, { known: true; value: Literal } | { known: false; expr?: AnyNode | undefined }]
+  > = [];
   for (const prop of obj.properties ?? []) {
     // A nested spread, computed key, or accessor/method means the full key set is
     // not statically knowable -> the whole spread is opaque.
@@ -1279,12 +1354,14 @@ function knownSpreadEntries(
 }
 
 /** Constant-evaluate a spread property value with no environment (literals + the
- * tiny pure operator fragment), as `{known:true,value}` or `{known:false}`. */
+ * tiny pure operator fragment), as `{known:true,value}` or `{known:false,expr}`.
+ * The `expr` on the unknown case lets the fixpoint retry the value against the
+ * owner's fold env (interprocedural pass-through, docs §13.1). */
 function evalToLiteral(
   node: AnyNode | undefined,
-): { known: true; value: Literal } | { known: false } {
+): { known: true; value: Literal } | { known: false; expr?: AnyNode | undefined } {
   const r = evaluate(node, new Map());
-  return r.known ? { known: true, value: r.value } : { known: false };
+  return r.known ? { known: true, value: r.value } : { known: false, expr: node ?? undefined };
 }
 
 /** Extract a literal from an attribute value, or `{ known:false }`. */
@@ -1329,7 +1406,7 @@ export function isFoldBlockedName(model: FileModel, name: string): boolean {
   );
 }
 
-function buildPlan(model: FileModel, u: Usage | undefined): ComponentPlan {
+function buildPlan(model: FileModel, u: Usage | undefined, ownerEnv: OwnerEnv): ComponentPlan {
   const plan = emptyPlan(model.id);
 
   if (model.bailReasons.length > 0) {
@@ -1353,7 +1430,7 @@ function buildPlan(model: FileModel, u: Usage | undefined): ComponentPlan {
     // SAME two predicates (see mono.ts).
     if (decl.local === null || isFoldBlockedName(model, decl.local)) continue;
 
-    const set = valueSetFor(decl, sites);
+    const set = valueSetFor(decl, sites, ownerEnv);
     plan.valueSets.set(decl.name, set);
 
     // `top` (a spread may set it) and `dynamic` (a non-literal write) both
@@ -1382,7 +1459,7 @@ function buildPlan(model: FileModel, u: Usage | undefined): ComponentPlan {
  * because the spread may then silently set it.  Sites with no spread that omit
  * the prop contribute its default value.
  */
-function valueSetFor(decl: PropDecl, sites: CallSite[]): PropValueSet {
+function valueSetFor(decl: PropDecl, sites: CallSite[], ownerEnv: OwnerEnv): PropValueSet {
   const values: Literal[] = [];
   let dynamic = false;
   let top = false;
@@ -1395,8 +1472,21 @@ function valueSetFor(decl: PropDecl, sites: CallSite[]): PropValueSet {
     const explicit = site.explicit.get(decl.name);
     if (explicit?.afterLastSpread) {
       // Safely explicit: a later attribute, so no spread can override it.
-      if (explicit.dynamic) dynamic = true;
-      else add(explicit.value);
+      if (!explicit.dynamic) {
+        add(explicit.value);
+        continue;
+      }
+      // Interprocedural pass-through (docs §13.1): a forwarded expression
+      // (`prop={ownerProp}`) is folded against the OWNER's constFold env.  A
+      // `known` result is a value this site provably passes — sound because the
+      // owner env describes the owner's runtime (see {@link buildPlans}); an
+      // `unknown` stays dynamic exactly as before.  `bind:` and multi-part values
+      // carry no `expr`, so they are never folded here.
+      const r = explicit.expr
+        ? evaluate(explicit.expr, ownerEnv(site.owner))
+        : ({ known: false } as const);
+      if (r.known) add(r.value);
+      else dynamic = true;
       continue;
     }
     if (site.hadSpread) {
