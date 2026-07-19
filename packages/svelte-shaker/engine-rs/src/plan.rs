@@ -43,7 +43,7 @@ impl ComponentPlan {
 }
 
 pub(crate) fn is_fold_blocked(model: &Model, name: &str) -> bool {
-    model.shadowed.contains(name) || model.debug.contains(name)
+    model.shadowed.contains(name) || model.debug.contains(name) || model.written.contains(name)
 }
 
 /// Remap an env keyed by EXTERNAL prop name (`constFold` / `narrow`) to one keyed
@@ -127,6 +127,8 @@ pub(crate) struct Model {
     pub(crate) props_info: Option<PropsInfo>,
     pub(crate) shadowed: HashSet<String>,
     pub(crate) debug: HashSet<String>,
+    /// Prop names the component WRITES TO — never folded (see `is_fold_blocked`).
+    pub(crate) written: HashSet<String>,
     /// (childId, the `<Child/>` Component node) for every rendered child.
     pub(crate) child_calls: Vec<(String, Value)>,
     pub(crate) escaped: Vec<String>,
@@ -136,7 +138,7 @@ pub(crate) struct Model {
 pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
     let imports = edge_imports(&Value::Array(edges.to_vec()));
     let props_info = declared_props_full(&ast);
-    let (shadowed_vec, debug_vec) = template_bindings(&ast);
+    let (shadowed_vec, debug_vec, written_vec) = template_bindings(&ast);
     let mut bail_reasons = component_bail(&ast);
     if props_info.as_ref().map(|p| p.shares_statement).unwrap_or(false) {
         bail_reasons.push("$props() shares a multi-declarator statement".to_string());
@@ -158,6 +160,7 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
         props_info,
         shadowed: shadowed_vec.into_iter().collect(),
         debug: debug_vec.into_iter().collect(),
+        written: written_vec.into_iter().collect(),
         child_calls,
         escaped,
         bail_reasons,

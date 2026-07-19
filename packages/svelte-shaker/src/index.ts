@@ -2,11 +2,10 @@ import {
   analyze,
   analyzeInput,
   buildAnalyzeInput,
-  type FileModel,
   type ReadFile,
   type Resolve,
 } from './analyze.js';
-import { parseSvelte, type Parse, type ParseCache } from './parse.js';
+import { type Parse, type ParseCache } from './parse.js';
 import { transformAll, transformAllWithMono } from './transform.js';
 import {
   monomorphize,
@@ -14,6 +13,7 @@ import {
   type MonomorphizeOptions,
   type MonomorphizeResult,
 } from './mono.js';
+import { shakeWithRevertCascade } from './revert-cascade.js';
 import type { ComponentId } from './ir.js';
 
 export type {
@@ -63,7 +63,7 @@ export async function svelteShaker(
   parse?: Parse,
 ): Promise<Record<ComponentId, string>> {
   const { models, plans } = await analyzeWith(entries, resolve, readFile, parse);
-  return revertUnparseable(models, transformAll(models, plans));
+  return shakeWithRevertCascade(models, plans, (p) => transformAll(models, p));
 }
 
 /**
@@ -84,30 +84,6 @@ async function analyzeWith(
   const cache: ParseCache = new Map();
   const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse);
   return analyzeInput(input, cache);
-}
-
-/**
- * Self-check the shaken output: if a component's slimmed source does not re-parse
- * as valid Svelte, leave that file UNTOUCHED (revert to its original).  The engine
- * aims to only ever emit valid, behavior-preserving source, so a parse failure is a
- * transform bug — but this last line of defense keeps a single mishandled component
- * shape from breaking the whole build, and reverting one file is always sound (it is
- * just "did not shake this component").  Unchanged files are skipped (cheap).
- */
-function revertUnparseable(
-  models: Map<ComponentId, FileModel>,
-  out: Record<ComponentId, string>,
-): Record<ComponentId, string> {
-  for (const [id, code] of Object.entries(out)) {
-    const model = models.get(id);
-    if (!model || code === model.code) continue;
-    try {
-      parseSvelte(code, id);
-    } catch {
-      out[id] = model.code;
-    }
-  }
-  return out;
 }
 
 /** The full output of a shake including L2 specialization. */
@@ -145,18 +121,24 @@ export async function svelteShakerWithMono(
   parse?: Parse,
 ): Promise<ShakeResult> {
   const { models, plans } = await analyzeWith(entries, resolve, readFile, parse);
-  // Thread the shake entries through so the net-win gate can compute module
-  // reachability from them (docs §3 L2, §13.2).
-  const result = monomorphize(models, plans, mono, entries);
-  // With no bindings the wired pass and the base pass are identical, so reuse
-  // the plain transform to keep the default path byte-for-byte unchanged.
-  const files =
-    result.bindings.length === 0
-      ? transformAll(models, plans)
+  // The cascade may re-run the transform with force-bailed plans, so recompute L2
+  // inside it: a bailed component must not be specialized either.  `lastResult`
+  // captures the mono result of the final (converged or no-op) pass.  On the no-op
+  // fallback the emitted owner files are the untouched originals — they import no
+  // variant — so any variants `lastResult` still lists are simply never requested.
+  let lastResult!: MonomorphizeResult;
+  const files = shakeWithRevertCascade(models, plans, (p) => {
+    // Thread the shake entries through so the net-win gate can compute module
+    // reachability from them (docs §3 L2, §13.2).
+    lastResult = monomorphize(models, p, mono, entries);
+    // With no bindings the wired pass and the base pass are identical, so reuse
+    // the plain transform to keep the default path byte-for-byte unchanged.
+    return lastResult.bindings.length === 0
+      ? transformAll(models, p)
       : transformAllWithMono(
           models,
-          plans,
-          result.bindings.map((b) => ({
+          p,
+          lastResult.bindings.map((b) => ({
             owner: b.owner,
             node: b.node,
             variantId: b.variantId,
@@ -164,5 +146,6 @@ export async function svelteShakerWithMono(
           })),
           variantSpecifier,
         );
-  return { files: revertUnparseable(models, files), mono: result };
+  });
+  return { files, mono: lastResult };
 }

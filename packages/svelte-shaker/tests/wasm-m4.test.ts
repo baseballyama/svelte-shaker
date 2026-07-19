@@ -39,6 +39,7 @@ interface ComponentFacts {
   hasRestProp: boolean;
   shadowed: string[];
   debug: string[];
+  written: string[];
   bail: string[];
   childCalls: ChildCall[];
   escaped: string[];
@@ -64,6 +65,7 @@ function tsFacts(
     hasRestProp: model.hasRestProp,
     shadowed: [...model.shadowedNames].sort(),
     debug: [...model.debugNames].sort(),
+    written: [...model.writtenNames].sort(),
     // The Rust slice covers only the accessors/customElement bail so far.
     bail: model.bailReasons.filter((r) => r.startsWith('<svelte:options')),
     childCalls: model.childCalls
@@ -153,6 +155,26 @@ describe('M4: Rust (WASM) per-file analysis matches the TS engine', () => {
     };
     const { resolve, readFile } = memGraph(files);
     await expectGraphMatches('/B.svelte', resolve, readFile);
+  });
+
+  it('written names (reassign / update / destructure / bind) match the TS engine', async () => {
+    const files = {
+      '/W.svelte': [
+        `<script>`,
+        `  let { a, b, c, d, obj } = $props();`,
+        `  function go(src) {`,
+        `    a = 1;`, // reassignment
+        `    b++;`, // update
+        `    ({ c } = src);`, // destructuring assignment
+        `    obj.x = 2;`, // member write — NOT a scalar-prop write
+        `  }`,
+        `</script>`,
+        `<input bind:value={d} />`, // two-way bind
+        `<button onclick={() => (a = 3)}>{a}{b}{c}{d}</button>`,
+      ].join('\n'),
+    };
+    const { resolve, readFile } = memGraph(files);
+    await expectGraphMatches('/W.svelte', resolve, readFile);
   });
 
   it('escape: a component read as a value is flagged identically to the TS engine', async () => {

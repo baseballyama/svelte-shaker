@@ -47,12 +47,13 @@ pub fn analyze_component(ast_json: &str, edges_json: &str) -> String {
     let edges: Value = serde_json::from_str(edges_json).unwrap_or(Value::Null);
     let imports = edge_imports(&edges);
     let (props, has_rest) = declared_props(&ast);
-    let (shadowed, debug) = template_bindings(&ast);
+    let (shadowed, debug, written) = template_bindings(&ast);
     json!({
         "props": props,
         "hasRestProp": has_rest,
         "shadowed": sorted(shadowed),
         "debug": sorted(debug),
+        "written": sorted(written),
         "bail": component_bail(&ast),
         "childCalls": child_calls(&ast, &imports),
         "escaped": escaped_components(&ast, &imports, &imported_locals(&ast), &namespace_locals(&ast)),
@@ -146,6 +147,21 @@ pub fn shake_program(input_json: &str) -> String {
         models.push(build_model_full(&id, ast, edges));
     }
 
+    // Revert cascade (index.ts `shakeWithRevertCascade`): the JS caller re-invokes
+    // us with the ids of components whose emitted source failed to re-parse, so we
+    // force-bail them here — they then fold nothing AND their owners keep every
+    // call-site attribute, so a reverted child and its parent stay consistent.
+    let force_bail: HashSet<String> = input
+        .get("forceBail")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    for m in &mut models {
+        if force_bail.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == REVERT_REASON) {
+            m.bail_reasons.push(REVERT_REASON.to_string());
+        }
+    }
+
     let mut escaped = HashSet::new();
     for m in &models {
         escaped.extend(m.escaped.iter().cloned());
@@ -234,6 +250,19 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
+
+    // Revert cascade (see `shake_program`): force-bail components the JS caller
+    // flagged as unparseable so they are neither folded nor specialized.
+    let force_bail: HashSet<String> = input
+        .get("forceBail")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    for m in &mut models {
+        if force_bail.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == REVERT_REASON) {
+            m.bail_reasons.push(REVERT_REASON.to_string());
+        }
+    }
 
     let mut escaped = HashSet::new();
     for m in &models {
@@ -362,6 +391,47 @@ mod tests {
         let out = analyze(&ast);
         assert_eq!(out["shadowed"], json!(["i", "item", "p", "row"]));
         assert_eq!(out["debug"], json!(["watched"]));
+    }
+
+    #[test]
+    fn collects_written_names() {
+        // A prop reassigned (`label = …`) or `++`ed in the instance script, and one
+        // two-way `bind:`ed in the template, are all writes that block folding.
+        let ast = json!({
+            "type": "Root",
+            "instance": { "content": { "body": [
+                { "type": "ExpressionStatement", "expression": {
+                    "type": "AssignmentExpression", "operator": "=",
+                    "left": { "type": "Identifier", "name": "label" },
+                    "right": { "type": "Literal", "value": "b" } } },
+                { "type": "ExpressionStatement", "expression": {
+                    "type": "UpdateExpression", "operator": "++",
+                    "argument": { "type": "Identifier", "name": "count" } } }
+            ] } },
+            "fragment": { "type": "Fragment", "nodes": [
+                { "type": "RegularElement", "name": "input", "attributes": [
+                    { "type": "BindDirective", "name": "value",
+                      "expression": { "type": "Identifier", "name": "bound" } } ] }
+            ] }
+        });
+        assert_eq!(analyze(&ast)["written"], json!(["bound", "count", "label"]));
+    }
+
+    #[test]
+    fn member_writes_are_not_collected() {
+        // `o.x = …` and `o.x++` mutate an object, not a scalar prop — never blocked.
+        let ast = json!({
+            "type": "Root",
+            "instance": { "content": { "body": [
+                { "type": "ExpressionStatement", "expression": {
+                    "type": "AssignmentExpression", "operator": "=",
+                    "left": { "type": "MemberExpression", "object": { "type": "Identifier", "name": "o" },
+                              "property": { "type": "Identifier", "name": "x" }, "computed": false },
+                    "right": { "type": "Literal", "value": 1 } } }
+            ] } },
+            "fragment": { "type": "Fragment", "nodes": [] }
+        });
+        assert_eq!(analyze(&ast)["written"], json!([]));
     }
 
     #[test]

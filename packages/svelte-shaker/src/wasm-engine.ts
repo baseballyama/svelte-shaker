@@ -1,8 +1,9 @@
 import { createRequire } from 'node:module';
 import { compile } from 'svelte/compiler';
 import { buildAnalyzeInput, type ReadFile, type Resolve } from './analyze.js';
-import { parseCached, parseSvelte, type Parse, type ParseCache } from './parse.js';
+import { parseCached, type Parse, type ParseCache } from './parse.js';
 import { type MonomorphizeOptions } from './mono.js';
+import { revertCascade } from './revert-cascade.js';
 import type { ComponentId } from './ir.js';
 
 // NODE-ONLY: loads the native Rust (WASM) engine and drives it from the Vite
@@ -75,10 +76,10 @@ function ownSize(id: ComponentId, source: string): number | null {
  * `wasm-shake` test does — so the output is byte-identical to the JS engine.
  *
  * The same parse cache feeds the crawl and the program input, so each file is
- * parsed once.  A final self-check mirrors the JS engine's `revertUnparseable`:
- * any emitted file that no longer parses is reverted to its original (a sound
- * "did not shake this component"), so a single mishandled shape can never break
- * the build.
+ * parsed once.  A final self-check mirrors the JS engine's revert cascade
+ * ({@link revertCascade}): any emitted file that no longer parses is
+ * force-bailed and the whole shake re-run, so a single mishandled shape can never
+ * break the build nor leave a parent's call-site edits inconsistent.
  */
 export async function svelteShakerWasm(
   engine: WasmEngine,
@@ -98,13 +99,13 @@ export async function svelteShakerWasm(
     edges: input.edges,
     entries: input.entries,
   };
-  const out = JSON.parse(engine.shake_program(JSON.stringify(programInput))) as Record<
-    ComponentId,
-    string
-  >;
-
-  revertUnparseable(out, input.files);
-  return out;
+  return revertCascade(
+    input.files,
+    (forceBail) =>
+      JSON.parse(
+        engine.shake_program(JSON.stringify({ ...programInput, forceBail: [...forceBail] })),
+      ) as Record<ComponentId, string>,
+  );
 }
 
 /** The output of a Rust L2 shake: the wired owner files + the variant residuals
@@ -146,28 +147,16 @@ export async function svelteShakerWasmWithMono(
     maxVariants: mono.maxVariants,
     minSavings: mono.minSavings,
   });
-  const result = JSON.parse(
-    engine.shake_program_with_mono(JSON.stringify(programInput), options, ownSize),
-  ) as { files: Record<ComponentId, string>; variants: Record<string, string> };
-
-  revertUnparseable(result.files, input.files);
-  return { files: result.files, variants: new Map(Object.entries(result.variants)) };
-}
-
-/** Self-check: revert any emitted file that no longer parses to its original — a
- * sound "did not shake this component", mirroring the JS engine's last line of
- * defense ({@link svelteShaker}'s `revertUnparseable`). */
-function revertUnparseable(
-  out: Record<ComponentId, string>,
-  files: { id: ComponentId; code: string }[],
-): void {
-  for (const file of files) {
-    const code = out[file.id];
-    if (code === undefined || code === file.code) continue;
-    try {
-      parseSvelte(code, file.id);
-    } catch {
-      out[file.id] = file.code;
-    }
-  }
+  let last!: { files: Record<ComponentId, string>; variants: Record<string, string> };
+  const files = revertCascade(input.files, (forceBail) => {
+    last = JSON.parse(
+      engine.shake_program_with_mono(
+        JSON.stringify({ ...programInput, forceBail: [...forceBail] }),
+        options,
+        ownSize,
+      ),
+    ) as { files: Record<ComponentId, string>; variants: Record<string, string> };
+    return last.files;
+  });
+  return { files, variants: new Map(Object.entries(last.variants)) };
 }
