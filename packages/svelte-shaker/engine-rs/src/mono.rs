@@ -107,7 +107,7 @@ pub(crate) fn live_children_for_env(model: &Model, env: &Env, set_env: &SetEnv) 
 /// app-wide constant, not shadowed/`{@debug}`/nested, literal & no spread can
 /// override).  Mirrors `specializableShape`.
 pub(crate) fn specializable_shape(node: &Value, child: &Model, plan: &ComponentPlan) -> Vec<(String, Literal)> {
-    let site = read_call_site(node);
+    let site = read_call_site(node, None);
     let mut declared: HashMap<&str, &PropDecl> = HashMap::new();
     if let Some(pi) = &child.props_info {
         for d in &pi.props {

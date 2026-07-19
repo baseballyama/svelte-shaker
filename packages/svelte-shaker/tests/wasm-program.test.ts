@@ -56,8 +56,12 @@ function normalizeRust(plan: PlanJson): PlanJson {
 }
 
 /** Run both engines on a fixture graph and assert the plans match per component. */
-async function expectPlansMatch(entry: ComponentId): Promise<void> {
-  const input = await buildAnalyzeInput(entry, fsResolve, fsReadFile);
+async function expectPlansMatch(
+  entry: ComponentId,
+  resolve = fsResolve,
+  readFile = fsReadFile,
+): Promise<void> {
+  const input = await buildAnalyzeInput(entry, resolve, readFile);
   const programInput = {
     files: input.files.map((f) => ({ id: f.id, ast: parseSvelte(f.code, f.id) })),
     edges: input.edges,
@@ -100,4 +104,30 @@ describe('M4: Rust (WASM) whole-program plans match the TS engine', () => {
       await expectPlansMatch(join(FIXTURES, name, 'input', 'App.svelte'));
     });
   }
+
+  it('interprocedural pass-through: forwarded-prop plans match (docs §13.1)', async () => {
+    // The owner-env fixpoint evaluation (a forwarded `variant={variant}`, a ternary,
+    // and a pure-literal forward) must produce identical plans in both engines.
+    const files: Record<string, string> = {
+      '/App.svelte': `<script>\n  import Mid from './Mid.svelte';\n</script>\n<Mid variant="primary" />`,
+      '/Mid.svelte':
+        `<script>\n  import Child from './Child.svelte';\n  import Leaf from './Leaf.svelte';\n  let { variant } = $props();\n</script>\n` +
+        `<Child variant={variant} />\n<Leaf k={variant === 'primary' ? 'x' : 'y'} m={'a' + 'b'} />`,
+      '/Child.svelte': `<script>\n  let { variant = 'other' } = $props();\n</script>\n{#if variant === 'primary'}<b>P</b>{:else}<i>o</i>{/if}`,
+      '/Leaf.svelte': `<script>\n  let { k = 'z', m = 'z' } = $props();\n</script>\n{#if k === 'x'}<b>X</b>{/if}{#if m === 'ab'}<b>AB</b>{/if}`,
+    };
+    const resolve = (source: string, importer: string): string | null => {
+      if (!source.startsWith('.')) return null;
+      const base = importer.slice(0, importer.lastIndexOf('/'));
+      const parts: string[] = [];
+      for (const seg of `${base}/${source}`.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return `/${parts.join('/')}`;
+    };
+    const readFile = (id: string): string => files[id]!;
+    await expectPlansMatch('/App.svelte', resolve, readFile);
+  });
 });

@@ -76,7 +76,11 @@ pub(crate) fn remap_to_local_names<V: Clone>(map: &HashMap<String, V>, model: &M
     out
 }
 
-pub(crate) fn build_plan(model: &Model, sites: Option<&Vec<CallSite>>) -> ComponentPlan {
+pub(crate) fn build_plan(
+    model: &Model,
+    sites: Option<&Vec<CallSite>>,
+    owner_envs: &OwnerEnvs,
+) -> ComponentPlan {
     let mut plan = ComponentPlan::empty(&model.id);
     if !model.bail_reasons.is_empty() {
         plan.bail = true;
@@ -102,7 +106,7 @@ pub(crate) fn build_plan(model: &Model, sites: Option<&Vec<CallSite>>) -> Compon
             Some(local) if !is_fold_blocked(model, local) => {}
             _ => continue,
         }
-        let set = value_set_for(decl, sites);
+        let set = value_set_for(decl, sites, owner_envs);
         let (dynamic, top) = (set.dynamic, set.top);
         let len = set.values.len();
         plan.value_sets.push((decl.name.clone(), set));
@@ -178,14 +182,31 @@ pub(crate) fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -
             if !spans.is_empty() && in_spans(node, spans) {
                 continue; // folded-away call site: excluded from the child's profile
             }
-            usage.entry(child_id.clone()).or_default().push(read_call_site(node));
+            usage.entry(child_id.clone()).or_default().push(read_call_site(node, Some(model.id.clone())));
         }
     }
     usage
 }
 
-pub(crate) fn build_plans(models: &[Model], usage: &HashMap<String, Vec<CallSite>>) -> Plans {
-    models.iter().map(|m| (m.id.clone(), build_plan(m, usage.get(&m.id)))).collect()
+/// Each owner's fold env for this round: the PREVIOUS round's `constFold`,
+/// remapped to LOCAL names (a forwarded expression references props by their local
+/// binding). Computed once per owner per round — no O(n²). Mirrors the memoized
+/// `ownerEnv` in analyze.ts's buildPlans.
+fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
+    let mut envs = OwnerEnvs::new();
+    for model in models {
+        if let Some(plan) = prev.get(&model.id) {
+            if !plan.bail && !plan.const_fold.is_empty() {
+                envs.insert(model.id.clone(), remap_to_local_names(&plan.const_env(), model));
+            }
+        }
+    }
+    envs
+}
+
+pub(crate) fn build_plans(models: &[Model], usage: &HashMap<String, Vec<CallSite>>, prev: &Plans) -> Plans {
+    let owner_envs = owner_envs_for(models, prev);
+    models.iter().map(|m| (m.id.clone(), build_plan(m, usage.get(&m.id), &owner_envs))).collect()
 }
 
 pub(crate) fn dead_spans_for_plans(models: &[Model], plans: &Plans) -> HashMap<String, Vec<Span>> {
@@ -226,10 +247,15 @@ pub(crate) fn plans_equal(a: &Plans, b: &Plans) -> bool {
 }
 
 pub(crate) fn run_fixpoint(models: &[Model]) -> Plans {
-    let mut plans = build_plans(models, &build_usage(models, &HashMap::new()));
+    // Round 0 uses an empty owner env (no folds yet): a forwarded expression folds
+    // only when it is a pure literal expression. Each later round evaluates
+    // forwarded expressions against the PREVIOUS round's folds (docs §13.1),
+    // keeping the derivation order-independent and monotone toward more folding.
+    let no_plans: Plans = HashMap::new();
+    let mut plans = build_plans(models, &build_usage(models, &HashMap::new()), &no_plans);
     for _ in 0..MAX_FIXPOINT_ITERATIONS {
         let dead = dead_spans_for_plans(models, &plans);
-        let next = build_plans(models, &build_usage(models, &dead));
+        let next = build_plans(models, &build_usage(models, &dead), &plans);
         if plans_equal(&plans, &next) {
             plans = next;
             break;

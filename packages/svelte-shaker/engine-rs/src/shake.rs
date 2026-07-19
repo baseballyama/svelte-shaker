@@ -556,8 +556,13 @@ pub(crate) fn drop_props(model: &Model, drop: &HashSet<String>, edits: &mut Magi
     }
 }
 
-/// A call-site attribute is safe to delete only if its value has no side effects.
-pub(crate) fn is_side_effect_free(value: &Value) -> bool {
+/// A call-site attribute is safe to delete only if its value has no side effects:
+/// boolean shorthand / plain text / a literal expression, OR a forwarded
+/// expression the OWNER's fold env proves constant (`prop={ownerConst}`) — which
+/// phase 1 already substituted to a literal, so deleting it is exactly as sound as
+/// for a literal (interprocedural pass-through cleanup, docs §13.1). Mirrors
+/// `isSideEffectFree` in transform.ts.
+pub(crate) fn is_side_effect_free(value: &Value, owner_env: &Env) -> bool {
     if value == &Value::Bool(true) || value.is_null() {
         return true;
     }
@@ -571,7 +576,10 @@ pub(crate) fn is_side_effect_free(value: &Value) -> bool {
     };
     parts.iter().all(|part| match type_of(part) {
         Some("Text") => true,
-        Some("ExpressionTag") => str_eq(get(part, "expression"), "type", "Literal"),
+        Some("ExpressionTag") => {
+            let expr = get(part, "expression");
+            str_eq(expr, "type", "Literal") || evaluate(expr, owner_env).is_some()
+        }
         _ => false,
     })
 }
@@ -589,6 +597,7 @@ pub(crate) fn remove_call_site_attributes(
     dropped: &HashMap<String, HashSet<String>>,
     edits: &mut MagicEdit,
     edited_spans: &[Span],
+    owner_env: &Env,
 ) {
     // Collect first (so we don't borrow the ast through `walk` while editing).
     let mut to_remove: Vec<Value> = Vec::new();
@@ -613,7 +622,7 @@ pub(crate) fn remove_call_site_attributes(
             for attr in arr(node, "attributes") {
                 if type_of(attr) == Some("Attribute") {
                     if let Some(name) = attr.get("name").and_then(Value::as_str) {
-                        if drop.contains(name) && is_side_effect_free(get(attr, "value")) {
+                        if drop.contains(name) && is_side_effect_free(get(attr, "value"), owner_env) {
                             to_remove.push(attr.clone());
                         }
                     }

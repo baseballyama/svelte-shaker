@@ -137,15 +137,25 @@ pub(crate) struct ExplicitProp {
     pub(crate) value: Option<Literal>, // None when `dynamic`
     pub(crate) dynamic: bool,
     pub(crate) after_last_spread: bool,
+    /// For a `dynamic` write whose value is a single expression (`prop={expr}`, or
+    /// a known-spread key `{...{prop: expr}}`), the raw expression node — kept so
+    /// the fixpoint can fold it against the OWNING component's env (interprocedural
+    /// pass-through, docs §13.1). `Null` for a literal write, a `bind:` (never
+    /// folded), or a multi-part value. Mirrors `ExplicitProp.expr` in analyze.ts.
+    pub(crate) expr: Value,
 }
 
 pub(crate) struct CallSite {
     pub(crate) had_spread: bool,
     pub(crate) explicit: HashMap<String, ExplicitProp>,
+    /// The component that OWNS this call site (renders the `<Child .../>`); the
+    /// fixpoint evaluates a forwarded expression against its fold env. `None` for
+    /// callers outside the graph fixpoint (mono). Mirrors `CallSite.owner`.
+    pub(crate) owner: Option<String>,
 }
 
-pub(crate) fn dynamic_write(index: i64, last_spread: i64) -> ExplicitProp {
-    ExplicitProp { value: None, dynamic: true, after_last_spread: index > last_spread }
+pub(crate) fn dynamic_write(index: i64, last_spread: i64, expr: Value) -> ExplicitProp {
+    ExplicitProp { value: None, dynamic: true, after_last_spread: index > last_spread, expr }
 }
 
 /// Read a literal off an attribute `value` (true | node | node[]); `None` => not
@@ -229,13 +239,15 @@ pub(crate) fn synthesized_body_props(component: &Value) -> Vec<String> {
     names
 }
 
-/// The `[name, value]` entries a spread contributes IF it is a statically-known
-/// object literal whose complete key set we can see. `None` => an opaque spread
-/// (an identifier/call `{...rest}`, or an object literal carrying a nested spread,
-/// a computed key, or a getter/setter/method) that may set any prop. Each value
-/// is `Some(lit)` for a literal (so it folds) or `None` for a non-literal value
-/// (key known, value dynamic). Mirrors `knownSpreadEntries` in analyze.ts.
-pub(crate) fn known_spread_entries(attr: &Value) -> Option<Vec<(String, Option<Literal>)>> {
+/// The `[name, value, expr]` entries a spread contributes IF it is a
+/// statically-known object literal whose complete key set we can see. `None` =>
+/// an opaque spread (an identifier/call `{...rest}`, or an object literal carrying
+/// a nested spread, a computed key, or a getter/setter/method) that may set any
+/// prop. Each value is `Some(lit)` for a literal (so it folds) or `None` for a
+/// non-literal value (key known, value dynamic) — in which case `expr` carries the
+/// value node so the fixpoint can retry it against the owner env. Mirrors
+/// `knownSpreadEntries` in analyze.ts.
+pub(crate) fn known_spread_entries(attr: &Value) -> Option<Vec<(String, Option<Literal>, Value)>> {
     let obj = get(attr, "expression");
     if type_of(obj) != Some("ObjectExpression") {
         return None;
@@ -266,14 +278,38 @@ pub(crate) fn known_spread_entries(attr: &Value) -> Option<Vec<(String, Option<L
             _ => None,
         };
         let name = name?; // unknown key shape -> whole spread opaque
-        entries.push((name, evaluate(get(prop, "value"), &empty)));
+        let val_node = get(prop, "value");
+        let lit = evaluate(val_node, &empty);
+        let expr = if lit.is_none() { val_node.clone() } else { Value::Null };
+        entries.push((name, lit, expr));
     }
     Some(entries)
 }
 
+/// The single expression node behind a non-literal attribute value
+/// (`prop={expr}`), or `Null` when the value is a boolean shorthand, plain text,
+/// or a multi-part concatenation. Mirrors `singleExprValue` in analyze.ts.
+fn single_expr_value(value: &Value) -> Value {
+    if value == &Value::Bool(true) || value.is_null() {
+        return Value::Null;
+    }
+    let single;
+    let parts: &[Value] = match value.as_array() {
+        Some(a) => a,
+        None => {
+            single = [value.clone()];
+            &single
+        }
+    };
+    if parts.len() == 1 && type_of(&parts[0]) == Some("ExpressionTag") {
+        return get(&parts[0], "expression").clone();
+    }
+    Value::Null
+}
+
 /// Read one `<Child .../>` into a {@link CallSite} (last-write-wins + spread
 /// tracking + synthesized body props). Mirrors `readCallSite`.
-pub(crate) fn read_call_site(component: &Value) -> CallSite {
+pub(crate) fn read_call_site(component: &Value, owner: Option<String>) -> CallSite {
     let attrs = arr(component, "attributes");
     // Only spreads we cannot expand are opaque; a known object literal is expanded
     // into explicit writes below, so `after_last_spread` is measured against the
@@ -291,10 +327,15 @@ pub(crate) fn read_call_site(component: &Value) -> CallSite {
             // A known object-literal spread expands to one explicit write per key;
             // an unknown spread is opaque (handled via had_spread/after_last_spread).
             if let Some(entries) = known_spread_entries(attr) {
-                for (name, val) in entries {
+                for (name, val, expr) in entries {
                     let prop = match val {
-                        Some(v) => ExplicitProp { value: Some(v), dynamic: false, after_last_spread: i > last_spread },
-                        None => dynamic_write(i, last_spread),
+                        Some(v) => ExplicitProp {
+                            value: Some(v),
+                            dynamic: false,
+                            after_last_spread: i > last_spread,
+                            expr: Value::Null,
+                        },
+                        None => dynamic_write(i, last_spread, expr),
                     };
                     explicit.insert(name, prop);
                 }
@@ -303,8 +344,9 @@ pub(crate) fn read_call_site(component: &Value) -> CallSite {
         }
         let name = attr.get("name").and_then(Value::as_str);
         if type_of(attr) == Some("BindDirective") {
+            // A `bind:` is a two-way write that must never fold — no `expr`.
             if let Some(n) = name {
-                explicit.insert(n.to_string(), dynamic_write(i, last_spread));
+                explicit.insert(n.to_string(), dynamic_write(i, last_spread, Value::Null));
             }
             continue;
         }
@@ -315,22 +357,28 @@ pub(crate) fn read_call_site(component: &Value) -> CallSite {
             Some(n) => n,
             None => continue,
         };
-        match literal_attr_value(get(attr, "value")) {
+        let value = get(attr, "value");
+        match literal_attr_value(value) {
             Some(v) => {
                 explicit.insert(
                     name.to_string(),
-                    ExplicitProp { value: Some(v), dynamic: false, after_last_spread: i > last_spread },
+                    ExplicitProp {
+                        value: Some(v),
+                        dynamic: false,
+                        after_last_spread: i > last_spread,
+                        expr: Value::Null,
+                    },
                 );
             }
             None => {
-                explicit.insert(name.to_string(), dynamic_write(i, last_spread));
+                explicit.insert(name.to_string(), dynamic_write(i, last_spread, single_expr_value(value)));
             }
         }
     }
     for name in synthesized_body_props(component) {
-        explicit.insert(name, dynamic_write(attrs.len() as i64, last_spread));
+        explicit.insert(name, dynamic_write(attrs.len() as i64, last_spread, Value::Null));
     }
-    CallSite { had_spread: last_spread >= 0, explicit }
+    CallSite { had_spread: last_spread >= 0, explicit, owner }
 }
 
 // ---- value-set join --------------------------------------------------------
@@ -354,17 +402,32 @@ pub(crate) fn literal_default(expr: &Value) -> Option<Literal> {
     }
 }
 
-pub(crate) fn value_set_for(decl: &PropDecl, sites: &[CallSite]) -> PropValueSet {
+/// Per-owner fold env (local-keyed constFold) a forwarded call-site expression is
+/// evaluated against — the previous fixpoint round's folds (docs §13.1).
+pub(crate) type OwnerEnvs = HashMap<String, Env>;
+
+pub(crate) fn value_set_for(decl: &PropDecl, sites: &[CallSite], owner_envs: &OwnerEnvs) -> PropValueSet {
+    let empty: Env = HashMap::new();
     let mut values = Vec::new();
     let mut dynamic = false;
     let mut top = false;
     for site in sites {
         match site.explicit.get(&decl.name) {
             Some(e) if e.after_last_spread => {
-                if e.dynamic {
-                    dynamic = true;
-                } else if let Some(v) = &e.value {
-                    push_literal_unique(&mut values, v.clone());
+                if !e.dynamic {
+                    if let Some(v) = &e.value {
+                        push_literal_unique(&mut values, v.clone());
+                    }
+                } else {
+                    // Interprocedural pass-through: fold the forwarded expression
+                    // against the OWNER's env (previous round). `known` => a value
+                    // this site provably passes; otherwise it stays dynamic. A
+                    // `bind:`/multi-part write has no `expr`, so it never folds.
+                    let env = site.owner.as_ref().and_then(|o| owner_envs.get(o)).unwrap_or(&empty);
+                    match if e.expr.is_null() { None } else { evaluate(&e.expr, env) } {
+                        Some(v) => push_literal_unique(&mut values, v),
+                        None => dynamic = true,
+                    }
                 }
             }
             _ => {

@@ -184,6 +184,14 @@ pub fn evaluate(node: &Value, env: &Env) -> Option<Literal> {
             }
             env.get(name).cloned()
         }
+        "ConditionalExpression" => {
+            // `test ? a : b`: sound only when the test is proven — evaluate the
+            // taken arm, leaving the other unevaluated so its unknowns cannot
+            // poison the result.
+            let test = evaluate(node.get("test")?, env)?;
+            let arm = if test.to_boolean() { "consequent" } else { "alternate" };
+            evaluate(node.get(arm)?, env)
+        }
         "UnaryExpression" => {
             let arg = evaluate(node.get("argument")?, env)?;
             match node.get("operator").and_then(Value::as_str)? {
