@@ -125,7 +125,9 @@ fn collect_site_removals(node: &Value, reachable: &HashSet<String>, ops: &mut Ve
 
 /// A call-site attribute value with no observable evaluation side effect: a
 /// boolean shorthand, static text, or a single literal / bare-identifier
-/// expression (`x={foo}`, `x={undefined}`).  Mirrors `isSideEffectFreeValue`.
+/// expression (`x={foo}`, `x={undefined}`).  A `$`-prefixed identifier is a Svelte
+/// store auto-subscription (`x={$foo}`) — reading it subscribes, a side effect —
+/// so it is NOT removable.  Mirrors `isSideEffectFreeValue`.
 fn is_reverse_removable_value(value: &Value) -> bool {
     if value == &Value::Bool(true) {
         return true; // boolean shorthand
@@ -150,7 +152,12 @@ fn is_reverse_removable_value(value: &Value) -> bool {
     match type_of(&parts[0]) {
         Some("Text") => true,
         Some("ExpressionTag") => {
-            matches!(type_of(get(&parts[0], "expression")), Some("Literal") | Some("Identifier"))
+            let expr = get(&parts[0], "expression");
+            match type_of(expr) {
+                Some("Literal") => true,
+                Some("Identifier") => !expr.get("name").and_then(Value::as_str).unwrap_or("").starts_with('$'),
+                _ => false,
+            }
         }
         _ => false,
     }

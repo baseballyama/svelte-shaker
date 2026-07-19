@@ -125,7 +125,11 @@ function isSideEffectFreeValue(value: unknown): boolean {
   if (part.type === 'Text') return true;
   if (part.type !== 'ExpressionTag') return false;
   const expr = part.expression;
-  return expr?.type === 'Literal' || expr?.type === 'Identifier';
+  if (expr?.type === 'Literal') return true;
+  // A bare identifier read is pure — except a `$`-prefixed one, which is a Svelte
+  // store auto-subscription (`x={$foo}`): reading it SUBSCRIBES to the store, an
+  // observable side effect, so dropping the attribute would drop the subscription.
+  return expr?.type === 'Identifier' && typeof expr.name === 'string' && !expr.name.startsWith('$');
 }
 
 /** Removal of an attribute plus one leading space/tab, keeping the tag tidy. */
