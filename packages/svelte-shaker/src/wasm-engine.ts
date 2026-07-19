@@ -1,8 +1,9 @@
 import { createRequire } from 'node:module';
 import { compile } from 'svelte/compiler';
 import { buildAnalyzeInput, type ReadFile, type Resolve } from './analyze.js';
-import { parseCached, parseSvelte, type Parse, type ParseCache } from './parse.js';
+import { parseCached, type Parse, type ParseCache } from './parse.js';
 import { type MonomorphizeOptions } from './mono.js';
+import { revertCascade } from './revert-cascade.js';
 import type { ComponentId } from './ir.js';
 
 // NODE-ONLY: loads the native Rust (WASM) engine and drives it from the Vite
@@ -76,7 +77,7 @@ function ownSize(id: ComponentId, source: string): number | null {
  *
  * The same parse cache feeds the crawl and the program input, so each file is
  * parsed once.  A final self-check mirrors the JS engine's revert cascade
- * ({@link shakeWithRevertCascade}): any emitted file that no longer parses is
+ * ({@link revertCascade}): any emitted file that no longer parses is
  * force-bailed and the whole shake re-run, so a single mishandled shape can never
  * break the build nor leave a parent's call-site edits inconsistent.
  */
@@ -98,13 +99,12 @@ export async function svelteShakerWasm(
     edges: input.edges,
     entries: input.entries,
   };
-  return shakeWithRevertCascade(
+  return revertCascade(
     input.files,
     (forceBail) =>
-      JSON.parse(engine.shake_program(JSON.stringify({ ...programInput, forceBail }))) as Record<
-        ComponentId,
-        string
-      >,
+      JSON.parse(
+        engine.shake_program(JSON.stringify({ ...programInput, forceBail: [...forceBail] })),
+      ) as Record<ComponentId, string>,
   );
 }
 
@@ -148,10 +148,10 @@ export async function svelteShakerWasmWithMono(
     minSavings: mono.minSavings,
   });
   let last!: { files: Record<ComponentId, string>; variants: Record<string, string> };
-  const files = shakeWithRevertCascade(input.files, (forceBail) => {
+  const files = revertCascade(input.files, (forceBail) => {
     last = JSON.parse(
       engine.shake_program_with_mono(
-        JSON.stringify({ ...programInput, forceBail }),
+        JSON.stringify({ ...programInput, forceBail: [...forceBail] }),
         options,
         ownSize,
       ),
@@ -159,54 +159,4 @@ export async function svelteShakerWasmWithMono(
     return last.files;
   });
   return { files, variants: new Map(Object.entries(last.variants)) };
-}
-
-/** Mirror of index.ts `MAX_REVERT_ITERATIONS`: keep the two engines' revert
- * behavior identical. */
-const MAX_REVERT_ITERATIONS = 3;
-
-/** The ids in `out` whose emitted source no longer parses; a file left unchanged
- * from its original is skipped (it is already known-good). */
-function unparseableIds(
-  out: Record<ComponentId, string>,
-  files: { id: ComponentId; code: string }[],
-): ComponentId[] {
-  const failed: ComponentId[] = [];
-  for (const file of files) {
-    const code = out[file.id];
-    if (code === undefined || code === file.code) continue;
-    try {
-      parseSvelte(code, file.id);
-    } catch {
-      failed.push(file.id);
-    }
-  }
-  return failed;
-}
-
-/**
- * The WASM counterpart of index.ts `shakeWithRevertCascade`: run the native
- * shake, and if any emitted file fails to re-parse, re-run it with those ids in
- * `forceBail` (the Rust engine then bails them) up to {@link
- * MAX_REVERT_ITERATIONS} times.  Reverting only the broken child would leave its
- * parent's call-site edits dangling; force-bailing and re-running keeps the pair
- * consistent.  If it never converges, every file falls back to its untouched
- * original — a whole-program no-op, always sound.
- */
-function shakeWithRevertCascade(
-  files: { id: ComponentId; code: string }[],
-  run: (forceBail: ComponentId[]) => Record<ComponentId, string>,
-): Record<ComponentId, string> {
-  let forceBail: ComponentId[] = [];
-  let out = run(forceBail);
-  for (let i = 0; i < MAX_REVERT_ITERATIONS; i++) {
-    const failed = unparseableIds(out, files);
-    if (failed.length === 0) return out;
-    forceBail = [...new Set([...forceBail, ...failed])];
-    out = run(forceBail);
-  }
-  if (unparseableIds(out, files).length === 0) return out;
-  const original: Record<ComponentId, string> = {};
-  for (const file of files) original[file.id] = file.code;
-  return original;
 }

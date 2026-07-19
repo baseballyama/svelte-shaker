@@ -2,11 +2,10 @@ import {
   analyze,
   analyzeInput,
   buildAnalyzeInput,
-  type FileModel,
   type ReadFile,
   type Resolve,
 } from './analyze.js';
-import { parseSvelte, type Parse, type ParseCache } from './parse.js';
+import { type Parse, type ParseCache } from './parse.js';
 import { transformAll, transformAllWithMono } from './transform.js';
 import {
   monomorphize,
@@ -14,7 +13,8 @@ import {
   type MonomorphizeOptions,
   type MonomorphizeResult,
 } from './mono.js';
-import type { ComponentId, ComponentPlan } from './ir.js';
+import { shakeWithRevertCascade } from './revert-cascade.js';
+import type { ComponentId } from './ir.js';
 
 export type {
   ComponentId,
@@ -84,93 +84,6 @@ async function analyzeWith(
   const cache: ParseCache = new Map();
   const input = await buildAnalyzeInput(entries, resolve, readFile, cache, parse);
   return analyzeInput(input, cache);
-}
-
-/** How many times we re-run the transform after force-bailing components whose
- * output failed to re-parse, before giving up on a whole-program no-op. Small on
- * purpose: each pass can only bail MORE components (monotone), so a couple of
- * passes settle any real case; the cap just bounds a pathological transform. */
-const MAX_REVERT_ITERATIONS = 3;
-
-/** Bail reason stamped on a component force-bailed by the revert cascade. */
-const REVERT_REASON = 'reverted: transform emitted unparseable source';
-
-/** The ids in `out` whose emitted source no longer parses as valid Svelte.  A
- * file left unchanged from its model is skipped (it is the original, already
- * known-good), so only genuinely edited-then-broken files are collected. */
-function unparseableIds(
-  models: Map<ComponentId, FileModel>,
-  out: Record<ComponentId, string>,
-): Set<ComponentId> {
-  const failed = new Set<ComponentId>();
-  for (const [id, code] of Object.entries(out)) {
-    const model = models.get(id);
-    if (!model || code === model.code) continue;
-    try {
-      parseSvelte(code, id);
-    } catch {
-      failed.add(id);
-    }
-  }
-  return failed;
-}
-
-/** A copy of `plans` with `ids` force-bailed: those components fold nothing, so
- * the re-run leaves their body untouched AND (because they now drop no prop)
- * keeps every parent's call-site attributes for them. */
-function forceBail(
-  plans: Map<ComponentId, ComponentPlan>,
-  ids: Set<ComponentId>,
-): Map<ComponentId, ComponentPlan> {
-  const next = new Map(plans);
-  for (const id of ids) {
-    const plan = next.get(id);
-    if (!plan) continue;
-    next.set(id, {
-      ...plan,
-      bail: true,
-      reasons: [...plan.reasons, REVERT_REASON],
-      constFold: new Map(),
-      narrow: new Map(),
-      valueSets: new Map(),
-    });
-  }
-  return next;
-}
-
-/**
- * Run `runTransform` and self-check its output: if any component's slimmed source
- * does not re-parse as valid Svelte, force-bail every such component and re-run
- * the WHOLE transform, up to {@link MAX_REVERT_ITERATIONS} times.
- *
- * Reverting only the offending child (the old behavior) is unsound: its parent's
- * call-site edits were already made against the now-discarded folded child, so the
- * child would render its default with no attribute left to restore it.  Bailing
- * the child and re-running recomputes those parent edits against a child that
- * drops nothing, keeping the pair consistent.  Should a transform never converge,
- * we fall back to the untouched originals for every file — a whole-program no-op,
- * which is always sound.  The engine aims to only ever emit valid source, so this
- * is a last line of defense, not a routine path.
- *
- * Exposed so the (rare) test that must drive a revert can inject a transform.
- */
-export function shakeWithRevertCascade(
-  models: Map<ComponentId, FileModel>,
-  plans: Map<ComponentId, ComponentPlan>,
-  runTransform: (plans: Map<ComponentId, ComponentPlan>) => Record<ComponentId, string>,
-): Record<ComponentId, string> {
-  let out = runTransform(plans);
-  for (let i = 0; i < MAX_REVERT_ITERATIONS; i++) {
-    const failed = unparseableIds(models, out);
-    if (failed.size === 0) return out;
-    plans = forceBail(plans, failed);
-    out = runTransform(plans);
-  }
-  if (unparseableIds(models, out).size === 0) return out;
-  // Still broken after the cap: revert every file to its original (no-op shake).
-  const original: Record<ComponentId, string> = {};
-  for (const model of models.values()) original[model.id] = model.code;
-  return original;
 }
 
 /** The full output of a shake including L2 specialization. */
