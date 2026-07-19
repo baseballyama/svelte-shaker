@@ -201,4 +201,36 @@ describe('reverse analysis: drop inputs a child can never read', () => {
     const out = await shakeSound(files);
     expect(out['/App.svelte']!).toContain('icon={heavy}'); // child bailed -> untouched
   });
+
+  it('11. keeps a prop the child declares under a string-literal key (B1)', async () => {
+    // `let { 'aria-label': label } = $props()` binds a prop whose external name is
+    // not an identifier — it IS read, so its attribute must not be dropped.  The
+    // whole child falls back to ALL (nothing removed), the safe direction.
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
+        `<Child aria-label="hello" icon={heavy} />\n`,
+      '/Child.svelte':
+        `<script>\n  let { 'aria-label': label } = $props();\n</script>\n` +
+        `<span aria-label={label}>x</span>\n`,
+    };
+    const out = await shakeSound(files);
+    const app = out['/App.svelte']!;
+    expect(app).toContain('aria-label="hello"'); // read prop -> kept
+    expect(app).toContain('icon={heavy}'); // ALL fallback -> nothing removed
+  });
+
+  it('12. never removes a `$store` auto-subscription value (S1)', async () => {
+    // `ping={$pinged}` reads a store, which SUBSCRIBES — an observable side effect,
+    // so even though the child never declares `ping` the attribute stays.
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Child from './Child.svelte';\n  import { writable } from 'svelte/store';\n  const pinged = writable('P');\n</script>\n` +
+        `<Child ping={$pinged} label="hi" />\n`,
+      '/Child.svelte':
+        `<script>\n  let { label } = $props();\n</script>\n` + `<span>{label}</span>\n`,
+    };
+    const out = await shakeSound(files);
+    expect(out['/App.svelte']!).toContain('ping={$pinged}'); // subscription -> kept
+  });
 });
