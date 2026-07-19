@@ -162,3 +162,58 @@ export async function collectExternalEscapes(
   }
   return escaped;
 }
+
+/**
+ * Expand user-declared `external` prefixes (docs §4.2) against a known component
+ * set.  Each entry is a Vite-root-relative or absolute path naming EITHER a
+ * component file (exact match) OR a directory (every component under it) — the
+ * same "directory or file prefix" basis as `include`, with no glob dependency.  A
+ * matched component is returned so the caller can escape it: the file STAYS in the
+ * analysis (its own call sites keep counting toward its children), only itself is
+ * frozen — never a filter that drops it from the scan.  An entry matching nothing
+ * is a harmless no-op.
+ */
+export function matchExternal(
+  external: string[] | undefined,
+  root: string,
+  components: Iterable<ComponentId>,
+): ComponentId[] {
+  if (!external || external.length === 0) return [];
+  // `path.resolve` leaves an absolute entry as-is and resolves a relative one
+  // against `root` — exactly "Vite-root-relative or absolute".
+  const prefixes = external.map((p) => path.resolve(root, p));
+  const out: ComponentId[] = [];
+  for (const id of components) {
+    if (prefixes.some((p) => id === p || id.startsWith(p + path.sep))) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * The whole escape set (docs §4.2) for a build: components used from a
+ * non-`.svelte` module (found by scanning {@link collectNonSvelteModules} with
+ * {@link collectExternalEscapes}) UNIONED with those the user named via `external`
+ * ({@link matchExternal}).  This is the one helper a Shell — the Vite plugin, or a
+ * future `eslint-plugin-svelte` rule — calls to turn "include roots + resolver +
+ * component set" into the `AnalyzeInput.escaped` ids the engine bails.
+ */
+export async function computeEscapedComponents(opts: {
+  /** Absolute include roots (already resolved against the project root). */
+  includeDirs: string[];
+  /** Project root, for resolving relative `external` entries. */
+  root: string;
+  /** User-declared `external` prefixes (root-relative or absolute), if any. */
+  external?: string[] | undefined;
+  /** The crawled `.svelte` component ids, for matching `external` prefixes. */
+  components: Iterable<ComponentId>;
+  resolve: Resolve;
+  readFile: ReadFile;
+}): Promise<ComponentId[]> {
+  const escaped = await collectExternalEscapes(
+    opts.includeDirs.flatMap(collectNonSvelteModules),
+    opts.resolve,
+    opts.readFile,
+  );
+  for (const id of matchExternal(opts.external, opts.root, opts.components)) escaped.add(id);
+  return [...escaped];
+}

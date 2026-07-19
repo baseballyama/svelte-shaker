@@ -5,9 +5,8 @@ import type { Plugin } from 'vite';
 import { svelteShaker, svelteShakerWithMono, type Parse, type Resolve } from './index.js';
 import { DevShaker, type DevMode } from './engine.js';
 import {
-  collectExternalEscapes,
-  collectNonSvelteModules,
   collectSvelteFiles,
+  computeEscapedComponents,
   fsResolve,
   isScannableModule,
 } from './scan.js';
@@ -24,6 +23,24 @@ export interface ShakerOptions {
    * for prop elimination to be sound (docs/ARCHITECTURE.md §4.2).
    */
   include?: string[];
+  /**
+   * Components that have a consumer the shake cannot see, so they must never be
+   * folded or narrowed (docs/ARCHITECTURE.md §4.2).  Each entry is a Vite-root-
+   * relative or absolute path naming EITHER a component file or a directory of
+   * them — the same "directory or file prefix" basis as {@link include}, no glob.
+   *
+   * The non-`.svelte` module scan already escapes components reached by a static
+   * `.ts`/`.js` import; `external` is the sound fallback for what the scan cannot
+   * see — most importantly a NON-literal dynamic `import(expr)`, or a call site in
+   * a module outside the include roots.
+   *
+   * A-semantics — this FREEZES the named component, it does NOT exclude it from the
+   * scan: the file stays fully in the analysis (its own `<Child/>` call sites keep
+   * counting toward its children's profiles), and only the component ITSELF has its
+   * prop folding / never-passed reporting turned off.  It is not a way to make the
+   * shaker ignore a file.
+   */
+  external?: string[];
   /**
    * Per-call-site monomorphization tuning (docs §13.2).  Monomorphization is ON
    * by default because it is bail-safe and never bloats (the measured net-win
@@ -289,16 +306,21 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       const underDirs = (file: string): boolean =>
         dirs.some((d) => file === d || file.startsWith(d + path.sep));
 
-      // Re-scan the non-`.svelte` modules for `.svelte` call sites (docs §4.2).
-      // Dev uses the same relative-only `fsResolve` the dev crawl uses, so the
-      // escape scope matches the crawl scope — dev is never more unsound than build.
-      const rescanEscaped = async (): Promise<ComponentId[]> => [
-        ...(await collectExternalEscapes(dirs.flatMap(collectNonSvelteModules), fsResolve, read)),
-      ];
-      // Sorted-join key so a change that does not move the escape set skips the reload.
+      // Re-scan the non-`.svelte` modules for `.svelte` call sites and re-apply
+      // `external` (docs §4.2).  Dev uses the same relative-only `fsResolve` the dev
+      // crawl uses, so the escape scope matches the crawl scope — dev is never more
+      // unsound than build.  The sorted-join key lets a change that does not move the
+      // escape set skip the reload.
       let escapedKey = '';
       const currentEscaped = async (): Promise<ComponentId[]> => {
-        const set = await rescanEscaped();
+        const set = await computeEscapedComponents({
+          includeDirs: dirs,
+          root,
+          external: options.external,
+          components: entries,
+          resolve: fsResolve,
+          readFile: read,
+        });
         escapedKey = [...set].sort().join('\n');
         return set;
       };
@@ -414,12 +436,17 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         return resolved.id.split('?')[0]!;
       };
 
-      // Components used from OUTSIDE the `.svelte` graph — a `.ts`/`.js` call site
-      // the crawl cannot parse (`mount(Comp, …)`, a lazy `import()`) — must not be
-      // folded (docs §4.2).  Scan every non-`.svelte` module under the include roots
-      // for `.svelte`-resolving imports and hand the engine that escape set.
-      const modules = dirs.flatMap(collectNonSvelteModules);
-      const escaped = [...(await collectExternalEscapes(modules, resolve, read))];
+      // Components used from OUTSIDE the `.svelte` graph must not be folded (docs
+      // §4.2): those a non-`.svelte` module imports (found by the scan) plus any the
+      // user froze via `external`.  Hand the engine that escape set.
+      const escaped = await computeEscapedComponents({
+        includeDirs: dirs,
+        root,
+        external: options.external,
+        components: entries,
+        resolve,
+        readFile: read,
+      });
 
       // Decide the engine.  The native Rust engine now implements every pass
       // INCLUDING monomorphization (it calls back to JS only for the compiled-size
