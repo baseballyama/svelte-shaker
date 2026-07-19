@@ -26,7 +26,10 @@ beforeAll(() => {
 
 afterAll(() => rmSync(APP, { recursive: true, force: true }));
 
-async function bundle(pre: unknown[]): Promise<string> {
+async function bundle(
+  pre: unknown[],
+  opts: { sourcemap?: boolean; onwarn?: (warning: Rollup.RollupLog) => void } = {},
+): Promise<string> {
   const result = (await build({
     root: APP,
     logLevel: 'silent',
@@ -34,9 +37,10 @@ async function bundle(pre: unknown[]): Promise<string> {
     build: {
       write: false,
       minify: false,
+      sourcemap: opts.sourcemap ?? false,
       reportCompressedSize: false,
       target: 'esnext',
-      rollupOptions: { input: join(APP, 'main.ts') },
+      rollupOptions: { input: join(APP, 'main.ts'), onwarn: opts.onwarn },
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plugins: [...pre, svelte({ compilerOptions: { runes: true } })] as any,
@@ -65,6 +69,19 @@ describe('vite-plugin-svelte-shaker (end-to-end build)', () => {
     expect(rust).toContain('This is Sub Component');
     // … and the whole bundle is byte-identical (the engines are differential-tested).
     expect(rust).toBe(js);
+  });
+
+  it('sourcemap: a shaken file reports an empty map, so no SOURCEMAP_BROKEN warning', async () => {
+    // Issue #89: replacing a component's source in `transform` without declaring a
+    // sourcemap makes Rollup/Rolldown warn the map is likely wrong. The shaker
+    // returns `{ mappings: '' }` for shaken files, which is the sanctioned "no map
+    // available" signal, so the warning must not fire when sourcemaps are on.
+    const warnings: string[] = [];
+    await bundle([shaker({ include: ['.'] })], {
+      sourcemap: true,
+      onwarn: (warning) => warnings.push(warning.code ?? warning.message),
+    });
+    expect(warnings).not.toContain('SOURCEMAP_BROKEN');
   });
 
   it('engine: "rust" shakes with L2 on by default (native L2)', async () => {
