@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { analyze } from '../src/analyze';
-import { svelteShaker, shakeWithRevertCascade } from '../src/index';
+import { svelteShaker } from '../src/index';
+import { shakeWithRevertCascade } from '../src/revert-cascade';
 import { transformAll } from '../src/transform';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
 
@@ -111,6 +112,21 @@ describe('soundness probes: props written inside the component are not folded', 
       '/Child.svelte':
         `<script>\n  let { label = 'z' } = $props();\n  function f(obj) { ({ label } = obj); }\n</script>\n` +
         `<button onclick={() => f({ label: 'b' })}>{label}</button>\n{#if label === 'b'}<p>changed!</p>{/if}\n`,
+    };
+    const { app } = await shakeChild(files, [{ label: 'a' }]);
+    expect(app).toContain('label="a"');
+  });
+
+  it('inline handler: a prop reassigned in a template `on:` handler is not folded', async () => {
+    // The ONLY write lives in the template (`onclick={() => (label = 'b')}`), so
+    // this exercises the fragment-walk write detection end-to-end, not the
+    // instance-script path the reassignment probe above covers.
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Child from './Child.svelte';\n</script>\n` + `<Child label="a" />\n`,
+      '/Child.svelte':
+        `<script>\n  let { label = 'z' } = $props();\n</script>\n` +
+        `<button onclick={() => (label = 'b')}>{label}</button>\n{#if label === 'b'}<p>changed!</p>{/if}\n`,
     };
     const { app } = await shakeChild(files, [{ label: 'a' }]);
     expect(app).toContain('label="a"');
