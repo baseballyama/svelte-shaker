@@ -9,6 +9,10 @@ use crate::ast::*;
 /// Imported components LEAKED as a value bail reason (analyze.ts §4.1).
 pub(crate) const ESCAPE_REASON: &str = "escapes as value (e.g. <svelte:component this={X}>)";
 
+/// Bail reason for a component the JS revert cascade force-bails because its
+/// emitted source failed to re-parse (index.ts `REVERT_REASON`).
+pub(crate) const REVERT_REASON: &str = "reverted: transform emitted unparseable source";
+
 /// The declared prop names (the `Property` keys of the `let { ... } = $props()`
 /// `ObjectPattern`, a `...rest` skipped) plus whether such a rest element exists
 /// — mirrors `findPropsDeclaration` + the prop loop in analyze.ts.
@@ -60,13 +64,15 @@ pub(crate) fn declared_props(ast: &Value) -> (Vec<String>, bool) {
 }
 
 /// Names bound OUTSIDE the `$props()` pattern (a same-named prop is a different
-/// entity there, so it must never be folded) and names used as `{@debug}`
-/// arguments. Mirrors `collectTemplateBindings` in analyze.ts. The `$props()`
-/// destructuring binds via an `ObjectPattern`, never an `Identifier`/function
-/// param, so it is naturally excluded by the branches below.
-pub(crate) fn template_bindings(ast: &Value) -> (Vec<String>, Vec<String>) {
+/// entity there, so it must never be folded), names used as `{@debug}`
+/// arguments, and names the component WRITES TO (reassign / `++` / destructure
+/// assign / `bind:`). Mirrors `collectTemplateBindings` in analyze.ts. The
+/// `$props()` destructuring binds via an `ObjectPattern`, never an
+/// `Identifier`/function param, so it is naturally excluded by the branches below.
+pub(crate) fn template_bindings(ast: &Value) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut shadowed = Vec::new();
     let mut debug = Vec::new();
+    let mut written = Vec::new();
 
     // Instance-script `let` / `function` declarations and function parameters.
     walk(get(ast, "instance"), &mut |node| {
@@ -89,10 +95,14 @@ pub(crate) fn template_bindings(ast: &Value) -> (Vec<String>, Vec<String>) {
                 add_pattern_names(param, &mut shadowed);
             }
         }
+        collect_written(node, &mut written);
     });
 
-    // Template-scope binders + `{@debug}` arguments.
-    walk(get(ast, "fragment"), &mut |node| match type_of(node) {
+    // Template-scope binders + `{@debug}` arguments + template writes (`bind:`,
+    // event-handler assignments/updates).
+    walk(get(ast, "fragment"), &mut |node| {
+        collect_written(node, &mut written);
+        match type_of(node) {
         Some("EachBlock") => {
             add_pattern_names(get(node, "context"), &mut shadowed);
             if let Some(i) = node.get("index").and_then(Value::as_str) {
@@ -134,9 +144,39 @@ pub(crate) fn template_bindings(ast: &Value) -> (Vec<String>, Vec<String>) {
             }
         }
         _ => {}
+        }
     });
 
-    (shadowed, debug)
+    (shadowed, debug, written)
+}
+
+/// Add the names an assignment / update expression or `bind:` directive WRITES to
+/// `out`: a bare-identifier target (`p = …`, `p++`), a destructuring assignment
+/// (`({ p } = obj)`), or a two-way `bind:value={p}` / `bind:this={p}`. A
+/// MemberExpression target (`o.x = …`) is an object mutation, not a scalar-prop
+/// rebind, so `add_pattern_names` ignores it. Mirrors `collectWrittenNames` +
+/// the `BindDirective` case in analyze.ts.
+fn collect_written(node: &Value, out: &mut Vec<String>) {
+    match type_of(node) {
+        Some("AssignmentExpression") => add_pattern_names(get(node, "left"), out),
+        Some("UpdateExpression") => {
+            let arg = get(node, "argument");
+            if str_eq(arg, "type", "Identifier") {
+                if let Some(n) = arg.get("name").and_then(Value::as_str) {
+                    push_unique(out, n);
+                }
+            }
+        }
+        Some("BindDirective") => {
+            let expr = get(node, "expression");
+            if str_eq(expr, "type", "Identifier") {
+                if let Some(n) = expr.get("name").and_then(Value::as_str) {
+                    push_unique(out, n);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Whole-component bail reasons: `<svelte:options accessors|customElement>` makes
