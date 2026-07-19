@@ -108,9 +108,10 @@ shaker({
   `mount(Component, { props })` is handled for you. Use `external` for what the
   scan can't follow: a **non-literal** dynamic `import(expr)`, or a call site in a
   module outside `include`. Entries are root-relative or absolute paths naming a
-  component file or a directory of them (same basis as `include`). It **freezes**
-  the component — the file stays fully analyzed and its own call sites still count;
-  only its own prop folding is turned off. It is not a scan-exclusion filter.
+  component file (with its `.svelte` extension) or a directory of them (same basis
+  as `include`). It **freezes** the component — the file stays fully analyzed and
+  its own call sites still count; only its own prop folding is turned off. It is not
+  a scan-exclusion filter.
 
 ## What it removes
 
@@ -153,7 +154,10 @@ The whole point is to **never change observable behavior**.
   is invisible, which would make prop elimination unsound. Call sites in
   `.ts`/`.js` modules under `include` (e.g. `mount(Component, { props })`) are
   scanned and the component is frozen automatically; a **non-literal** dynamic
-  `import(expr)` can't be followed, so reach for `external` there.
+  `import(expr)` can't be followed, so reach for `external` there. The scan covers
+  modules **under `include`** — a library that mounts its own component from its own
+  bundled `.js`/`.ts` inside `node_modules` is not scanned, so freeze it via
+  `external` (with its resolved path) if you hit that.
 
 See [`docs/ARCHITECTURE.md`](https://github.com/baseballyama/svelte-shaker/blob/main/docs/ARCHITECTURE.md)
 for the full design and implementation status.

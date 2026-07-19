@@ -65,9 +65,10 @@ export function isScannableModule(file: string): boolean {
  * `node_modules` and dot-directories, mirroring {@link collectSvelteFiles}).  The
  * Shell feeds these to {@link collectExternalEscapes} to find components used from
  * outside the `.svelte` graph.  Same include scope as the seed scan — `.ts` inside
- * `node_modules` is deliberately NOT scanned (docs §4.2).
+ * `node_modules` is deliberately NOT scanned (docs §4.2).  Internal: callers use
+ * {@link computeEscapedComponents}.
  */
-export function collectNonSvelteModules(dir: string): string[] {
+function collectNonSvelteModules(dir: string): string[] {
   const out: string[] = [];
   let entries: fs.Dirent[];
   try {
@@ -91,7 +92,10 @@ export function collectNonSvelteModules(dir: string): string[] {
  * the `external` option (docs §4.2) is the sound fallback for it.  Parsed via the
  * Svelte parser's `<script module lang="ts">` wrapper (the same TS-capable parse
  * the engine's barrel-following uses); an unparseable module yields no specifiers,
- * so it is simply not followed.
+ * so it is simply not followed.  Note the wrapper parses TS but NOT JSX, so a
+ * `.jsx`/`.tsx` module whose BODY contains JSX fails to parse and contributes no
+ * escapes — a `.svelte` component such a file mounts must be listed in `external`
+ * (JSX is vanishingly rare in a Svelte app; its imports are otherwise ordinary).
  */
 function moduleImportSpecifiers(code: string, id: ComponentId): string[] {
   let module: AnyNode | null | undefined;
@@ -142,7 +146,7 @@ function moduleImportSpecifiers(code: string, id: ComponentId): string[] {
  * that cannot be read or parsed contributes nothing (best-effort — `external` is
  * the sound fallback for what the scan misses).
  */
-export async function collectExternalEscapes(
+async function collectExternalEscapes(
   modules: ComponentId[],
   resolve: Resolve,
   readFile: ReadFile,
