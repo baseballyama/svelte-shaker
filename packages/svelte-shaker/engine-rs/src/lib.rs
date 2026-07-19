@@ -122,7 +122,7 @@ pub fn find_never_passed_props_json(input_json: &str) -> String {
 
 /// Whole-program shake: analyze + transform.  `input` is `{ files: [{id, ast,
 /// code}], edges, entries }`.  Returns `{ id: slimmedSource }` for every file —
-/// byte-for-byte the L0/L1/L1.5 output (the `svelteShaker` equivalent).
+/// byte-for-byte the output of the always-on folds (the `svelteShaker` equivalent).
 #[wasm_bindgen]
 pub fn shake_program(input_json: &str) -> String {
     let input: Value = match serde_json::from_str(input_json) {
@@ -240,7 +240,7 @@ pub fn shake_program(input_json: &str) -> String {
     Value::Object(out).to_string()
 }
 
-/// Whole-program shake WITH L2 monomorphization.  `input` is the same shape as
+/// Whole-program shake WITH monomorphization.  `input` is the same shape as
 /// `shake_program`; `options_json` is `{enabled, maxVariants, minSavings}`;
 /// `own_size(source) -> number | null` is the per-module compiled-byte proxy the
 /// net-win gate uses (the JS side runs svelte/compiler, so decisions match the TS
@@ -308,7 +308,7 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
 
     let plans = run_fixpoint(&models);
 
-    // L2: compute variants + bindings.  `own_size` is memoized by source string
+    // Monomorphization: compute variants + bindings.  `own_size` is memoized by source string
     // (matching the TS `sizeCache`) so each distinct residual compiles once.
     // Memoized by SOURCE (matching the TS `sizeCache`): each distinct residual
     // compiles once, under the `id` of its first caller (the compiler filename).
@@ -377,7 +377,7 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         }
     }
 
-    // Phase 3 (L2): rewrite each bound `<Child …>` to its variant.
+    // Phase 3 (monomorphization): rewrite each bound `<Child …>` to its variant.
     rewrite_bound_call_sites(&models_by_id, &bindings, &code_by_id, &mut edits_map);
 
     let files: serde_json::Map<String, Value> = models

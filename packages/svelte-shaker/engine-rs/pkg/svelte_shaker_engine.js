@@ -75,7 +75,7 @@ exports.find_never_passed_props_json = find_never_passed_props_json;
 /**
  * Whole-program shake: analyze + transform.  `input` is `{ files: [{id, ast,
  * code}], edges, entries }`.  Returns `{ id: slimmedSource }` for every file —
- * byte-for-byte the L0/L1/L1.5 output (the `svelteShaker` equivalent).
+ * byte-for-byte the output of the always-on folds (the `svelteShaker` equivalent).
  * @param {string} input_json
  * @returns {string}
  */
@@ -96,7 +96,7 @@ function shake_program(input_json) {
 exports.shake_program = shake_program;
 
 /**
- * Whole-program shake WITH L2 monomorphization.  `input` is the same shape as
+ * Whole-program shake WITH monomorphization.  `input` is the same shape as
  * `shake_program`; `options_json` is `{enabled, maxVariants, minSavings}`;
  * `own_size(source) -> number | null` is the per-module compiled-byte proxy the
  * net-win gate uses (the JS side runs svelte/compiler, so decisions match the TS

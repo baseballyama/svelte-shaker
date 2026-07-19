@@ -5,15 +5,15 @@
 /// A minimal `magic-string` equivalent: records non-overlapping span edits and
 /// renders the result. Offsets are **UTF-16 code units** (JS string indices, what
 /// the Svelte AST and magic-string use), so editing is correct for non-ASCII
-/// source — not just ASCII. Only the ops the L0/L1/L1.5 transform needs are
-/// provided (remove / overwrite); inserts (appendLeft/prepend) are L2-only.
+/// source — not just ASCII. Only the ops the always-on-folds transform needs are
+/// provided (remove / overwrite); inserts (appendLeft/prepend) are monomorphization-only.
 pub struct MagicEdit {
     source: Vec<u16>,
     /// `(start, end, replacement)`; `remove` is `overwrite` with an empty string.
     edits: Vec<(usize, usize, Vec<u16>)>,
     /// `appendLeft` insertions: `(index, content)`, emitted just before the
     /// original unit at `index` (left of the chunk starting there), in call order.
-    /// Used by L2's call-site rewrite to inject variant imports.
+    /// Used by monomorphization's call-site rewrite to inject variant imports.
     inserts: Vec<(usize, Vec<u16>)>,
     /// `prepend` content, prepended to the very front (last call is outermost).
     prepend_buf: Vec<u16>,
