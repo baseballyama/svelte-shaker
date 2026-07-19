@@ -572,13 +572,27 @@ function buildUsage(
 
 /** Shared empty owner env (a forwarded expression sees no constants). */
 const EMPTY_ENV: ReadonlyMap<string, Literal> = new Map();
+/** Shared empty owner set env (a forwarded bare id sees no narrowed sets). */
+const EMPTY_SET_ENV: ReadonlyMap<string, Literal[]> = new Map();
 
 /**
- * A forwarded call-site expression is evaluated against its OWNER component's
- * fold env: the owner's `constFold`, remapped to the LOCAL binding names the
- * expression references.  {@link OwnerEnv} looks that up by owner id.
+ * The OWNER component's forwardable knowledge, both remapped to the LOCAL binding
+ * names a forwarded expression references: `fold` collapses a prop to a single
+ * literal (`constFold`), `narrow` holds a prop's known reachable value set
+ * (`narrow`, >= 2 literals).  A bare owner-prop reference forwarded verbatim
+ * (`<Child v={ownerProp}/>`) can propagate EITHER — the single value or the whole
+ * set (docs §13.1).  `constFold` and `narrow` never share a name (buildPlan is
+ * exclusive: singleton -> constFold, >= 2 -> narrow), so lookup order is immaterial.
  */
-type OwnerEnv = (owner: ComponentId | undefined) => ReadonlyMap<string, Literal>;
+interface OwnerFoldEnv {
+  fold: ReadonlyMap<string, Literal>;
+  narrow: ReadonlyMap<string, Literal[]>;
+}
+/** {@link OwnerFoldEnv} for a given owner id (empty for `undefined` / a bailed owner). */
+type OwnerEnv = (owner: ComponentId | undefined) => OwnerFoldEnv;
+
+/** Shared empty {@link OwnerFoldEnv} (no owner, or an owner that folds nothing). */
+const EMPTY_OWNER_ENV: OwnerFoldEnv = { fold: EMPTY_ENV, narrow: EMPTY_SET_ENV };
 
 /**
  * Recompute every component's plan from the (cascade-filtered) usage, evaluating
@@ -595,17 +609,20 @@ function buildPlans(
   usage: Map<ComponentId, Usage>,
   prevPlans: Map<ComponentId, ComponentPlan>,
 ): Map<ComponentId, ComponentPlan> {
-  const envCache = new Map<ComponentId, ReadonlyMap<string, Literal>>();
+  const envCache = new Map<ComponentId, OwnerFoldEnv>();
   const ownerEnv: OwnerEnv = (owner) => {
-    if (owner === undefined) return EMPTY_ENV;
+    if (owner === undefined) return EMPTY_OWNER_ENV;
     const cached = envCache.get(owner);
     if (cached) return cached;
     const model = models.get(owner);
     const plan = prevPlans.get(owner);
-    const env =
-      model && plan && !plan.bail && plan.constFold.size > 0
-        ? remapToLocalNames(plan.constFold, model)
-        : EMPTY_ENV;
+    let env = EMPTY_OWNER_ENV;
+    if (model && plan && !plan.bail && (plan.constFold.size > 0 || plan.narrow.size > 0)) {
+      env = {
+        fold: plan.constFold.size > 0 ? remapToLocalNames(plan.constFold, model) : EMPTY_ENV,
+        narrow: plan.narrow.size > 0 ? remapToLocalNames(plan.narrow, model) : EMPTY_SET_ENV,
+      };
+    }
     envCache.set(owner, env);
     return env;
   };
@@ -1555,14 +1572,25 @@ function valueSetFor(decl: PropDecl, sites: CallSite[], ownerEnv: OwnerEnv): Pro
         continue;
       }
       // Interprocedural pass-through (docs §13.1): a forwarded expression
-      // (`prop={ownerProp}`) is folded against the OWNER's constFold env.  A
-      // `known` result is a value this site provably passes — sound because the
-      // owner env describes the owner's runtime (see {@link buildPlans}); an
-      // `unknown` stays dynamic exactly as before.  `bind:` and multi-part values
-      // carry no `expr`, so they are never folded here.
-      const r = explicit.expr
-        ? evaluate(explicit.expr, ownerEnv(site.owner))
-        : ({ known: false } as const);
+      // (`prop={ownerProp}`) is resolved against the OWNER's env.  Sound because
+      // the owner env describes the owner's runtime (see {@link buildPlans}), so a
+      // resolved value/set is one this site provably passes.  `bind:` and
+      // multi-part values carry no `expr`, so they never resolve here.
+      const env = ownerEnv(site.owner);
+      const expr = explicit.expr;
+      // A BARE owner-prop reference whose owner narrowed it to a known set
+      // contributes that whole set (mirrors css.ts `expressionStrings`: bare
+      // set-var enumerated, any compound expression must const-fold).  Sound: the
+      // owner keeps the narrowed prop genuinely used (never substituted), so the
+      // residual owner passes each set member as-is -> the child receives ⊆ the set.
+      // Monotone across rounds: the owner's narrow set only shrinks as its own dead
+      // spans grow (see planFixpoint), so this contribution only shrinks -> the
+      // fixpoint converges and `plansEqual` (which compares `narrow`) detects it.
+      if (expr && expr.type === 'Identifier' && expr.name && env.narrow.has(expr.name)) {
+        for (const v of env.narrow.get(expr.name)!) add(v);
+        continue;
+      }
+      const r = expr ? evaluate(expr, env.fold) : ({ known: false } as const);
       if (r.known) add(r.value);
       else dynamic = true;
       continue;

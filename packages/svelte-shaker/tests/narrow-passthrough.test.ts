@@ -109,12 +109,9 @@ describe('interprocedural pass-through of value sets', () => {
   it('3-stage: the set travels two pass-through hops down to the leaf', async () => {
     const files = {
       '/App.svelte':
-        `<script>\n  import A from './A.svelte';\n</script>\n` +
-        `<A v="go" />\n<A v="wait" />\n`,
-      '/A.svelte':
-        `<script>\n  import B from './B.svelte';\n  let { v } = $props();\n</script>\n<B v={v} />\n`,
-      '/B.svelte':
-        `<script>\n  import C from './C.svelte';\n  let { v } = $props();\n</script>\n<C v={v} />\n`,
+        `<script>\n  import A from './A.svelte';\n</script>\n` + `<A v="go" />\n<A v="wait" />\n`,
+      '/A.svelte': `<script>\n  import B from './B.svelte';\n  let { v } = $props();\n</script>\n<B v={v} />\n`,
+      '/B.svelte': `<script>\n  import C from './C.svelte';\n  let { v } = $props();\n</script>\n<C v={v} />\n`,
       '/C.svelte':
         `<script>\n  let { v = 'stop' } = $props();\n</script>\n` +
         `{#if v === 'go'}<b>GO</b>{:else if v === 'wait'}<em>W</em>{:else if v === 'stop'}<i>S</i>{/if}\n`,
@@ -123,7 +120,7 @@ describe('interprocedural pass-through of value sets', () => {
     expect(plans.get('/C.svelte')!.narrow.get('v')).toEqual(['go', 'wait']);
 
     const out = await shakeSound(files);
-    expect(out['/C.svelte']!).not.toContain("'stop'"); // the unreachable default arm is gone
+    expect(out['/C.svelte']!).not.toContain('<i>S</i>'); // the unreachable 'stop' arm is gone
     expect(out['/C.svelte']!).toContain('<b>GO</b>');
   });
 
