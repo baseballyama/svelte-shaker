@@ -85,7 +85,7 @@
     scrollbar-width: none;
     background: transparent !important;
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 13.5px;
     line-height: 1.7;
     tab-size: 2;
     white-space: pre;
@@ -107,7 +107,7 @@
     caret-color: var(--ink);
     padding: 12px 14px;
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 13.5px;
     line-height: 1.7;
     tab-size: 2;
     white-space: pre;
