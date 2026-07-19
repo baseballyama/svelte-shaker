@@ -4,7 +4,13 @@ import { compile } from 'svelte/compiler';
 import type { Plugin } from 'vite';
 import { svelteShaker, svelteShakerWithMono, type Parse, type Resolve } from './index.js';
 import { DevShaker, type DevMode } from './engine.js';
-import { collectSvelteFiles, fsResolve } from './scan.js';
+import {
+  collectExternalEscapes,
+  collectNonSvelteModules,
+  collectSvelteFiles,
+  fsResolve,
+  isScannableModule,
+} from './scan.js';
 import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono.js';
 import { tryLoadRsvelteParser } from './rsvelte-parse.js';
 import { svelteShakerWasm, svelteShakerWasmWithMono, tryLoadWasmEngine } from './wasm-engine.js';
@@ -280,25 +286,70 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       const dirs = (options.include ?? ['.']).map((p) => path.resolve(root, p));
       const entries = dirs.flatMap(collectSvelteFiles);
       const read = (id: ComponentId) => fs.readFileSync(id, 'utf-8');
-      devShaker = new DevShaker(entries, fsResolve, read, devMode, getParse());
+      const underDirs = (file: string): boolean =>
+        dirs.some((d) => file === d || file.startsWith(d + path.sep));
+
+      // Re-scan the non-`.svelte` modules for `.svelte` call sites (docs §4.2).
+      // Dev uses the same relative-only `fsResolve` the dev crawl uses, so the
+      // escape scope matches the crawl scope — dev is never more unsound than build.
+      const rescanEscaped = async (): Promise<ComponentId[]> => [
+        ...(await collectExternalEscapes(dirs.flatMap(collectNonSvelteModules), fsResolve, read)),
+      ];
+      // Sorted-join key so a change that does not move the escape set skips the reload.
+      let escapedKey = '';
+      const currentEscaped = async (): Promise<ComponentId[]> => {
+        const set = await rescanEscaped();
+        escapedKey = [...set].sort().join('\n');
+        return set;
+      };
+
+      devShaker = new DevShaker(
+        entries,
+        fsResolve,
+        read,
+        devMode,
+        getParse(),
+        await currentEscaped(),
+      );
       shaken = await devShaker.init();
 
-      // A `.svelte` add/remove changes the call-site set (a new caller can
-      // un-shake a child; a removed one can re-shake it — docs §4).  Re-shake and
-      // full-reload: over-invalidation is always sound, and add/remove is rare
-      // enough that fine-grained HMR for it is not worth the complexity here.
-      const isOurs = (file: string): boolean =>
-        file.endsWith('.svelte') && dirs.some((d) => file === d || file.startsWith(d + path.sep));
-      const onGraphChange = async (file: string, kind: 'added' | 'removed'): Promise<void> => {
-        if (!devShaker || !isOurs(file)) return;
-        const result = await devShaker.update({ [kind]: [file] });
+      const applyDelta = (result: {
+        changed: Record<ComponentId, string>;
+        removed: ComponentId[];
+      }): void => {
         for (const [id, code] of Object.entries(result.changed)) shaken[id] = code;
         for (const id of result.removed) delete shaken[id];
         server.moduleGraph.invalidateAll();
         server.ws.send({ type: 'full-reload' });
       };
+
+      // A `.svelte` add/remove changes the call-site set (a new caller can
+      // un-shake a child; a removed one can re-shake it — docs §4).  Re-shake and
+      // full-reload: over-invalidation is always sound, and add/remove is rare
+      // enough that fine-grained HMR for it is not worth the complexity here.
+      const isOurs = (file: string): boolean => file.endsWith('.svelte') && underDirs(file);
+      const onGraphChange = async (file: string, kind: 'added' | 'removed'): Promise<void> => {
+        if (!devShaker || !isOurs(file)) return;
+        applyDelta(await devShaker.update({ [kind]: [file] }));
+      };
       server.watcher.on('add', (file) => void onGraphChange(file, 'added'));
       server.watcher.on('unlink', (file) => void onGraphChange(file, 'removed'));
+
+      // A non-`.svelte` module changing can add or drop a `.ts`/`.js` call site,
+      // shifting the escape set — a component may now need bailing, or become
+      // foldable again (docs §4.2).  Recompute; only when the set actually moved do
+      // we re-shake and full-reload (over-invalidation is sound, but pointless
+      // reloads on unrelated `.ts` edits are avoided).
+      const onModuleChange = async (file: string): Promise<void> => {
+        if (!devShaker || !isScannableModule(file) || !underDirs(file)) return;
+        const before = escapedKey;
+        devShaker.setEscaped(await currentEscaped());
+        if (escapedKey === before) return;
+        applyDelta(await devShaker.update({}));
+      };
+      server.watcher.on('change', (file) => void onModuleChange(file));
+      server.watcher.on('add', (file) => void onModuleChange(file));
+      server.watcher.on('unlink', (file) => void onModuleChange(file));
     },
 
     // Dev HMR: re-shake the changed file and WIDEN the update set with every
@@ -363,6 +414,13 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         return resolved.id.split('?')[0]!;
       };
 
+      // Components used from OUTSIDE the `.svelte` graph — a `.ts`/`.js` call site
+      // the crawl cannot parse (`mount(Comp, …)`, a lazy `import()`) — must not be
+      // folded (docs §4.2).  Scan every non-`.svelte` module under the include roots
+      // for `.svelte`-resolving imports and hand the engine that escape set.
+      const modules = dirs.flatMap(collectNonSvelteModules);
+      const escaped = [...(await collectExternalEscapes(modules, resolve, read))];
+
       // Decide the engine.  The native Rust engine now implements every pass
       // INCLUDING monomorphization (it calls back to JS only for the compiled-size
       // proxy), so it
@@ -393,11 +451,12 @@ export function shaker(options: ShakerOptions = {}): Plugin {
             read,
             mono,
             getParse(),
+            escaped,
           );
           shaken = result.files;
           variantSources = result.variants;
         } else {
-          shaken = await svelteShakerWasm(wasm, entries, resolve, read, getParse());
+          shaken = await svelteShakerWasm(wasm, entries, resolve, read, getParse(), escaped);
           variantSources = new Map();
         }
         reportSizes(shaken, read, root, options.verbose === true, log);
@@ -407,7 +466,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       if (!mono.enabled) {
         // JS engine, monomorphization off: byte-for-byte the unused-prop fold /
         // constant fold / value-set narrowing output.
-        shaken = await svelteShaker(entries, resolve, read, getParse());
+        shaken = await svelteShaker(entries, resolve, read, getParse(), escaped);
         variantSources = new Map();
         reportSizes(shaken, read, root, options.verbose === true, log);
         return;
@@ -420,6 +479,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         mono,
         variantSpecifier,
         getParse(),
+        escaped,
       );
       shaken = result.files;
       variantSources = new Map();

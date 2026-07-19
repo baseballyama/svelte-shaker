@@ -208,6 +208,30 @@ const MAX_FIXPOINT_ITERATIONS = 10;
 /** Bail reason stamped on a component leaked as a value (docs §4.1 escape). */
 const ESCAPE_REASON = 'escapes as value (e.g. <svelte:component this={X}>)';
 
+/** Bail reason stamped on a component with a consumer OUTSIDE the analyzed
+ * `.svelte` graph — a `.ts`/`.js` call site the crawl cannot parse, or a
+ * user-declared `external` (docs §4.2, {@link AnalyzeInput.escaped}).  Kept
+ * byte-identical to the Rust engine's constant so the two agree. */
+const EXTERNAL_ESCAPE_REASON = 'has a consumer outside the analyzed .svelte graph';
+
+/**
+ * Stamp {@link EXTERNAL_ESCAPE_REASON} on every model in `escaped` that exists in
+ * the program — the single injection point both the whole-program shake and
+ * {@link findNeverPassedProps} share (docs §4.2).  Ids not in the program are
+ * ignored (a stale `external` entry or a scanned `.ts` import to a component
+ * outside the crawl is simply a no-op, never an error).
+ */
+function stampExternalEscapes(
+  models: Map<ComponentId, FileModel>,
+  escaped: ComponentId[] | undefined,
+): void {
+  for (const id of escaped ?? []) {
+    const model = models.get(id);
+    if (model && !model.bailReasons.includes(EXTERNAL_ESCAPE_REASON))
+      model.bailReasons.push(EXTERNAL_ESCAPE_REASON);
+  }
+}
+
 /**
  * Crawl the component graph from `entries` and compute a plan per component,
  * iterating to a whole-program fixpoint (docs §2.1).
@@ -224,8 +248,11 @@ export async function analyze(
   entries: ComponentId | ComponentId[],
   resolve: Resolve,
   readFile: ReadFile,
+  escaped: ComponentId[] = [],
 ): Promise<AnalyzeResult> {
-  return analyzeInput(await buildAnalyzeInput(entries, resolve, readFile));
+  return analyzeInput(
+    await buildAnalyzeInput(entries, resolve, readFile, undefined, undefined, escaped),
+  );
 }
 
 /**
@@ -250,6 +277,9 @@ export function analyzeInput(input: AnalyzeInput, parseCache?: ParseCache): Anal
     const model = models.get(id);
     if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
   }
+  // Components with consumers outside the `.svelte` graph (a `.ts`/`.js` call site
+  // or a user `external`, docs §4.2) join the same whole-component escape bail.
+  stampExternalEscapes(models, input.escaped);
 
   return { models, plans: planFixpoint(models) };
 }
@@ -332,6 +362,7 @@ export async function buildAnalyzeInput(
   readFile: ReadFile,
   parseCache?: ParseCache,
   parse?: Parse,
+  escaped: ComponentId[] = [],
 ): Promise<AnalyzeInput> {
   const entryList = Array.isArray(entries) ? [...entries] : [entries];
   const files: InputFile[] = [];
@@ -421,7 +452,7 @@ export async function buildAnalyzeInput(
     }
   }
 
-  return { files, edges, entries: entryList };
+  return { files, edges, entries: entryList, escaped };
 }
 
 /**
@@ -436,6 +467,7 @@ export function buildAnalyzeInputSync(
   readFile: ReadFileSync,
   parseCache?: ParseCache,
   parse?: Parse,
+  escaped: ComponentId[] = [],
 ): AnalyzeInput {
   const entryList = Array.isArray(entries) ? [...entries] : [entries];
   const files: InputFile[] = [];
@@ -503,7 +535,7 @@ export function buildAnalyzeInputSync(
     }
   }
 
-  return { files, edges, entries: entryList };
+  return { files, edges, entries: entryList, escaped };
 }
 
 /**
@@ -681,11 +713,16 @@ export interface UnpassedProp {
  *    `+page.svelte`'s `data`, a framework mount, a not-yet-rendered component);
  *  - a prop is reported only when EVERY call site neither names it nor carries a
  *    spread that could set it (`readCallSite` already folds `bind:`, known
- *    spreads, and `children`/snippet body into `explicit`/`hadSpread`).
+ *    spreads, and `children`/snippet body into `explicit`/`hadSpread`);
+ *  - a component in `input.escaped` — one the Shell knows has a consumer OUTSIDE
+ *    the `.svelte` graph (a `.ts`/`.js` call site, or a user `external`, docs
+ *    §4.2) — is skipped, because that consumer may pass a prop the crawl cannot see.
  *
- * Because missing an edge (e.g. an unfollowed barrel) only DROPS call sites, it
- * can only make this UNDER-report (the component looks unused and is skipped),
- * never over-report — so an incomplete crawl stays false-positive-free.
+ * Missing a `.svelte` EDGE (e.g. an unfollowed barrel) only DROPS call sites, so it
+ * can only make this UNDER-report (the component looks unused and is skipped). The
+ * one way it could OVER-report is a consumer the crawl cannot parse at all — a
+ * `.ts`/`.js` call site; `input.escaped` (the Shell's non-`.svelte` scan) closes
+ * exactly that hole, so with it supplied the result stays false-positive-free.
  */
 export function findNeverPassedProps(input: AnalyzeInput): Map<ComponentId, UnpassedProp[]> {
   const models = buildModels(input);
@@ -697,6 +734,9 @@ export function findNeverPassedProps(input: AnalyzeInput): Map<ComponentId, Unpa
     const model = models.get(id);
     if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
   }
+  // External consumers (`.ts`/`.js` call sites or `external`) escape too, so a prop
+  // they pass is never mis-reported as never-passed (docs §4.2).
+  stampExternalEscapes(models, input.escaped);
 
   // Every textual call site counts (no cascade dead-span filtering): a prop passed
   // only at a folded-away site is still author-written, so we do not flag it.
