@@ -85,7 +85,7 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
     display: flex;
     align-items: center;
     gap: clamp(24px, 5vw, 64px);
-    padding: clamp(56px, 10vw, 120px) 0 40px;
+    padding: clamp(32px, 5vw, 64px) 0 48px;
   }
   .hero-lead {
     flex: 1;
@@ -129,7 +129,7 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
     }
   }
   .tagline {
-    margin-bottom: 22px;
+    margin-bottom: 18px;
     color: var(--accent);
   }
   h1 {
@@ -147,7 +147,7 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
   .lede {
     margin: 24px 0 0;
     max-width: 58ch;
-    font-size: 16px;
+    font-size: 17px;
     color: var(--ink-dim);
     line-height: 1.75;
   }
@@ -166,7 +166,7 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
   }
 
   .play {
-    padding-top: 24px;
+    padding-top: 16px;
     scroll-margin-top: 64px;
   }
   .play-head {
@@ -176,12 +176,12 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
     margin: 10px 0 0;
     max-width: 66ch;
     color: var(--ink-dim);
-    font-size: 14px;
+    font-size: 15px;
     line-height: 1.7;
   }
 
   .how {
-    padding-top: 80px;
+    padding-top: 72px;
     scroll-margin-top: 64px;
     max-width: 74ch;
   }
@@ -196,7 +196,7 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
     position: relative;
     padding: 0 0 18px 44px;
     color: var(--ink-dim);
-    font-size: 14.5px;
+    font-size: 15.5px;
     line-height: 1.7;
   }
   .steps li::before {
@@ -221,7 +221,7 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
   .caveat {
     margin: 6px 0 0;
     color: var(--ink-faint);
-    font-size: 13.5px;
+    font-size: 14.5px;
     line-height: 1.7;
   }
   .install {
@@ -230,7 +230,7 @@ plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte(
     border-radius: var(--r);
     background: var(--bg-1);
     padding: 16px 18px;
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1.7;
     color: var(--ink);
     overflow-x: auto;

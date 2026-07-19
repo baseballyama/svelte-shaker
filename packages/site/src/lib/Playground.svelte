@@ -218,7 +218,7 @@
   }
   .size-err {
     color: var(--del);
-    font-size: 14px;
+    font-size: 15px;
   }
   .size-nums {
     display: flex;
@@ -228,14 +228,14 @@
   }
   .from {
     color: var(--ink-dim);
-    font-size: 18px;
+    font-size: 19px;
   }
   .arrow {
     color: var(--ink-faint);
   }
   .to {
     color: var(--accent);
-    font-size: 26px;
+    font-size: 28px;
     font-weight: 700;
     font-family: var(--display);
   }
@@ -247,7 +247,7 @@
     background: var(--accent-bg);
     padding: 2px 8px;
     border-radius: 7px;
-    font-size: 13px;
+    font-size: 13.5px;
   }
   .pct.zero {
     color: var(--ink-faint);
@@ -256,7 +256,7 @@
   }
   .meta {
     color: var(--ink-faint);
-    font-size: 13px;
+    font-size: 13.5px;
     margin-left: auto;
   }
   .track {
@@ -274,12 +274,12 @@
   }
   .elim {
     margin-top: 10px;
-    font-size: 13px;
+    font-size: 14px;
     color: var(--ink-dim);
   }
   .bailed {
     margin-top: 6px;
-    font-size: 13px;
+    font-size: 13.5px;
     color: var(--ink-faint);
   }
   .spin {
@@ -332,7 +332,7 @@
     background: transparent;
     border: 0;
     color: var(--ink-faint);
-    font-size: 12.5px;
+    font-size: 13px;
     padding: 3px 8px;
     border-radius: 6px;
     transition: color 0.12s;
@@ -345,7 +345,7 @@
     background: var(--accent-bg);
   }
   .legend {
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--ink-faint);
     display: inline-flex;
     align-items: center;
@@ -373,7 +373,7 @@
   .empty {
     color: var(--ink-faint);
     padding: 18px;
-    font-size: 14px;
+    font-size: 15px;
   }
   .file {
     margin: 4px 0 10px;
@@ -382,7 +382,7 @@
     opacity: 0.55;
   }
   .file-name {
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--ink-dim);
     padding: 4px 14px;
     letter-spacing: 0.03em;
@@ -401,11 +401,11 @@
     background: var(--del-bg);
     border-radius: 5px;
     padding: 1px 7px;
-    font-size: 11px;
+    font-size: 12px;
   }
   .diff {
     margin: 0;
-    font-size: 13px;
+    font-size: 13.5px;
     line-height: 1.65;
     overflow-x: auto;
   }
@@ -449,7 +449,7 @@
   }
   .vid {
     color: var(--accent);
-    font-size: 12px;
+    font-size: 12.5px;
   }
 
   @media (max-width: 860px) {

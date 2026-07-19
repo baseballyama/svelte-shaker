@@ -92,7 +92,7 @@
     gap: 9px;
     font-family: var(--display);
     font-weight: 800;
-    font-size: 15px;
+    font-size: 16px;
     letter-spacing: -0.02em;
     color: var(--ink);
   }
@@ -110,7 +110,7 @@
     display: flex;
     align-items: center;
     gap: clamp(12px, 3vw, 26px);
-    font-size: 13px;
+    font-size: 14px;
   }
   nav a {
     color: var(--ink-dim);
@@ -132,6 +132,6 @@
     gap: 10px;
     justify-content: space-between;
     color: var(--ink-faint);
-    font-size: 12.5px;
+    font-size: 13.5px;
   }
 </style>
