@@ -22,6 +22,7 @@ mod props;
 mod reverse;
 mod shake;
 mod transform;
+mod unread;
 
 use crate::analyze::*;
 use crate::ast::*;
@@ -30,6 +31,7 @@ use crate::plan::*;
 use crate::reverse::*;
 use crate::shake::*;
 use crate::transform::MagicEdit;
+use crate::unread::collect_unread;
 
 // Preserve the crate-root path the native (napi) scanner links against
 // (`svelte_shaker_engine::find_never_passed_props`).
@@ -195,7 +197,17 @@ pub fn shake_program(input_json: &str) -> String {
         }
     }
 
-    // Phase 1: fold each body and drop its folded props.
+    // Phase 0b: unread declared props (docs §PR7).  Merge its (a) removals into the
+    // reverse map (they never target the same attribute — declared vs undeclared),
+    // and thread its (b) declaration drops into phase 1's `shake_body`.
+    let unread = collect_unread(&models, &models_by_id, &plans);
+    for (id, ops) in unread.removals {
+        reverse.entry(id).or_default().extend(ops);
+    }
+    let unread_drops = unread.drops;
+    let empty_drops: HashSet<String> = HashSet::new();
+
+    // Phase 1: fold each body and drop its folded (and unread) props.
     let mut edits_map: HashMap<String, MagicEdit> = HashMap::new();
     let mut dropped: HashMap<String, HashSet<String>> = HashMap::new();
     let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::new();
@@ -204,10 +216,11 @@ pub fn shake_program(input_json: &str) -> String {
         let mut edits = MagicEdit::new(code_by_id.get(&model.id).map(String::as_str).unwrap_or(""));
         let mut dead: Vec<Span> = Vec::new();
         let seed = reverse.get(&model.id).map(|ops| protect_spans(ops)).unwrap_or_default();
+        let extra = unread_drops.get(&model.id).unwrap_or(&empty_drops);
         let d = if plan.bail {
             HashSet::new()
         } else {
-            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead, &seed)
+            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead, &seed, extra)
         };
         dropped.insert(model.id.clone(), d);
         edited_spans.insert(model.id.clone(), dead);
@@ -348,6 +361,14 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         }
     }
 
+    // Unread declared props (docs §PR7): same wiring as `shake_program`.
+    let unread = collect_unread(&models, &models_by_id, &plans);
+    for (id, ops) in unread.removals {
+        reverse.entry(id).or_default().extend(ops);
+    }
+    let unread_drops = unread.drops;
+    let empty_drops: HashSet<String> = HashSet::new();
+
     let mut edits_map: HashMap<String, MagicEdit> = HashMap::new();
     let mut dropped: HashMap<String, HashSet<String>> = HashMap::new();
     let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::new();
@@ -356,10 +377,11 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         let mut edits = MagicEdit::new(code_by_id.get(&model.id).map(String::as_str).unwrap_or(""));
         let mut dead: Vec<Span> = Vec::new();
         let seed = reverse.get(&model.id).map(|ops| protect_spans(ops)).unwrap_or_default();
+        let extra = unread_drops.get(&model.id).unwrap_or(&empty_drops);
         let d = if plan.bail {
             HashSet::new()
         } else {
-            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead, &seed)
+            shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead, &seed, extra)
         };
         dropped.insert(model.id.clone(), d);
         edited_spans.insert(model.id.clone(), dead);

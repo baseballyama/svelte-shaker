@@ -115,7 +115,7 @@ function collectSiteRemovals(
  * call, member access (a getter), template/logical/conditional expression, or a
  * function expression — is kept, since it could run code or read a getter.
  */
-function isSideEffectFreeValue(value: unknown): boolean {
+export function isSideEffectFreeValue(value: unknown): boolean {
   if (value === true) return true; // boolean shorthand `x`
   if (value == null) return false;
   const parts = (Array.isArray(value) ? value : [value]) as AnyNode[];
@@ -133,7 +133,7 @@ function isSideEffectFreeValue(value: unknown): boolean {
 }
 
 /** Removal of an attribute plus one leading space/tab, keeping the tag tidy. */
-function attrOp(component: AnyNode, attr: AnyNode, code: string): ReverseOp {
+export function attrOp(component: AnyNode, attr: AnyNode, code: string): ReverseOp {
   let start = attr.start;
   if (code[start - 1] === ' ' || code[start - 1] === '\t') start -= 1;
   return { component, remove: [start, attr.end], protect: [attr.start, attr.end] };

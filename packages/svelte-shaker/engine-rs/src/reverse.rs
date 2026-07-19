@@ -128,7 +128,7 @@ fn collect_site_removals(node: &Value, reachable: &HashSet<String>, ops: &mut Ve
 /// expression (`x={foo}`, `x={undefined}`).  A `$`-prefixed identifier is a Svelte
 /// store auto-subscription (`x={$foo}`) — reading it subscribes, a side effect —
 /// so it is NOT removable.  Mirrors `isSideEffectFreeValue`.
-fn is_reverse_removable_value(value: &Value) -> bool {
+pub(crate) fn is_reverse_removable_value(value: &Value) -> bool {
     if value == &Value::Bool(true) {
         return true; // boolean shorthand
     }

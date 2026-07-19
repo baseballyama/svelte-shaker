@@ -131,6 +131,9 @@ pub(crate) struct Model {
     pub(crate) props_info: Option<PropsInfo>,
     /// The inputs this component can observe (docs §PR4) — drives the reverse pass.
     pub(crate) reachable_inputs: ReachableInputs,
+    /// EXTERNAL names of props this component DECLARES but never READS (docs §PR7).
+    /// Source-only, computed once here; the transform gates its use on the plan.
+    pub(crate) unread_declared: HashSet<String>,
     pub(crate) shadowed: HashSet<String>,
     pub(crate) debug: HashSet<String>,
     /// Prop names the component WRITES TO — never folded (see `is_fold_blocked`).
@@ -146,6 +149,10 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
     let props_info = declared_props_full(&ast);
     let reachable_inputs = compute_reachable_inputs(&ast, &props_info);
     let (shadowed_vec, debug_vec, written_vec) = template_bindings(&ast);
+    let shadowed: HashSet<String> = shadowed_vec.into_iter().collect();
+    let debug: HashSet<String> = debug_vec.into_iter().collect();
+    let written: HashSet<String> = written_vec.into_iter().collect();
+    let unread_declared = compute_unread_declared(&ast, &props_info, &shadowed, &debug, &written);
     let mut bail_reasons = component_bail(&ast);
     if props_info.as_ref().map(|p| p.shares_statement).unwrap_or(false) {
         bail_reasons.push("$props() shares a multi-declarator statement".to_string());
@@ -166,9 +173,10 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
         imports,
         props_info,
         reachable_inputs,
-        shadowed: shadowed_vec.into_iter().collect(),
-        debug: debug_vec.into_iter().collect(),
-        written: written_vec.into_iter().collect(),
+        unread_declared,
+        shadowed,
+        debug,
+        written,
         child_calls,
         escaped,
         bail_reasons,

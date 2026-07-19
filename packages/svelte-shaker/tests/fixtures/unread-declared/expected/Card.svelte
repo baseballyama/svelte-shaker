@@ -1,0 +1,4 @@
+<script>
+  let { title } = $props();
+</script>
+<h2>{title}</h2>

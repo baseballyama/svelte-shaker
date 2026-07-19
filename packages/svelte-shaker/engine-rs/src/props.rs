@@ -185,7 +185,7 @@ fn has_unrepresentable_key(pattern: &Value) -> bool {
     false
 }
 
-fn count_props_calls(instance: &Value) -> usize {
+pub(crate) fn count_props_calls(instance: &Value) -> usize {
     let mut count = 0;
     walk(instance, &mut |node| {
         if str_eq(node, "type", "CallExpression")

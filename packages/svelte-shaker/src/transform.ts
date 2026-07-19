@@ -4,6 +4,7 @@ import type { ComponentId, ComponentPlan, Literal } from './ir.js';
 import { remapToLocalNames, type FileModel } from './analyze.js';
 import { decideChain, inSpans, type Span } from './dead.js';
 import { collectReverseRemovals, applyReverseRemovals, type ReverseOp } from './reverse.js';
+import { collectUnread } from './unread.js';
 import { evaluate } from './eval.js';
 import { shakeCss } from './css.js';
 
@@ -53,7 +54,15 @@ function runBasePhases(
     if (ops.length > 0) reverse.set(model.id, ops);
   }
 
-  // Phase 1 — component bodies: fold dead branches, drop folded props.
+  // Phase 0b — unread declared props (docs §PR7): the call-site attributes (a)
+  // and declaration drops (b) for props a child DECLARES but never reads.  Its
+  // attribute removals share the reverse pass's protect/apply machinery (they
+  // never target the same attribute — declared vs undeclared), so merge them per
+  // owner; the declaration drops fold into phase 1's `dropProps` via `extraDrops`.
+  const unread = collectUnread(models, plans);
+  const removals = mergeReverseOps(reverse, unread.removals);
+
+  // Phase 1 — component bodies: fold dead branches, drop folded (and unread) props.
   for (const model of models.values()) {
     const s = new MagicString(model.code);
     strings.set(model.id, s);
@@ -66,7 +75,8 @@ function runBasePhases(
       model,
       plan,
       s,
-      reverse.get(model.id)?.map((op) => op.protect),
+      removals.get(model.id)?.map((op) => op.protect),
+      unread.drops.get(model.id),
     );
     dropped.set(model.id, result.dropped);
     editedSpans.set(model.id, result.dead);
@@ -88,14 +98,37 @@ function runBasePhases(
       ownerEnv,
     );
   }
-  // Phase 2.5 — reverse: delete the inputs the child can never read.  Runs after
-  // phase 1/2 and skips any call site folded away in phase 1 (docs §PR4).  A
-  // reverse removal and a dropped-prop removal (phase 2) never target the same
-  // attribute: one names a prop the child does NOT declare, the other one it does.
-  for (const [id, ops] of reverse) {
+  // Phase 2.5 — reverse (docs §PR4) + unread declared (docs §PR7): delete the
+  // inputs the child can never read / never declares.  Runs after phase 1/2 and
+  // skips any call site folded away in phase 1.  These removals never target the
+  // same attribute phase 2 does: phase 2 removes attributes for props the child
+  // FOLDED away, while these remove props it never declares or never reads (both
+  // disjoint from the const-fold set).
+  for (const [id, ops] of removals) {
     applyReverseRemovals(ops, strings.get(id)!, editedSpans.get(id) ?? []);
   }
   return strings;
+}
+
+/**
+ * Merge the reverse (§PR4) and unread-declared (§PR7) removals per owner into one
+ * list, so they share the protect / apply passes.  The two never target the same
+ * attribute (one names an UNDECLARED prop, the other a DECLARED-but-unread one),
+ * and {@link applyReverseRemovals} already sorts + de-nests the merged list.
+ */
+function mergeReverseOps(
+  reverse: Map<ComponentId, ReverseOp[]>,
+  unread: Map<ComponentId, ReverseOp[]>,
+): Map<ComponentId, ReverseOp[]> {
+  if (unread.size === 0) return reverse;
+  const merged = new Map<ComponentId, ReverseOp[]>();
+  for (const [id, ops] of reverse) merged.set(id, [...ops]);
+  for (const [id, ops] of unread) {
+    const existing = merged.get(id);
+    if (existing) existing.push(...ops);
+    else merged.set(id, [...ops]);
+  }
+  return merged;
 }
 
 /** Stringify every model's MagicString into the output record. */
@@ -260,11 +293,22 @@ function transformBody(
   model: FileModel,
   plan: ComponentPlan,
   s: MagicString,
-  /** Reverse-removal regions (docs §PR4) the body pass must not edit inside. */
+  /** Reverse/unread-removal regions (docs §PR4/§PR7) the body pass must not edit inside. */
   seedDead?: Span[],
+  /** EXTERNAL prop names to also drop from the `$props()` signature (unread, §PR7). */
+  extraDrops?: Set<string>,
 ): { dropped: Set<string>; dead: Span[] } {
   const dead: Span[] = [];
-  const dropped = shakeBody(model, plan.constFold, plan.narrow, plan, s, dead, seedDead);
+  const dropped = shakeBody(
+    model,
+    plan.constFold,
+    plan.narrow,
+    plan,
+    s,
+    dead,
+    seedDead,
+    extraDrops,
+  );
   return { dropped, dead };
 }
 
@@ -300,13 +344,26 @@ export function shakeBody(
    * MagicString).  Only the base transform passes it; mono edits fresh strings.
    */
   seedDead?: Span[],
+  /**
+   * EXTERNAL prop names to also drop from the `$props()` signature — the unread
+   * declared props (docs §PR7).  Folded into the SAME {@link dropProps} call as
+   * the const-fold drops so consecutive dropped properties tile cleanly, but NOT
+   * returned: unlike a folded prop, an unread prop's call-site attributes are
+   * removed by the reverse/unread phase (spread-aware), not phase 2.
+   */
+  extraDrops?: Set<string>,
 ): Set<string> {
   // Nothing to fold (constant fold) and nothing to narrow (value-set narrowing): no branch/prop edits.
   // CSS removal still depends only on the value sets the plan carries, so a
   // component with no foldable/narrowable prop produces an empty class set
   // bound and removes nothing — leave it untouched entirely.  Reverse removals
   // then run over pristine source, so no protection is needed on this path.
-  if (env.size === 0 && setEnv.size === 0) return new Set();
+  if (env.size === 0 && setEnv.size === 0) {
+    // …but an unread-prop drop (docs §PR7) still edits the signature, even with
+    // nothing to fold.  Apply it and return no folded props (phase 2 does nothing).
+    if (extraDrops && extraDrops.size > 0) dropProps(model, extraDrops, s);
+    return new Set();
+  }
   const code = model.code;
 
   // `env`/`setEnv` arrive keyed by the EXTERNAL prop name (that is what the plan
@@ -345,12 +402,16 @@ export function shakeBody(
       s.overwrite(ref.start, ref.end, ref.head + lit + ref.tail);
   }
 
-  // (3) Drop only the folded (constFold) props from the `$props()` signature.
-  // Narrowed props stay in the signature — they are still used/dynamic.  The drop
-  // matches the destructure KEYS, so it keeps the EXTERNAL names (which is also
-  // what phase 2's call-site attribute removal consumes).
+  // (3) Drop the folded (constFold) props from the `$props()` signature, together
+  // with any unread declared props (docs §PR7) — one {@link dropProps} call so
+  // consecutive dropped properties tile cleanly.  Narrowed props stay (still
+  // used/dynamic).  Only the folded set is RETURNED: phase 2 removes call-site
+  // attributes for folded props, while unread props are handled spread-aware by
+  // the reverse/unread phase, so they must not leak into phase 2.
   const droppable = new Set(env.keys()); // every surviving ref is an expression position
-  dropProps(model, droppable, s);
+  const signatureDrop =
+    extraDrops && extraDrops.size > 0 ? new Set([...droppable, ...extraDrops]) : droppable;
+  dropProps(model, signatureDrop, s);
 
   // (4) CSS rule removal (docs §3 "value-set narrowing", "CSS (shaker 独自の価値)"): drop
   // `<style>` rules targeting a class the component can provably never produce

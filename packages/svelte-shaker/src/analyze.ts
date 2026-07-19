@@ -94,6 +94,16 @@ export interface FileModel {
    */
   reachableInputs: ReachableInputs;
   /**
+   * EXTERNAL names of props this component DECLARES but never READS (docs §PR7):
+   * destructured out of a clean `$props()` yet with zero value-position reference
+   * to their local binding anywhere in the instance script or template.  Such a
+   * prop is invisible to the child, so its call-site attribute is dead and — when
+   * safe — the declaration can be dropped.  Source-only (independent of the call
+   * sites), so it is computed ONCE here, never inside the fixpoint; the transform
+   * gates its use on the component's plan not being bailed.
+   */
+  unreadDeclaredProps: Set<string>;
+  /**
    * Every `<Child .../>` instance THIS component renders, with the child it
    * resolves to and the AST node (so the fixpoint can test whether the site
    * falls inside a dead `{#if}` span of this component — docs §2.1).
@@ -901,6 +911,15 @@ function buildModelFromInput(
     instance,
     propsDeclaration,
   );
+  const unreadDeclaredProps = computeUnreadDeclaredProps(
+    ast,
+    instance,
+    props,
+    propsPattern,
+    shadowedNames,
+    debugNames,
+    writtenNames,
+  );
 
   // Escape detection (docs §4.1): an imported component referenced as a *value*
   // (most notably `<svelte:component this={X}>`, but also assigned / passed /
@@ -919,6 +938,7 @@ function buildModelFromInput(
     propsPattern,
     hasRestProp,
     reachableInputs,
+    unreadDeclaredProps,
     childCalls,
     shadowedNames,
     debugNames,
@@ -926,6 +946,92 @@ function buildModelFromInput(
     escapedComponents,
     bailReasons,
   };
+}
+
+/**
+ * EXTERNAL names of props DECLARED but never READ (docs §PR7).  A declared prop
+ * `p` (local binding `l`) is unread when NO value-position reference to `l`
+ * survives anywhere in the instance script or template — reusing the escape
+ * scan's own `isValueUse` + `isTypeOnlyNode` prune, so TS type positions (erased
+ * at compile) do not count as reads.  Its own declaration positions in the
+ * `$props()` pattern are excluded, but default expressions ARE scanned (a `{ a, b
+ * = a }` reads `a`).  Conservative — a prop is treated as read (kept) when:
+ *  - the `$props()` shape is not a clean single-call ObjectPattern (a non-object
+ *    binding, or a SECOND `$props()` call whose alias could re-read it via
+ *    member access we do not track), or
+ *  - it binds a nested pattern (no single local identifier), or
+ *  - its local is shadowed / written / a `{@debug}` argument ({@link
+ *    isFoldBlockedName}), where the reference's identity is ambiguous.
+ */
+function computeUnreadDeclaredProps(
+  ast: Root,
+  instance: AnyNode | null | undefined,
+  props: PropDecl[] | null,
+  propsPattern: AnyNode | undefined,
+  shadowedNames: Set<string>,
+  debugNames: Set<string>,
+  writtenNames: Set<string>,
+): Set<string> {
+  if (!instance || !props || props.length === 0) return new Set();
+  // A second `$props()` call can alias the props object (`const all = $props()`)
+  // and read a prop via `all.p`, which the local-name scan below cannot see — so
+  // only a single, clean `$props()` call is eligible.  A `...rest` is fine: it
+  // never captures a DECLARED prop, so it cannot re-expose one we drop.
+  if (countPropsCalls(instance) !== 1) return new Set();
+
+  const externalByLocal = new Map<string, string>();
+  for (const decl of props) {
+    if (decl.local === null) continue; // nested pattern: no single identifier
+    if (shadowedNames.has(decl.local) || debugNames.has(decl.local) || writtenNames.has(decl.local))
+      continue;
+    externalByLocal.set(decl.local, decl.name);
+  }
+  if (externalByLocal.size === 0) return new Set();
+
+  // The identifier nodes that are DECLARATIONS in the `$props()` pattern (each
+  // property's key and its local binding), so the scan below does not count them
+  // as reads.  Default expressions are NOT excluded — they are real reads.
+  const declIdents = new Set<AnyNode>();
+  for (const p of propsPattern?.properties ?? []) {
+    if (p.type !== 'Property') continue;
+    if (p.key) declIdents.add(p.key);
+    const value = p.value as AnyNode | undefined;
+    if (value?.type === 'Identifier') declIdents.add(value);
+    else if (value?.type === 'AssignmentPattern' && value.left?.type === 'Identifier')
+      declIdents.add(value.left);
+  }
+
+  const readLocals = new Set<string>();
+  const scan = (root: AnyNode | null | undefined): void => {
+    if (!root) return;
+    walk<{ parent: AnyNode | null }>(
+      root,
+      { parent: null },
+      {
+        _(node, { state, next }) {
+          if (isTypeOnlyNode(node)) return; // TS type positions are erased, never reads
+          if (
+            node.type === 'Identifier' &&
+            node.name &&
+            externalByLocal.has(node.name) &&
+            !declIdents.has(node) &&
+            isValueUse(node, state.parent)
+          ) {
+            readLocals.add(node.name);
+          }
+          next({ parent: node });
+        },
+      },
+    );
+  };
+  scan(instance);
+  scan(ast.fragment);
+
+  const unread = new Set<string>();
+  for (const [local, name] of externalByLocal) {
+    if (!readLocals.has(local)) unread.add(name);
+  }
+  return unread;
 }
 
 /**
