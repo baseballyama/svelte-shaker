@@ -65,8 +65,11 @@ export default defineConfig({
 });
 ```
 
-For non-Vite pipelines there is a plain-Rollup plugin
-(`rollup-plugin-svelte-shaker`).
+For plain-Rollup pipelines, wire the shake up yourself with the public engine
+API (`svelte-shaker`) and the file-system helpers in `svelte-shaker/node`. Note
+that L2 monomorphization additionally needs the `?shaker_variant` requests routed
+through your plugin's `resolveId`/`load` hooks; the L0/L1/L1.5 shake only needs the
+`transform` swap.
 
 ### Options
 

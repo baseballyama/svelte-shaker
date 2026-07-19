@@ -68,7 +68,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # Last line of defense before publishing. Build the engine first so the
-      # type-check resolves the example / rollup-plugin against fresh dist types.
+      # type-check resolves the example against fresh dist types.
       - name: Build engine
         run: pnpm build
       - run: pnpm typecheck
