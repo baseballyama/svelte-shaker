@@ -354,10 +354,16 @@ export function shakeBody(
   extraDrops?: Set<string>,
 ): Set<string> {
   // Nothing to fold (constant fold) and nothing to narrow (value-set narrowing): no branch/prop edits.
-  // CSS removal still depends only on the value sets the plan carries, so a
-  // component with no foldable/narrowable prop produces an empty class set
-  // bound and removes nothing — leave it untouched entirely.  Reverse removals
-  // then run over pristine source, so no protection is needed on this path.
+  // With no value sets there is nothing to bound a class against, so branch-driven
+  // CSS removal has no purchase and we skip {@link shakeCss} entirely, leaving the
+  // component untouched.  One case this passes up (deliberately): a component whose
+  // ONLY edit is a reverse/unread removal (docs §PR4/§PR7) could, since §PR8, have
+  // an unbounded class source deleted along with that region and thereby become
+  // bounded — running shakeCss with those removed spans as `pruned` might then drop
+  // a now-unreachable rule.  We do NOT do that here: it is a sound MISSED
+  // opportunity, not an unsound one (keeping every rule can never change styling),
+  // and wiring shakeCss into this fold-free path is left as future work.  Reverse
+  // removals then run over pristine source, so no protection is needed on this path.
   if (env.size === 0 && setEnv.size === 0) {
     // …but an unread-prop drop (docs §PR7) still edits the signature, even with
     // nothing to fold.  Apply it and return no folded props (phase 2 does nothing).
