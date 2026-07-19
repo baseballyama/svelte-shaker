@@ -215,16 +215,22 @@ pub(crate) fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -
     usage
 }
 
-/// Each owner's fold env for this round: the PREVIOUS round's `constFold`,
-/// remapped to LOCAL names (a forwarded expression references props by their local
-/// binding). Computed once per owner per round — no O(n²). Mirrors the memoized
-/// `ownerEnv` in analyze.ts's buildPlans.
+/// Each owner's fold + narrow env for this round: the PREVIOUS round's `constFold`
+/// and `narrow`, both remapped to LOCAL names (a forwarded expression references
+/// props by their local binding). Computed once per owner per round — no O(n²).
+/// Mirrors the memoized `ownerEnv` in analyze.ts's buildPlans.
 fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
     let mut envs = OwnerEnvs::new();
     for model in models {
         if let Some(plan) = prev.get(&model.id) {
-            if !plan.bail && !plan.const_fold.is_empty() {
-                envs.insert(model.id.clone(), remap_to_local_names(&plan.const_env(), model));
+            if !plan.bail && (!plan.const_fold.is_empty() || !plan.narrow.is_empty()) {
+                envs.insert(
+                    model.id.clone(),
+                    OwnerEnv {
+                        fold: remap_to_local_names(&plan.const_env(), model),
+                        narrow: remap_to_local_names(&plan.set_env(), model),
+                    },
+                );
             }
         }
     }

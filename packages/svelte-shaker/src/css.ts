@@ -21,7 +21,7 @@ import type MagicString from 'magic-string';
 import { walk, type AnyNode } from './parse.js';
 import type { ComponentPlan, Literal } from './ir.js';
 import type { FileModel } from './analyze.js';
-import { evaluate } from './eval.js';
+import { evaluate, setVar } from './eval.js';
 
 /**
  * The set of class names any element this component renders could carry.
@@ -153,9 +153,10 @@ function expressionStrings(
 ): Set<string> | typeof UNBOUNDED {
   if (!expr) return UNBOUNDED;
   // A narrowable prop used directly: enumerate its reachable value set.
-  if (expr.type === 'Identifier' && expr.name && setEnv.has(expr.name)) {
+  const set = setVar(expr, setEnv);
+  if (set) {
     const out = new Set<string>();
-    for (const v of setEnv.get(expr.name)!) out.add(stringifyLiteral(v));
+    for (const v of set) out.add(stringifyLiteral(v));
     return out;
   }
   // Otherwise it must fold to a single constant (constFold prop or literal expr).

@@ -136,7 +136,7 @@ describe('interprocedural pass-through of folded constants', () => {
     expect(out['/Child.svelte']!).not.toMatch(/let \{ variant/);
   });
 
-  it('divergent: two call sites pass DIFFERENT literals -> Mid narrows, Child does not fold', async () => {
+  it('divergent: two call sites pass DIFFERENT literals -> Mid narrows and the set flows to Child', async () => {
     const files = {
       '/App.svelte':
         `<script>\n  import Mid from './Mid.svelte';\n</script>\n` +
@@ -152,11 +152,14 @@ describe('interprocedural pass-through of folded constants', () => {
     // Mid.variant is a known set of two literals (narrow), not a single constant.
     expect(plans.get('/Mid.svelte')!.constFold.has('variant')).toBe(false);
     expect(plans.get('/Mid.svelte')!.narrow.get('variant')).toEqual(['primary', 'secondary']);
-    // Set (narrow) propagation is out of scope: Child sees a dynamic value.
+    // The set flows through the pass-through call site (PR6): Child narrows too, so
+    // it is genuinely used (kept declared, not folded to one value) — see
+    // narrow-passthrough.test.ts for the arm/CSS pruning the set then enables.
     expect(plans.get('/Child.svelte')!.constFold.has('variant')).toBe(false);
+    expect(plans.get('/Child.svelte')!.narrow.get('variant')).toEqual(['primary', 'secondary']);
 
     const out = await shakeSound(files);
-    expect(out['/Child.svelte']!).toMatch(/let \{ variant/); // kept: still dynamic
+    expect(out['/Child.svelte']!).toMatch(/let \{ variant/); // kept: still dynamic, but narrowed
   });
 
   it('ternary call-site expression folds when its condition is a folded prop', async () => {
