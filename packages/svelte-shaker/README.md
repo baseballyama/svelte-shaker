@@ -79,6 +79,7 @@ fold / value-set narrowing shake only needs the `transform` swap.
 ```ts
 shaker({
   include: ['src'], // dirs (relative to root) holding every .svelte call site
+  external: [], // components to freeze — never fold their props (see below)
   monomorphize: true, // default on; `false` disables it for faster builds,
   // or { maxVariants: 16, minSavings: 0.15 } to tune
   engine: 'auto', // 'auto' (default) | 'js' | 'rust'
@@ -100,6 +101,16 @@ shaker({
 - **Monomorphization never bloats** — a measured net-win gate only specializes a
   component when that strictly shrinks the whole program, so its only cost is
   build time.
+- **`external`** — freeze components a `.ts`/`.js` module uses in a way the shake
+  can't see, so their props are never folded. The plugin already scans your
+  non-`.svelte` modules and auto-freezes any component reached by a static import,
+  `export … from`, or a **literal** `import('./X.svelte')` — so a plain
+  `mount(Component, { props })` is handled for you. Use `external` for what the
+  scan can't follow: a **non-literal** dynamic `import(expr)`, or a call site in a
+  module outside `include`. Entries are root-relative or absolute paths naming a
+  component file or a directory of them (same basis as `include`). It **freezes**
+  the component — the file stays fully analyzed and its own call sites still count;
+  only its own prop folding is turned off. It is not a scan-exclusion filter.
 
 ## What it removes
 
@@ -139,7 +150,10 @@ The whole point is to **never change observable behavior**.
 - **Build only** — whole-program analysis is incompatible with dev/HMR locality,
   so dev is always a pass-through.
 - **`include` must cover the whole app** — a call site outside the scanned dirs
-  is invisible, which would make prop elimination unsound.
+  is invisible, which would make prop elimination unsound. Call sites in
+  `.ts`/`.js` modules under `include` (e.g. `mount(Component, { props })`) are
+  scanned and the component is frozen automatically; a **non-literal** dynamic
+  `import(expr)` can't be followed, so reach for `external` there.
 
 See [`docs/ARCHITECTURE.md`](https://github.com/baseballyama/svelte-shaker/blob/main/docs/ARCHITECTURE.md)
 for the full design and implementation status.
