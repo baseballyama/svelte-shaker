@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::eval::{evaluate, Env, Literal};
+use crate::eval::{evaluate, set_var, Env, Literal, SetEnv};
 
 /// `SameValue` dedup (JS `Object.is`): NaN == NaN, +0 != -0.
 pub(crate) fn object_is(a: &Literal, b: &Literal) -> bool {
@@ -469,12 +469,21 @@ pub(crate) fn literal_default(expr: &Value) -> Option<Literal> {
     }
 }
 
-/// Per-owner fold env (local-keyed constFold) a forwarded call-site expression is
-/// evaluated against — the previous fixpoint round's folds (docs §13.1).
-pub(crate) type OwnerEnvs = HashMap<String, Env>;
+/// The OWNER component's forwardable knowledge, both local-keyed: `fold` collapses
+/// a prop to one literal (constFold), `narrow` holds a prop's known reachable set
+/// (narrow). A forwarded bare owner-prop reference can propagate either — the
+/// single value or the whole set (docs §13.1). Mirrors `OwnerFoldEnv` in analyze.ts.
+pub(crate) struct OwnerEnv {
+    pub(crate) fold: Env,
+    pub(crate) narrow: SetEnv,
+}
+
+/// Per-owner {@link OwnerEnv} for this fixpoint round (the previous round's folds).
+pub(crate) type OwnerEnvs = HashMap<String, OwnerEnv>;
 
 pub(crate) fn value_set_for(decl: &PropDecl, sites: &[CallSite], owner_envs: &OwnerEnvs) -> PropValueSet {
-    let empty: Env = HashMap::new();
+    let empty_fold: Env = HashMap::new();
+    let empty_narrow: SetEnv = HashMap::new();
     let mut values = Vec::new();
     let mut dynamic = false;
     let mut top = false;
@@ -486,14 +495,29 @@ pub(crate) fn value_set_for(decl: &PropDecl, sites: &[CallSite], owner_envs: &Ow
                         push_literal_unique(&mut values, v.clone());
                     }
                 } else {
-                    // Interprocedural pass-through: fold the forwarded expression
-                    // against the OWNER's env (previous round). `known` => a value
-                    // this site provably passes; otherwise it stays dynamic. A
-                    // `bind:`/multi-part write has no `expr`, so it never folds.
-                    let env = site.owner.as_ref().and_then(|o| owner_envs.get(o)).unwrap_or(&empty);
-                    match if e.expr.is_null() { None } else { evaluate(&e.expr, env) } {
-                        Some(v) => push_literal_unique(&mut values, v),
-                        None => dynamic = true,
+                    // Interprocedural pass-through: resolve the forwarded expression
+                    // against the OWNER's env (previous round). A `bind:`/multi-part
+                    // write has no `expr`, so it never resolves here.
+                    let owner_env = site.owner.as_ref().and_then(|o| owner_envs.get(o));
+                    let fold = owner_env.map(|e| &e.fold).unwrap_or(&empty_fold);
+                    let narrow = owner_env.map(|e| &e.narrow).unwrap_or(&empty_narrow);
+                    // A BARE owner-prop reference the owner narrowed to a known set
+                    // contributes that whole set (mirrors css.rs's bare set-var path).
+                    // Sound: the owner keeps the narrowed prop genuinely used, so the
+                    // residual owner passes each member as-is; the child receives a
+                    // subset. constFold/narrow never share a name, so lookup order is
+                    // immaterial. Otherwise: a `known` fold => a value this site
+                    // provably passes; anything else stays dynamic.
+                    let set = if e.expr.is_null() { None } else { set_var(&e.expr, narrow) };
+                    if let Some(vs) = set {
+                        for v in vs {
+                            push_literal_unique(&mut values, v.clone());
+                        }
+                    } else {
+                        match if e.expr.is_null() { None } else { evaluate(&e.expr, fold) } {
+                            Some(v) => push_literal_unique(&mut values, v),
+                            None => dynamic = true,
+                        }
                     }
                 }
             }

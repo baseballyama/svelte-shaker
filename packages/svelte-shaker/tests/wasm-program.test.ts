@@ -93,6 +93,7 @@ describe('M4: Rust (WASM) whole-program plans match the TS engine', () => {
     'fold-ternary',
     'if-true',
     'narrow-variant',
+    'narrow-passthrough',
     'rest-prop',
     'spread-after',
     'spread-const-object',
@@ -115,6 +116,34 @@ describe('M4: Rust (WASM) whole-program plans match the TS engine', () => {
         `<Child variant={variant} />\n<Leaf k={variant === 'primary' ? 'x' : 'y'} m={'a' + 'b'} />`,
       '/Child.svelte': `<script>\n  let { variant = 'other' } = $props();\n</script>\n{#if variant === 'primary'}<b>P</b>{:else}<i>o</i>{/if}`,
       '/Leaf.svelte': `<script>\n  let { k = 'z', m = 'z' } = $props();\n</script>\n{#if k === 'x'}<b>X</b>{/if}{#if m === 'ab'}<b>AB</b>{/if}`,
+    };
+    const resolve = (source: string, importer: string): string | null => {
+      if (!source.startsWith('.')) return null;
+      const base = importer.slice(0, importer.lastIndexOf('/'));
+      const parts: string[] = [];
+      for (const seg of `${base}/${source}`.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return `/${parts.join('/')}`;
+    };
+    const readFile = (id: string): string => files[id]!;
+    await expectPlansMatch('/App.svelte', resolve, readFile);
+  });
+
+  it('interprocedural set pass-through: forwarded NARROW-set plans match (docs §13.1, PR6)', async () => {
+    // A bare forwarded owner-prop that the owner NARROWED to a set must flow the
+    // whole set into the child in both engines; a compound expression over the
+    // set-var must NOT (stays dynamic).  Same owner-env fixpoint, so the plans
+    // (Child narrows, Leaf stays dynamic) must be byte-identical Rust-vs-TS.
+    const files: Record<string, string> = {
+      '/App.svelte': `<script>\n  import Mid from './Mid.svelte';\n</script>\n<Mid variant="primary" />\n<Mid variant="secondary" />`,
+      '/Mid.svelte':
+        `<script>\n  import Child from './Child.svelte';\n  import Leaf from './Leaf.svelte';\n  let { variant } = $props();\n</script>\n` +
+        `<Child variant={variant} />\n<Leaf k={variant + ''} />`,
+      '/Child.svelte': `<script>\n  let { variant = 'other' } = $props();\n</script>\n{#if variant === 'danger'}<b>D</b>{/if}`,
+      '/Leaf.svelte': `<script>\n  let { k = 'z' } = $props();\n</script>\n{#if k === 'x'}<b>X</b>{/if}`,
     };
     const resolve = (source: string, importer: string): string | null => {
       if (!source.startsWith('.')) return null;

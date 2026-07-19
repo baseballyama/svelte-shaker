@@ -355,7 +355,10 @@ fn equality_tri(left: &Value, right: &Value, const_env: &Env, set_env: &SetEnv, 
     None
 }
 
-fn set_var<'a>(node: &Value, set_env: &'a SetEnv) -> Option<&'a Vec<Literal>> {
+/// The reachable value set for `node` if it is a bare set-var identifier, else
+/// `None`.  Shared with the interprocedural set pass-through (props.rs) so both
+/// decide "bare owner-prop reference" identically.  Mirrors `setVar` in eval.ts.
+pub(crate) fn set_var<'a>(node: &Value, set_env: &'a SetEnv) -> Option<&'a Vec<Literal>> {
     if type_of(node) == "Identifier" {
         if let Some(name) = node.get("name").and_then(Value::as_str) {
             return set_env.get(name);

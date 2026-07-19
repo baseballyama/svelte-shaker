@@ -47,6 +47,7 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     'fold-ternary',
     'if-true',
     'narrow-variant',
+    'narrow-passthrough',
     'rest-prop',
     'spread-after',
     'spread-const-object',
