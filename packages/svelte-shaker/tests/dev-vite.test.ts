@@ -40,7 +40,7 @@ async function startServer(dev: false | DevMode): Promise<ViteDevServer> {
     server: { middlewareMode: true, hmr: false, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    plugins: [shaker({ include: ['.'], dev }), svelte({ compilerOptions: { runes: true } })] as any,
+    plugins: [shaker({ entries: ['.'], dev }), svelte({ compilerOptions: { runes: true } })] as any,
   });
   return server;
 }
@@ -67,7 +67,7 @@ describe('vite-plugin-svelte-shaker (dev server)', () => {
   });
 
   it('HMR widening: editing App rewrites the un-edited child Sub', async () => {
-    const sh = shaker({ include: ['.'], dev: 'incremental' });
+    const sh = shaker({ entries: ['.'], dev: 'incremental' });
     server = await createServer({
       root: APP,
       logLevel: 'silent',

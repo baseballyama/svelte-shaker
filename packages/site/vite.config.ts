@@ -12,7 +12,7 @@ export default defineConfig({
     // `shaker` is typed against svelte-shaker's own vite (^5); the site runs on
     // vite ^6. A vite plugin is structurally identical across these majors, so
     // the object is a valid plugin at runtime — bridge the two `Plugin` types.
-    shaker({ include: ['src'] }) as PluginOption,
+    shaker({ entries: ['src'] }) as PluginOption,
     sveltekit(),
   ],
   // The shaker engine and svelte/compiler are bundled for the browser.

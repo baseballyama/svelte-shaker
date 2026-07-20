@@ -66,11 +66,12 @@
     <p class="caveat">
       Sound by construction: anything unprovable (spreads, <code>bind:</code>,
       dynamic components…) bails and ships unchanged. Build-time only, as a
-      Vite / Rollup plugin — <code>include</code> must cover the whole app.
+      Vite / Rollup plugin — <code>entries</code> is where the crawl starts, and
+      it must cover every call site in the app.
     </p>
     <pre class="install"><span class="c"># vite.config.ts</span>
 import &#123; shaker &#125; from <span class="s">'svelte-shaker/vite'</span>;
-plugins: [shaker(&#123; include: [<span class="s">'src'</span>] &#125;), svelte()]</pre>
+plugins: [shaker(&#123; entries: [<span class="s">'src'</span>] &#125;), svelte()]</pre>
   </section>
 </main>
 

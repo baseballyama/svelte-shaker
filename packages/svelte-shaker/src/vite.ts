@@ -17,22 +17,33 @@ import type { ComponentId } from './ir.js';
 
 export interface ShakerOptions {
   /**
-   * Directories (relative to the Vite root) to scan for `.svelte` components.
-   * Defaults to the Vite root itself.  Every `.svelte` file found is treated as
-   * a call-site source, so the union of these dirs must contain the whole app
-   * for prop elimination to be sound (docs/ARCHITECTURE.md §4.2).
+   * Directories (relative to the Vite root) the component crawl STARTS from —
+   * the same semantics as SvelteKit's `config.kit.prerender.entries`: you list
+   * the roots, and everything reachable from them is pulled in by following the
+   * import graph.  Defaults to the Vite root itself.  No glob: each entry is a
+   * directory (or a single component file), matched on a plain path-prefix basis.
+   *
+   * This is NOT an include filter, and it does not bound what gets rewritten: a
+   * library component in `node_modules` is never under an entry root, yet it is
+   * still crawled and shaken, because a component that IS under one imports it.
+   *
+   * The soundness contract runs the other way.  Every `.svelte` file found is
+   * treated as a call-site source, so the union of these roots must cover EVERY
+   * call site in the app (docs/ARCHITECTURE.md §4.2).  Narrowing `entries` to a
+   * subset of the app does not shake less — it hides call sites, and a prop the
+   * shaker cannot see being passed is folded away.
    */
-  include?: string[];
+  entries?: string[];
   /**
    * Components that have a consumer the shake cannot see, so they must never be
    * folded or narrowed (docs/ARCHITECTURE.md §4.2).  Each entry is a Vite-root-
    * relative or absolute path naming EITHER a component file or a directory of
-   * them — the same "directory or file prefix" basis as {@link include}, no glob.
+   * them — the same "directory or file prefix" basis as {@link entries}, no glob.
    *
    * The non-`.svelte` module scan already escapes components reached by a static
    * `.ts`/`.js` import; `external` is the sound fallback for what the scan cannot
    * see — most importantly a NON-literal dynamic `import(expr)`, or a call site in
-   * a module outside the include roots.
+   * a module outside the entry roots.
    *
    * A-semantics — this FREEZES the named component, it does NOT exclude it from the
    * scan: the file stays fully in the analysis (its own `<Child/>` call sites keep
@@ -214,6 +225,24 @@ function resolveMono(options: ShakerOptions): MonomorphizeOptions {
 }
 
 /**
+ * Reject `include`, the former name of {@link ShakerOptions.entries}.  A Vite
+ * config is external input, so this is a boundary check, not a courtesy: silently
+ * ignoring the stale key would fall back to the Vite root — still sound, but the
+ * roots the user configured would quietly not apply and nothing would say so.  The
+ * key is gone from the type, so only a runtime check can catch a JS config or a
+ * stale copy-pasted snippet.
+ */
+function assertNoRenamedIncludeOption(options: ShakerOptions): void {
+  if (!('include' in options)) return;
+  throw new Error(
+    '[vite-plugin-svelte-shaker] the "include" option was renamed to "entries": rename ' +
+      '`include:` to `entries:`. It was never a file filter — it lists the directories the ' +
+      'component crawl STARTS from, and everything reachable from them (including library ' +
+      'components under node_modules) is shaken whether or not it sits under one.',
+  );
+}
+
+/**
  * Source-level Svelte tree-shaking as a Vite plugin (docs/ARCHITECTURE.md §6).
  *
  * Build-only by default: dev is a pass-through unless `dev` is set (§6.2), so
@@ -233,6 +262,7 @@ function resolveMono(options: ShakerOptions): MonomorphizeOptions {
  * variant id (dedup), so they share one compiled module.
  */
 export function shaker(options: ShakerOptions = {}): Plugin {
+  assertNoRenamedIncludeOption(options);
   const mono = resolveMono(options);
   let shaken: Record<ComponentId, string> = {};
   /** Variant request id (`<childPath>?shaker_variant=<n>`) -> residual source. */
@@ -329,8 +359,10 @@ export function shaker(options: ShakerOptions = {}): Plugin {
     // setting `devShaker` here makes `buildStart` skip the build path (docs §3 M2).
     async configureServer(server) {
       if (!devMode) return;
-      const dirs = (options.include ?? ['.']).map((p) => path.resolve(root, p));
-      const entries = dirs.flatMap(collectSvelteFiles);
+      const dirs = (options.entries ?? ['.']).map((p) => path.resolve(root, p));
+      // The engine's entry components, collected from the entry DIRS: `entries`
+      // names the roots to crawl from, these are the `.svelte` files under them.
+      const entryComponents = dirs.flatMap(collectSvelteFiles);
       const read = (id: ComponentId) => fs.readFileSync(id, 'utf-8');
       const underDirs = (file: string): boolean =>
         dirs.some((d) => file === d || file.startsWith(d + path.sep));
@@ -343,10 +375,10 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       let escapedKey = '';
       const currentEscaped = async (): Promise<ComponentId[]> => {
         const result = await computeEscapedComponents({
-          includeDirs: dirs,
+          entryDirs: dirs,
           root,
           external: options.external,
-          components: entries,
+          components: entryComponents,
           resolve: fsResolve,
           readFile: read,
         });
@@ -356,7 +388,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       };
 
       devShaker = new DevShaker(
-        entries,
+        entryComponents,
         fsResolve,
         read,
         devMode,
@@ -436,9 +468,11 @@ export function shaker(options: ShakerOptions = {}): Plugin {
     // dev path and has already populated `shaken` via the incremental engine.
     async buildStart() {
       if (devShaker) return;
-      const dirs = (options.include ?? ['.']).map((p) => path.resolve(root, p));
-      const entries = dirs.flatMap(collectSvelteFiles);
-      if (entries.length === 0) {
+      const dirs = (options.entries ?? ['.']).map((p) => path.resolve(root, p));
+      // The engine's entry components, collected from the entry DIRS: `entries`
+      // names the roots to crawl from, these are the `.svelte` files under them.
+      const entryComponents = dirs.flatMap(collectSvelteFiles);
+      if (entryComponents.length === 0) {
         shaken = {};
         variantSources = new Map();
         return;
@@ -471,10 +505,10 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       // user froze via `external`.  Hand the engine that escape set, and surface the
       // scan's diagnostics (unparseable modules / unmatched `external`) as warnings.
       const escapeScan = await computeEscapedComponents({
-        includeDirs: dirs,
+        entryDirs: dirs,
         root,
         external: options.external,
-        components: entries,
+        components: entryComponents,
         resolve,
         readFile: read,
       });
@@ -506,7 +540,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         if (mono.enabled) {
           const result = await svelteShakerWasmWithMono(
             wasm,
-            entries,
+            entryComponents,
             resolve,
             read,
             mono,
@@ -516,7 +550,14 @@ export function shaker(options: ShakerOptions = {}): Plugin {
           shaken = result.files;
           variantSources = result.variants;
         } else {
-          shaken = await svelteShakerWasm(wasm, entries, resolve, read, getParse(), escaped);
+          shaken = await svelteShakerWasm(
+            wasm,
+            entryComponents,
+            resolve,
+            read,
+            getParse(),
+            escaped,
+          );
           variantSources = new Map();
         }
         reportSizes(shaken, read, root, options.verbose === true, log);
@@ -526,14 +567,14 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       if (!mono.enabled) {
         // JS engine, monomorphization off: byte-for-byte the unused-prop fold /
         // constant fold / value-set narrowing output.
-        shaken = await svelteShaker(entries, resolve, read, getParse(), escaped);
+        shaken = await svelteShaker(entryComponents, resolve, read, getParse(), escaped);
         variantSources = new Map();
         reportSizes(shaken, read, root, options.verbose === true, log);
         return;
       }
 
       const result = await svelteShakerWithMono(
-        entries,
+        entryComponents,
         resolve,
         read,
         mono,

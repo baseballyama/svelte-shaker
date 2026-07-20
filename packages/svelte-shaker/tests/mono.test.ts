@@ -407,13 +407,13 @@ describe('vite-plugin-svelte-shaker / monomorphization (end-to-end build)', () =
   });
 
   it('monomorphize false: it is OFF, the conditional and Heavy both survive', async () => {
-    const code = await bundle([shaker({ include: ['.'], monomorphize: false })]);
+    const code = await bundle([shaker({ entries: ['.'], monomorphize: false })]);
     expect(code).toMatch(IF_MACHINERY);
     expect(code).toContain(HEAVY_MARK);
   });
 
   it('default: monomorphization is ON -> correlated `{#if}` gone AND Heavy dropped', async () => {
-    const code = await bundle([shaker({ include: ['.'] })]);
+    const code = await bundle([shaker({ entries: ['.'] })]);
     // Monomorphization is on by default now: the correlated branch folds false in
     // every variant -> no conditional, and `<Heavy/>` is orphaned and dropped.
     expect(code).not.toMatch(IF_MACHINERY);
@@ -422,7 +422,7 @@ describe('vite-plugin-svelte-shaker / monomorphization (end-to-end build)', () =
   });
 
   it('monomorphize true (explicit): correlated sites specialized -> `{#if}` gone AND Heavy dropped', async () => {
-    const code = await bundle([shaker({ include: ['.'], monomorphize: true })]);
+    const code = await bundle([shaker({ entries: ['.'], monomorphize: true })]);
     // The correlated branch folded false in every variant -> no conditional.
     expect(code).not.toMatch(IF_MACHINERY);
     // ... and `<Heavy/>` is gone from every variant -> Heavy is unreferenced ->
@@ -433,8 +433,8 @@ describe('vite-plugin-svelte-shaker / monomorphization (end-to-end build)', () =
   });
 
   it('monomorphized bundle is <= the value-set-narrowing bundle in bytes (never bloat)', async () => {
-    const narrowed = await bundle([shaker({ include: ['.'], monomorphize: false })]);
-    const mono = await bundle([shaker({ include: ['.'], monomorphize: true })]);
+    const narrowed = await bundle([shaker({ entries: ['.'], monomorphize: false })]);
+    const mono = await bundle([shaker({ entries: ['.'], monomorphize: true })]);
     expect(mono.length).toBeLessThanOrEqual(narrowed.length);
   });
 });

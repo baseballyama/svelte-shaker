@@ -32,7 +32,7 @@ describe('computeEscapedComponents — structured diagnostics', () => {
   it('reports an unparseable module in `unscannable` while still escaping a good one', async () => {
     const components = collectSvelteFiles(BASE);
     const result = await computeEscapedComponents({
-      includeDirs: [BASE],
+      entryDirs: [BASE],
       root: BASE,
       components,
       resolve: fsResolve,
@@ -47,7 +47,7 @@ describe('computeEscapedComponents — structured diagnostics', () => {
   it('reports an `external` entry that matches nothing (and stays quiet for a hit)', async () => {
     const components = collectSvelteFiles(BASE);
     const miss = await computeEscapedComponents({
-      includeDirs: [BASE],
+      entryDirs: [BASE],
       root: BASE,
       external: ['./DoesNotExist.svelte'],
       components,
@@ -57,7 +57,7 @@ describe('computeEscapedComponents — structured diagnostics', () => {
     expect(miss.unmatchedExternal).toEqual(['./DoesNotExist.svelte']);
 
     const hit = await computeEscapedComponents({
-      includeDirs: [BASE],
+      entryDirs: [BASE],
       root: BASE,
       external: ['./Other.svelte'],
       components,
@@ -109,7 +109,7 @@ async function bundleWith(warnings: string[], pre: unknown[]): Promise<void> {
 describe('vite-plugin-svelte-shaker — scan warnings', () => {
   it('warns (with the file path) about a module the scan cannot parse', async () => {
     const warnings: string[] = [];
-    await bundleWith(warnings, [shaker({ include: ['.'] })]);
+    await bundleWith(warnings, [shaker({ entries: ['.'] })]);
     const w = warnings.find((m) => m.includes('could not parse'));
     expect(w, warnings.join('\n')).toBeDefined();
     expect(w).toContain('broken.tsx');
@@ -118,7 +118,7 @@ describe('vite-plugin-svelte-shaker — scan warnings', () => {
 
   it('warns about an `external` entry that matched no component', async () => {
     const warnings: string[] = [];
-    await bundleWith(warnings, [shaker({ include: ['.'], external: ['./Nope.svelte'] })]);
+    await bundleWith(warnings, [shaker({ entries: ['.'], external: ['./Nope.svelte'] })]);
     const w = warnings.find((m) => m.includes('matched no component'));
     expect(w, warnings.join('\n')).toBeDefined();
     expect(w).toContain('./Nope.svelte');
