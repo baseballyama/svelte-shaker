@@ -115,6 +115,9 @@ importers:
 
   packages/svelte-shaker:
     dependencies:
+      '@rsvelte/compiler':
+        specifier: 0.6.1
+        version: 0.6.1
       magic-string:
         specifier: 0.30.21
         version: 0.30.21
@@ -122,12 +125,6 @@ importers:
         specifier: 1.1.4
         version: 1.1.4
     devDependencies:
-      '@rsvelte/compiler':
-        specifier: 0.6.1
-        version: 0.6.1
-      '@rsvelte/vite-plugin-svelte-native':
-        specifier: 0.2.6
-        version: 0.2.6
       '@sveltejs/vite-plugin-svelte':
         specifier: ^4.0.4
         version: 4.0.4(svelte@5.56.6)(vite@5.4.21(@types/node@20.19.43))

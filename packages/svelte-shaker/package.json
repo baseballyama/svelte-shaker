@@ -57,18 +57,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@rsvelte/compiler": "0.6.1",
     "magic-string": "0.30.21",
     "zimmerframe": "1.1.4"
   },
   "devDependencies": {
-    "@rsvelte/compiler": "0.6.1",
-    "@rsvelte/vite-plugin-svelte-native": "0.2.6",
     "@sveltejs/vite-plugin-svelte": "^4.0.4",
     "svelte": "^5.56.6",
     "vite": "^5.4.21"
   },
   "peerDependencies": {
-    "@rsvelte/vite-plugin-svelte-native": ">=0.2.6",
     "svelte": "^5.56.6"
   },
   "engines": {

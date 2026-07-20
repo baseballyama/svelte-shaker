@@ -44,20 +44,20 @@ reachable value set of `variant` and removes the `.btn-danger` rule.
 ## Install
 
 ```sh
-npm i -D svelte-shaker @rsvelte/vite-plugin-svelte-native   # requires svelte@^5
+npm i -D svelte-shaker   # requires svelte@^5
 ```
 
-`@rsvelte/vite-plugin-svelte-native` is a required peer: by default the plugin
-parses with rsvelte's native Rust parser (the fast path — see
-[Options](#options)). Install it on every platform your build runs on. If you
-can't, set `parser: 'svelte'` to fall back to svelte/compiler.
+Nothing else to install. By default the plugin parses with rsvelte, loaded from
+`@rsvelte/compiler` (a bundled WASM dependency — no peer, no platform-specific
+binary). `parser: 'svelte'` falls back to svelte/compiler if you ever need it
+(see [Options](#options)).
 
 ## Usage (Vite)
 
 Add the plugin **before** `svelte()`. It runs only in `vite build` — dev/HMR is
 a pass-through by design. Out of the box it runs the native **Rust (WASM)
-engine** and parses with the native **rsvelte** parser; both fall back cleanly
-(see [Options](#options)).
+engine** and parses with **rsvelte**; both fall back cleanly (see
+[Options](#options)).
 
 ```ts
 // vite.config.ts
@@ -81,8 +81,8 @@ that monomorphization additionally needs the `?shaker_variant` requests routed
 through your plugin's `resolveId`/`load` hooks; the unused-prop fold / constant
 fold / value-set narrowing shake only needs the `transform` swap. The
 environment-free engine and the in-browser playground parse with svelte/compiler
-(no native binary to require) — the rsvelte default is a Vite-plugin concern; the
-engine takes an optional `parse` argument if you want to swap it.
+— the rsvelte default is a Vite-plugin concern (it loads a Node-only WASM
+module); the engine takes an optional `parse` argument if you want to swap it.
 
 ### Options
 
@@ -93,23 +93,24 @@ shaker({
   // or { maxVariants: 16, minSavings: 0.05 } to tune
   verbose: false, // true = per-file size breakdown after the build
 
-  // Escape hatches — the defaults ARE the fast Rust path; set these only to opt
+  // Escape hatches — the defaults ARE the Rust path; set these only to opt
   // out (e.g. if you ever hit a bug in it).
   engine: 'auto', // 'auto' (default: Rust/WASM, else JS) | 'js' | 'rust'
-  parser: 'rsvelte', // 'rsvelte' (default: native parser) | 'svelte' (fallback)
+  parser: 'rsvelte', // 'rsvelte' (default) | 'svelte' (fallback)
 });
 ```
 
-- **The defaults are the Rust fast path.** Out of the box svelte-shaker runs the
-  native **Rust (WASM) engine** and parses with **rsvelte**'s native parser
-  ([`@rsvelte/vite-plugin-svelte-native`](https://github.com/rsvelte/rsvelte)),
-  which is **~1.46x** faster full build (parse alone ~2.2x) on a real
-  474-component app. The Rust (WASM) engine is differentially tested to shake
-  **byte-identically** to the JS engine. The rsvelte parser is different: it
-  shakes a **sound superset** of svelte/compiler — equal or more, never less,
-  with SSR-observed output equivalent either way — so soundness is independent
-  of either choice; the fast path never changes what renders, only how fast
-  (and occasionally how much) it shakes.
+- **The defaults are the Rust path.** Out of the box svelte-shaker runs the
+  native **Rust (WASM) engine** and parses with **rsvelte**, loaded from
+  [`@rsvelte/compiler`](https://github.com/baseballyama/rsvelte) (a bundled WASM
+  dependency — nothing to install). The Rust (WASM) engine is differentially
+  tested to shake **byte-identically** to the JS engine. The parser choice is
+  **soundness-neutral**: the engine reads only UTF-16 `start`/`end`, so
+  svelte/compiler and rsvelte are differentially tested to produce
+  **SSR-equivalent** output — the choice never changes what renders. rsvelte is
+  the default as the Rust parser the pipeline is standardizing on (end-to-end
+  Rust with the WASM engine); `parser: 'svelte'` stays available as the
+  fallback.
 - **`monomorphize`** — the one shaking knob, **on** by default. A measured
   net-win gate only specializes a component when that strictly shrinks the whole
   program, so monomorphization **never bloats**: whatever the knobs are set to,
@@ -134,11 +135,11 @@ shaker({
   ```
 - **Escape hatches (`engine` / `parser`).** If you ever hit a bug in the Rust
   path, opt out per axis: `engine: 'js'` forces the JS engine, `parser: 'svelte'`
-  forces svelte/compiler (the previous default). When the default `parser:
-  'rsvelte'` peer can't be loaded (not installed, or no binary for this platform)
-  the plugin **throws** rather than silently falling back — so the same source
-  always shakes the same on every machine. Install the peer everywhere your build
-  runs, or set `parser: 'svelte'`.
+  forces svelte/compiler (the previous default). `@rsvelte/compiler` is a bundled
+  dependency, so the default parser normally just loads; in the unlikely event it
+  can't (a broken install), the plugin **throws** rather than silently falling
+  back — so the same source always shakes the same on every machine. Reinstall
+  dependencies, or set `parser: 'svelte'`.
 
 ## What it removes
 
