@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
+use crate::eval::{evaluate, Env, Literal};
 use crate::props::{count_props_calls, PropsInfo};
 
 /// Imported components LEAKED as a value bail reason (analyze.ts §4.1).
@@ -184,6 +185,198 @@ fn collect_written(node: &Value, out: &mut Vec<String>) {
         }
         _ => {}
     }
+}
+
+/// Owner-local, provably-constant primitive bindings, keyed by the LOCAL name a
+/// forwarded call-site expression references (docs §13.1 interprocedural
+/// pass-through).  The Rust port of analyze.ts `computeScriptConstEnv`: walks the
+/// module then the instance `<script>`'s TOP-LEVEL declarations in order,
+/// extending the env sequentially so `const a = 1; const b = a + 1;` both resolve.
+/// Every rule is conservative for soundness (see analyze.ts for the full argument):
+/// `$state(<arg>)` / `$state.raw(<arg>)` unwrap to `<arg>` (bare `$state()` is
+/// `undefined`); primitives only; the name is never written (`written`, extended
+/// with module-internal writes the instance/template scan misses) and bound
+/// EXACTLY ONCE in the whole file (so no template binder or nested scope can
+/// shadow it at a scope-blind call site); exported bindings are wrapped in an
+/// `ExportNamedDeclaration`, not a bare `VariableDeclaration`, so they are skipped.
+pub(crate) fn compute_script_const_env(
+    ast: &Value,
+    props_declaration: &Value,
+    written: &HashSet<String>,
+) -> HashMap<String, Literal> {
+    let mut env: Env = HashMap::new();
+    let module_content = get(get(ast, "module"), "content");
+    let instance_content = get(get(ast, "instance"), "content");
+
+    // Admissible only if bound EXACTLY ONCE anywhere in the file (its own top-level
+    // declarator), so no template binder or nested scope shadows it at a call site.
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    count_binding_names(module_content, &mut counts);
+    count_binding_names(instance_content, &mut counts);
+    count_binding_names(get(ast, "fragment"), &mut counts);
+
+    // `written` (template_bindings) scans the instance script and the template but
+    // NOT the module script, so close that gap before admitting a module binding.
+    let mut written_all = written.clone();
+    collect_script_writes(module_content, &mut written_all);
+
+    for program in [module_content, instance_content] {
+        for stmt in arr(program, "body") {
+            // Only a bare `VariableDeclaration`; an `export const` is wrapped in an
+            // `ExportNamedDeclaration` and is deliberately excluded.
+            if !str_eq(stmt, "type", "VariableDeclaration") {
+                continue;
+            }
+            if !props_declaration.is_null() && stmt == props_declaration {
+                continue;
+            }
+            for decl in arr(stmt, "declarations") {
+                let id = get(decl, "id");
+                if !str_eq(id, "type", "Identifier") {
+                    continue; // a single-identifier binding only
+                }
+                let name = match id.get("name").and_then(Value::as_str) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if written_all.contains(name) || counts.get(name).copied().unwrap_or(0) != 1 {
+                    continue;
+                }
+                if let Some(v) = eval_declarator_value(get(decl, "init"), &env) {
+                    env.insert(name.to_string(), v);
+                }
+            }
+        }
+    }
+    env
+}
+
+/// Constant value of a declarator initializer for [`compute_script_const_env`],
+/// unwrapping `$state(<arg>)` / `$state.raw(<arg>)` (a bare call is `undefined`).
+/// Any other initializer — including every other rune call — is evaluated verbatim,
+/// so a non-value rune simply falls to `None`. Mirrors `evalDeclaratorValue`.
+fn eval_declarator_value(init: &Value, env: &Env) -> Option<Literal> {
+    if is_state_rune_call(init) {
+        return match arr(init, "arguments").first() {
+            None => Some(Literal::Undefined), // bare `$state()` / `$state.raw()`
+            Some(arg) => evaluate(arg, env),
+        };
+    }
+    evaluate(init, env)
+}
+
+/// `$state(...)` or `$state.raw(...)` — the two runes whose sole argument is the
+/// plain value a never-written binding evaluates to. Every other rune (`$derived`,
+/// `$props`, `$state.snapshot`, …) is intentionally NOT matched. Mirrors
+/// `isStateRuneCall`.
+fn is_state_rune_call(node: &Value) -> bool {
+    if type_of(node) != Some("CallExpression") {
+        return false;
+    }
+    let callee = get(node, "callee");
+    match type_of(callee) {
+        Some("Identifier") => str_eq(callee, "name", "$state"),
+        Some("MemberExpression") => {
+            get(callee, "computed").as_bool() != Some(true)
+                && str_eq(get(callee, "object"), "type", "Identifier")
+                && str_eq(get(callee, "object"), "name", "$state")
+                && str_eq(get(callee, "property"), "type", "Identifier")
+                && str_eq(get(callee, "property"), "name", "raw")
+        }
+        _ => false,
+    }
+}
+
+/// Increment `counts` for every name a binding introduces in `root` (a `<script>`
+/// Program or the template fragment): variable declarators, function ids and
+/// params, and every template binder. A name counted more than once is bound in
+/// more than one place, so it is shadowed at some scope and disqualified from
+/// [`compute_script_const_env`]. Mirrors `countBindingNames`.
+fn count_binding_names(root: &Value, counts: &mut HashMap<String, u32>) {
+    if root.is_null() {
+        return;
+    }
+    // A `try {} catch (e) {}` param is intentionally NOT counted: a call-site
+    // expression only resolves against the TOP-LEVEL script scope, which a
+    // catch-block-scoped name can never enter, so it cannot shadow a fold there.
+    walk(root, &mut |node| match type_of(node) {
+        Some("VariableDeclarator") => bump_pattern(get(node, "id"), counts),
+        Some("FunctionDeclaration") | Some("FunctionExpression") | Some("ArrowFunctionExpression") => {
+            let id = get(node, "id");
+            if str_eq(id, "type", "Identifier") {
+                if let Some(n) = id.get("name").and_then(Value::as_str) {
+                    bump(counts, n);
+                }
+            }
+            for p in arr(node, "params") {
+                bump_pattern(p, counts);
+            }
+        }
+        Some("EachBlock") => {
+            bump_pattern(get(node, "context"), counts);
+            if let Some(i) = node.get("index").and_then(Value::as_str) {
+                bump(counts, i);
+            }
+        }
+        Some("SnippetBlock") => {
+            let expr = get(node, "expression");
+            if str_eq(expr, "type", "Identifier") {
+                if let Some(n) = expr.get("name").and_then(Value::as_str) {
+                    bump(counts, n);
+                }
+            }
+            for p in arr(node, "parameters") {
+                bump_pattern(p, counts);
+            }
+        }
+        Some("AwaitBlock") => {
+            bump_pattern(get(node, "value"), counts);
+            bump_pattern(get(node, "error"), counts);
+        }
+        Some("LetDirective") => {
+            if let Some(n) = node.get("name").and_then(Value::as_str) {
+                bump(counts, n);
+            }
+        }
+        Some("ConstTag") => {
+            for d in arr(get(node, "declaration"), "declarations") {
+                bump_pattern(get(d, "id"), counts);
+            }
+        }
+        _ => {}
+    });
+}
+
+fn bump(counts: &mut HashMap<String, u32>, name: &str) {
+    *counts.entry(name.to_string()).or_insert(0) += 1;
+}
+
+/// Bump `counts` once per name a (possibly destructuring) pattern binds.
+fn bump_pattern(pat: &Value, counts: &mut HashMap<String, u32>) {
+    let mut names = Vec::new();
+    add_pattern_names(pat, &mut names); // dedups within one pattern
+    for n in &names {
+        bump(counts, n);
+    }
+}
+
+/// Add every name a `<script>` Program WRITES (bare-identifier assignment / update
+/// targets, at any nesting) to `out` — the module-script counterpart of the write
+/// collection [`template_bindings`] runs over the instance. Mirrors
+/// `collectScriptWrites`.
+fn collect_script_writes(program: &Value, out: &mut HashSet<String>) {
+    if program.is_null() {
+        return;
+    }
+    walk(program, &mut |node| {
+        if matches!(type_of(node), Some("AssignmentExpression") | Some("UpdateExpression")) {
+            let mut names = Vec::new();
+            collect_written(node, &mut names);
+            for n in names {
+                out.insert(n);
+            }
+        }
+    });
 }
 
 /// EXTERNAL names of props DECLARED but never READ (docs §PR7) — mirrors

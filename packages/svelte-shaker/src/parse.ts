@@ -26,6 +26,8 @@ export interface AnyNode {
   init?: AnyNode | undefined;
   key?: AnyNode | undefined;
   property?: AnyNode | undefined;
+  /** MemberExpression object (`$state` in `$state.raw`). */
+  object?: AnyNode | undefined;
   source?: AnyNode | undefined;
   local?: AnyNode | undefined;
   /** ImportSpecifier / ExportSpecifier exported-name slot. */
@@ -57,6 +59,8 @@ export interface AnyNode {
   members?: AnyNode[] | undefined;
   body?: AnyNode[] | undefined;
   declarations?: AnyNode[] | undefined;
+  /** CallExpression / NewExpression arguments (`0` in `$state(0)`). */
+  arguments?: (AnyNode | null)[] | undefined;
   specifiers?: AnyNode[] | undefined;
   nodes?: AnyNode[] | undefined;
   /** SnippetBlock parameters; ArrayPattern elements; DebugTag identifiers. */

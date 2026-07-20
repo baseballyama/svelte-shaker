@@ -151,13 +151,15 @@ describe('svelte-shaker / CSS rule removal (engine)', () => {
 
   it('keeps every rule when a class source is unbounded (sound bail)', async () => {
     // A genuinely dynamic `class={cls}` makes the class set unbounded, so NO rule
-    // may be removed — even though `variant` is still narrowable.
+    // may be removed — even though `variant` is still narrowable.  `cls` is an
+    // unknown entry `$props()` input, so it stays dynamic (a foldable owner const
+    // would instead prove the class bounded and narrow it away — a different case).
     const dir = join(APP, '..', '.shaker-tmp-css-unbounded');
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, 'App.svelte'),
-      `<script lang="ts">\n  import Btn from './Btn.svelte';\n  let cls = 'x';\n</script>\n<Btn variant="primary" cls={cls} />\n<Btn variant="secondary" cls={cls} />\n`,
+      `<script lang="ts">\n  import Btn from './Btn.svelte';\n  let { cls }: { cls: string } = $props();\n</script>\n<Btn variant="primary" cls={cls} />\n<Btn variant="secondary" cls={cls} />\n`,
     );
     writeFileSync(
       join(dir, 'Btn.svelte'),

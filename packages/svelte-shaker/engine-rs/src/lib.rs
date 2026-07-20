@@ -233,8 +233,12 @@ pub fn shake_program(input_json: &str) -> String {
         // literal in phase 1 when `ownerProp` folds; give phase 2 the owner's env so
         // it recognizes that attribute as removable (interprocedural pass-through).
         let plan = &plans[&model.id];
-        let owner_env =
+        // Include the owner's `script_const_env` (docs §13.1): a forwarded owner
+        // script constant is side-effect-free, so once the child drops the prop its
+        // attribute is removable. Mirrors runBasePhases's `mergeLocalConstEnv`.
+        let folded =
             if plan.bail { HashMap::new() } else { remap_to_local_names(&plan.const_env(), model) };
+        let owner_env = merge_script_consts(&model.script_const_env, folded);
         if let Some(edits) = edits_map.get_mut(&model.id) {
             let empty = Vec::new();
             let spans = edited_spans.get(&model.id).unwrap_or(&empty);
@@ -389,8 +393,12 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
     }
     for model in &models {
         let plan = &plans[&model.id];
-        let owner_env =
+        // Include the owner's `script_const_env` (docs §13.1): a forwarded owner
+        // script constant is side-effect-free, so once the child drops the prop its
+        // attribute is removable. Mirrors runBasePhases's `mergeLocalConstEnv`.
+        let folded =
             if plan.bail { HashMap::new() } else { remap_to_local_names(&plan.const_env(), model) };
+        let owner_env = merge_script_consts(&model.script_const_env, folded);
         if let Some(edits) = edits_map.get_mut(&model.id) {
             let empty = Vec::new();
             let spans = edited_spans.get(&model.id).unwrap_or(&empty);
