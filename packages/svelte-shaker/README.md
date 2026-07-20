@@ -103,6 +103,10 @@ shaker({
 });
 ```
 
+That list is exhaustive: any other key **fails the build**, naming the key and the
+options that do exist. A typo would otherwise be ignored — and a misspelled
+`preserve` ships the component you meant to protect, over-shaken.
+
 - **The defaults are the Rust path.** Out of the box svelte-shaker runs the
   native **Rust (WASM) engine** and parses with **rsvelte**, loaded from
   [`@rsvelte/compiler`](https://github.com/baseballyama/rsvelte) (a bundled WASM

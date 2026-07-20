@@ -15,6 +15,11 @@ import { tryLoadRsvelteParser } from './rsvelte-parse.js';
 import { svelteShakerWasm, svelteShakerWasmWithMono, tryLoadWasmEngine } from './wasm-engine.js';
 import type { ComponentId } from './ir.js';
 
+/**
+ * Options for the {@link shaker} plugin.  The set below is exhaustive: any other
+ * key throws at build start rather than being ignored, because an option we never
+ * read is an option the user thinks is applied and is not.
+ */
 export interface ShakerOptions {
   /**
    * Directories (relative to the Vite root) the component crawl STARTS from —
@@ -255,17 +260,44 @@ const RENAMED_OPTIONS: Record<string, string> = {
 };
 
 /**
- * Reject the pre-rename option keys ({@link RENAMED_OPTIONS}).  A Vite config is
- * external input, so this is a boundary check, not a courtesy: a silently ignored
- * stale key still builds — `include` falls back to the Vite root, `external` to an
- * empty preserve set — but what the user configured quietly does not apply, and in
- * the `external` case the result is an over-shaken component. The keys are gone
- * from the type, so only a runtime check can catch a JS config or a stale
- * copy-pasted snippet.
+ * Every key {@link ShakerOptions} accepts.  The `satisfies` is the point of the
+ * table: adding an option to the interface without listing it here fails
+ * `tsc --noEmit`, so the accept-list can never drift behind the type and start
+ * rejecting a valid config.
  */
-function assertNoRenamedOptions(options: ShakerOptions): void {
-  for (const [stale, message] of Object.entries(RENAMED_OPTIONS)) {
-    if (stale in options) throw new Error(`[vite-plugin-svelte-shaker] ${message}`);
+const KNOWN_OPTIONS = {
+  entries: true,
+  preserve: true,
+  monomorphize: true,
+  engine: true,
+  dev: true,
+  parser: true,
+  verbose: true,
+} satisfies Record<keyof ShakerOptions, true>;
+
+/**
+ * Reject anything that is not an option we act on.  A Vite config is external
+ * input, so this is a boundary check, not a courtesy: an ignored key still
+ * builds, but what the user configured quietly does not apply — `entries` falls
+ * back to the Vite root, `preserve` to an empty set, and that last one ships an
+ * over-shaken component.
+ *
+ * A typo (`preserv:`) fails in exactly that way, which is why unknown keys are
+ * rejected on the same footing as the pre-rename keys ({@link RENAMED_OPTIONS})
+ * rather than only the ones we happen to have a migration note for.  TypeScript's
+ * excess-property check only fires on an object literal written inline, so a
+ * config built up in a variable — or any JS config — reaches us unguarded.
+ */
+function assertValidOptions(options: ShakerOptions): void {
+  for (const key of Object.keys(options)) {
+    if (Object.hasOwn(RENAMED_OPTIONS, key))
+      throw new Error(`[vite-plugin-svelte-shaker] ${RENAMED_OPTIONS[key]}`);
+    if (!Object.hasOwn(KNOWN_OPTIONS, key))
+      throw new Error(
+        `[vite-plugin-svelte-shaker] unknown option "${key}". Valid options are: ` +
+          `${Object.keys(KNOWN_OPTIONS).join(', ')}. Check the spelling — an option we ` +
+          `do not read is an option that does not apply.`,
+      );
   }
 }
 
@@ -289,7 +321,7 @@ function assertNoRenamedOptions(options: ShakerOptions): void {
  * variant id (dedup), so they share one compiled module.
  */
 export function shaker(options: ShakerOptions = {}): Plugin {
-  assertNoRenamedOptions(options);
+  assertValidOptions(options);
   const mono = resolveMono(options);
   let shaken: Record<ComponentId, string> = {};
   /** Variant request id (`<childPath>?shaker_variant=<n>`) -> residual source. */
