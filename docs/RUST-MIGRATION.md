@@ -338,3 +338,24 @@ parse 速度優位がフルでは消える**ことが分かった（`tests/_benc
   fallback せず throw、`parser:'svelte'` が svelte/compiler への明示フォールバック。環境フリー API とブラウザ playground は
   native バイナリを要求できないため `svelte/compiler` のまま（境界）。envelope（#908）解決でさらに高速化。エンジン本体の
   Rust/WASM 化は **速度目的では非推奨**（全体の ~15%・境界で逆効果）。
+
+### 上記の supersede（PR13：既定パーサーのロード元を WASM `@rsvelte/compiler` へ移行）
+
+> ⚠️ 上の「最新結論」は **native `@rsvelte/vite-plugin-svelte-native` を必須 peer にして速度（フル 1.46x）を得る**という
+> 決定だった。**PR13 でこの決定は supersede された**（上の記録は歴史として残す）。
+
+- **理由は速度ではなく依存の正しさ**。`@rsvelte/vite-plugin-svelte-native` は「ビルド全体を rsvelte 化する Vite プラグイン」で、
+  svelte-shaker はそこから偶然 export される `parse` を借用していただけ。必須 peer として要求するのは誤ったセマンティクスであり、
+  利用者にインストール作業を強いる。**パーサー専用パッケージ `@rsvelte/compiler`（WASM）を通常の dependency にする**ことで、
+  セマンティクスが正しくなり、追加インストールも不要（プラットフォーム非依存）になる。パーサー既定を **Rust に統一する系譜**
+  （WASM エンジンと合わせ end-to-end Rust）という位置づけも維持される。
+- **速度は劣後する（トレードオフを明記）**。上表のとおり WASM `parse_svelte` + `JSON.parse` は parse 単体 **0.61x（遅い）**。
+  さらに WASM の AST は全ノードに `loc` を含み、それを落とすオプションが無い（native の `skipExpressionLoc` 相当なし）ため、
+  エンジンの walk 肥大でフルは parse 以上に沈む見込み。**「速度が必要なら現状 `parser: 'svelte'`（svelte/compiler）が最速」**。
+- **健全性は中立で不変**。engine は UTF-16 `start`/`end` のみ参照（`loc` 不使用）なので、どのパーサでも出力は変わらない。
+  `tests/rsvelte-diff.test.ts` が WASM `@rsvelte/compiler` 駆動で全 fixture の shake 出力が svelte/compiler と byte 一致
+  （既知の TS 型ノード差を除き SSR 等価）を差分検証済み。
+- **ローダー**: `src/rsvelte-parse.ts` が `@rsvelte/compiler` を `initSync`（wasm bytes）→ `parse_svelte` で読む。node 専用
+  （vite entry 同梱）という境界は不変。ロード失敗時の throw + `parser:'svelte'` 誘導は防衛として維持（dependency 化で失敗は稀）。
+- **envelope / native 系の高速路（1.46x）は将来の再検討余地**として上の記録に残すが、現行の既定は WASM。速度を取り戻すには
+  envelope（#908）解決後に native 経路を opt-in で再導入するか、`parser: 'svelte'` を使う。

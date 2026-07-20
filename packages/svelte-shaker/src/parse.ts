@@ -110,8 +110,8 @@ export type ParseCache = Map<string, { code: string; ast: Root }>;
  * A `.svelte` -> modern-AST parser, swappable for the default {@link parseSvelte}
  * (svelte/compiler).  The engine reads only the AST it returns, so any parser that
  * emits svelte/compiler's modern shape (UTF-16 `start`/`end`) can drive it — the
- * Vite plugin's `parser: 'rsvelte'` option supplies rsvelte's native parser here
- * (docs/RUST-MIGRATION.md §6).
+ * Vite plugin's `parser: 'rsvelte'` option supplies rsvelte's parser (the
+ * `@rsvelte/compiler` WASM build) here (docs/RUST-MIGRATION.md §6).
  */
 export type Parse = (code: string, filename: string) => Root;
 
