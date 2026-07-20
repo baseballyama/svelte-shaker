@@ -108,6 +108,37 @@ describe('vite-plugin-svelte-shaker (end-to-end build)', () => {
     expect(() => shaker(staleConfig)).toThrow(/nothing to do with Rollup/);
   });
 
+  it('an unknown option throws, naming the key and the options that do exist', () => {
+    // A typo fails exactly like a stale key: ignored, the build succeeds with the
+    // setting not applied — and for a misspelled `preserve` that means shipping the
+    // component the user meant to protect, over-shaken.
+    const typoConfig: ShakerOptions & { preserv: string[] } = { preserv: ['./Widget.svelte'] };
+    expect(() => shaker(typoConfig)).toThrow(/unknown option "preserv"/);
+    expect(() => shaker(typoConfig)).toThrow(/preserve/);
+  });
+
+  it('a renamed key gets its migration message, not the generic unknown-option one', () => {
+    // Both checks run over the same key set, so the ordering between them is what
+    // decides whether a user migrating from `include` gets told the new name.
+    const staleConfig: ShakerOptions & { include: string[] } = { include: ['.'] };
+    expect(() => shaker(staleConfig)).not.toThrow(/unknown option/);
+  });
+
+  it('valid options — and no options at all — are accepted', () => {
+    expect(() => shaker()).not.toThrow();
+    expect(() =>
+      shaker({
+        entries: ['.'],
+        preserve: ['./Widget.svelte'],
+        monomorphize: false,
+        engine: 'js',
+        dev: false,
+        parser: 'svelte',
+        verbose: true,
+      }),
+    ).not.toThrow();
+  });
+
   it('engine: "rust" shakes with monomorphization on by default (native)', async () => {
     // The Rust engine implements monomorphization too, so engine: "rust" with the
     // default options shakes the dead branch (and would specialize where it wins)
