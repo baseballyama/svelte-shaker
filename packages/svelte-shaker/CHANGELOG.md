@@ -1,5 +1,126 @@
 # svelte-shaker
 
+## 0.14.0
+
+### Minor Changes
+
+- 9e28445: Fold owner-local constant bindings at call sites.
+
+  A `<Child {count}/>` that forwards an owner-local binding now shakes the child
+  when that binding is provably a single primitive constant — a `const count = 0`,
+  or an unmutated `let count = $state(0)`. Previously only inline call-site literals
+  (`<Child count={0}/>`) drove folding; a value passed through a named binding —
+  the common shape in real apps (`const VARIANT = 'primary'`, a page-level
+  `$state`) — evaluated to unknown, so the child kept its dead branches, unused
+  props, and unreachable CSS.
+
+  Each component now precomputes a `scriptConstEnv` from its module and instance
+  `<script>` top-level declarations (in order, so `const a = 1; const b = a + 1`
+  both resolve), unwrapping `$state(<arg>)` / `$state.raw(<arg>)`. It is merged into
+  the owner's fold environment wherever a forwarded call-site expression is
+  evaluated, so it feeds **both** constant folding and value-set narrowing.
+
+  Admission is conservative for soundness — a binding is used only when its
+  identifier definitely denotes one constant primitive at every call site:
+  primitives only (object/`$state({...})` initializers are excluded — deep mutation
+  through a proxy is possible); never a written binding (reassigned / `++` /
+  `bind:`); never a name a template binder or nested scope also binds (a scope-blind
+  call site could mean the other entity); never `$derived` / `$props` / any other
+  rune; and never an exported binding (reachable outside the analyzed graph).
+
+  Behavior-preserving: shaking still only ever removes code the app can never reach,
+  guarded by the differential-SSR oracle. Both the JS and Rust (WASM) engines
+  implement it identically, keeping their output byte-for-byte equal.
+
+- 9023ddf: `shaker()` now **throws** on an unknown option key, naming the key and listing the
+  options that do exist:
+
+  ```
+  [vite-plugin-svelte-shaker] unknown option "preserv". Valid options are: entries,
+  preserve, monomorphize, engine, dev, parser, verbose. Check the spelling — an
+  option we do not read is an option that does not apply.
+  ```
+
+  A typo used to be ignored, which is the same failure as a stale key: the build
+  succeeds with the setting not applied. For a misspelled `preserve` that means the
+  component you meant to protect ships over-shaken. TypeScript only catches this on
+  an object literal written inline, so a config assembled in a variable — or any JS
+  config — had nothing checking it.
+
+- b1a4d61: **BREAKING:** The Vite plugin's `external` option was renamed to `preserve`.
+  Passing `external` now **throws** with a message naming the new option, so a
+  stale config fails the build instead of silently shaking a component the user
+  meant to protect.
+
+  Migrate: rename the key.
+
+  ```diff
+  -shaker({ external: ['./src/lib/Widget.svelte'] })
+  +shaker({ preserve: ['./src/lib/Widget.svelte'] })
+  ```
+
+  `external` is a name Rollup and Vite have already spent, and on something this
+  option has never done: there it means "don't bundle this — leave it as an
+  external import." This option has nothing to do with bundling. It names
+  components whose **prop interface** must be left exactly as written, because a
+  consumer the shaker cannot observe passes props to them: a `mount()` behind a
+  non-literal dynamic `import(expr)`, or a call site in a module outside the
+  `entries` roots. What it preserves is the props, **not** the file's presence in
+  the bundle — listing a component never keeps it out of the bundle, and never
+  even takes it out of the analysis.
+
+  The old docs were the tell. They had to spend two separate sentences saying what
+  the name is _not_ ("it does NOT exclude it from the scan", "it is not a way to
+  make the shaker ignore a file"). When the documentation has to argue with the
+  identifier, the identifier is wrong. `preserve` says which direction the option
+  moves — leave this alone — and sits in the same vocabulary as Svelte's own
+  `preserveComments` / `preserveWhitespace`.
+
+  Semantics are unchanged. The file stays fully analyzed and its own call sites
+  still count toward its children; only that component's own prop folding and
+  never-passed reporting are turned off. And unlike `entries`, over-listing is the
+  safe direction: a component preserved without needing it is simply shaken less,
+  never wrongly.
+
+  For the same reason, `computeEscapedComponents` (from `svelte-shaker/node`,
+  which you only touch if you drive the shake from your own plugin) takes
+  `preserve` where it took `external`, and returns `unmatchedPreserve` where it
+  returned `unmatchedExternal`.
+
+- ce747d1: **BREAKING:** The Vite plugin's `include` option was renamed to `entries`.
+  Passing `include` now **throws** with a message naming the new option, so a
+  stale config fails the build instead of silently falling back to the Vite root.
+
+  Migrate: rename the key.
+
+  ```diff
+  -shaker({ include: ['src'] })
+  +shaker({ entries: ['src'] })
+  ```
+
+  `include` is a name the ecosystem has already spent — in `@rollup/pluginutils`
+  and in `vite-plugin-svelte` itself it means "the glob of files this plugin
+  processes." This option has never been that. It lists the directories the
+  component crawl **starts from**; everything reachable from there is shaken,
+  including library components under `node_modules` that no `include` glob would
+  ever have matched. So the old name described the opposite of what the option
+  does.
+
+  That mismatch pushed users the unsafe way. Reading `include` as "the files I
+  want processed" invites narrowing it to a subset of the app — and narrowing the
+  crawl roots doesn't shake less, it hides call sites, which is exactly how a prop
+  that _is_ passed somewhere gets folded away and your build breaks. `entries`
+  names the operation honestly, matching SvelteKit's `config.kit.prerender.entries`
+  ("pages to prerender, or start crawling from"): list the roots, reach the rest by
+  following the graph. Like `prerender.entries`, it takes paths, not globs.
+
+  Only the name changed — same semantics, same default (the Vite root), and the
+  same soundness contract: the roots must cover every call site in your app.
+
+  For the same reason, `computeEscapedComponents` (from `svelte-shaker/node`,
+  which you only touch if you drive the shake from your own plugin) takes
+  `entryDirs` where it took `includeDirs`.
+
 ## 0.13.0
 
 ### Minor Changes
