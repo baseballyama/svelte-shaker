@@ -1,2 +1,7 @@
 packages:
   - 'packages/*'
+
+# esbuild's postinstall fetches its platform binary; pnpm 11 requires builds
+# to be explicitly allowed (see https://pnpm.io/settings#allowbuilds).
+allowBuilds:
+  esbuild: true
