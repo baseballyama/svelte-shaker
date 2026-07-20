@@ -35,23 +35,32 @@ export interface ShakerOptions {
    */
   entries?: string[];
   /**
-   * Components that have a consumer the shake cannot see, so they must never be
-   * folded or narrowed (docs/ARCHITECTURE.md §4.2).  Each entry is a Vite-root-
-   * relative or absolute path naming EITHER a component file or a directory of
-   * them — the same "directory or file prefix" basis as {@link entries}, no glob.
+   * Components whose PROP INTERFACE must be left exactly as written, because they
+   * have a consumer the shake cannot see (docs/ARCHITECTURE.md §4.2).  Each entry
+   * is a Vite-root-relative or absolute path naming EITHER a component file or a
+   * directory of them — the same "directory or file prefix" basis as
+   * {@link entries}, no glob.
    *
-   * The non-`.svelte` module scan already escapes components reached by a static
-   * `.ts`/`.js` import; `external` is the sound fallback for what the scan cannot
-   * see — most importantly a NON-literal dynamic `import(expr)`, or a call site in
-   * a module outside the entry roots.
+   * What is preserved is the prop interface, NOT the component's presence in the
+   * bundle: this is unrelated to Rollup/Vite's `external`, and it never keeps a
+   * file out of the bundle or out of the analysis.
    *
-   * A-semantics — this FREEZES the named component, it does NOT exclude it from the
-   * scan: the file stays fully in the analysis (its own `<Child/>` call sites keep
-   * counting toward its children's profiles), and only the component ITSELF has its
-   * prop folding / never-passed reporting turned off.  It is not a way to make the
-   * shaker ignore a file.
+   * Reach for it when a consumer lives outside the `.svelte` graph and the shaker
+   * cannot observe that call site: a `mount()` behind a NON-literal dynamic
+   * `import(expr)`, or a module outside the {@link entries} roots.  Consumers
+   * reached by a static `.ts`/`.js` import are already found by the non-`.svelte`
+   * module scan, so those need no entry here.
+   *
+   * A-semantics — listing a component does NOT exclude it from the scan: the file
+   * stays fully in the analysis (its own `<Child/>` call sites keep counting toward
+   * its children's profiles), and only the component ITSELF has its prop folding /
+   * never-passed reporting turned off.  It is not a way to make the shaker ignore
+   * a file.
+   *
+   * Over-listing errs SAFE, the opposite of {@link entries}: a component preserved
+   * without needing it is merely shaken less, never wrongly.
    */
-  external?: string[];
+  preserve?: string[];
   /**
    * Per-call-site monomorphization tuning (docs §13.2).  Monomorphization is ON
    * by default because it is bail-safe and never bloats (the measured net-win
@@ -225,21 +234,39 @@ function resolveMono(options: ShakerOptions): MonomorphizeOptions {
 }
 
 /**
- * Reject `include`, the former name of {@link ShakerOptions.entries}.  A Vite
- * config is external input, so this is a boundary check, not a courtesy: silently
- * ignoring the stale key would fall back to the Vite root — still sound, but the
- * roots the user configured would quietly not apply and nothing would say so.  The
- * key is gone from the type, so only a runtime check can catch a JS config or a
- * stale copy-pasted snippet.
+ * Options renamed in the pre-1.0 cleanup: stale key -> what to write instead and
+ * why the old name described the wrong thing.  Both renames dropped a name the
+ * ecosystem had already spent on a DIFFERENT meaning, so the message has to say
+ * more than "renamed" — a user who reaches for the old key is usually carrying
+ * the old key's ecosystem meaning with it.
  */
-function assertNoRenamedIncludeOption(options: ShakerOptions): void {
-  if (!('include' in options)) return;
-  throw new Error(
-    '[vite-plugin-svelte-shaker] the "include" option was renamed to "entries": rename ' +
-      '`include:` to `entries:`. It was never a file filter — it lists the directories the ' +
-      'component crawl STARTS from, and everything reachable from them (including library ' +
-      'components under node_modules) is shaken whether or not it sits under one.',
-  );
+const RENAMED_OPTIONS: Record<string, string> = {
+  include:
+    'the "include" option was renamed to "entries": rename `include:` to `entries:`. It was ' +
+    'never a file filter — it lists the directories the component crawl STARTS from, and ' +
+    'everything reachable from them (including library components under node_modules) is ' +
+    'shaken whether or not it sits under one.',
+  external:
+    'the "external" option was renamed to "preserve": rename `external:` to `preserve:`. It ' +
+    'has nothing to do with Rollup/Vite `external` — it never keeps a file out of the bundle. ' +
+    'It names components whose prop interface must be left as written because a consumer the ' +
+    'shaker cannot see (a non-literal dynamic `import(expr)`, a module outside `entries`) ' +
+    'passes props to them.',
+};
+
+/**
+ * Reject the pre-rename option keys ({@link RENAMED_OPTIONS}).  A Vite config is
+ * external input, so this is a boundary check, not a courtesy: a silently ignored
+ * stale key still builds — `include` falls back to the Vite root, `external` to an
+ * empty preserve set — but what the user configured quietly does not apply, and in
+ * the `external` case the result is an over-shaken component. The keys are gone
+ * from the type, so only a runtime check can catch a JS config or a stale
+ * copy-pasted snippet.
+ */
+function assertNoRenamedOptions(options: ShakerOptions): void {
+  for (const [stale, message] of Object.entries(RENAMED_OPTIONS)) {
+    if (stale in options) throw new Error(`[vite-plugin-svelte-shaker] ${message}`);
+  }
 }
 
 /**
@@ -262,7 +289,7 @@ function assertNoRenamedIncludeOption(options: ShakerOptions): void {
  * variant id (dedup), so they share one compiled module.
  */
 export function shaker(options: ShakerOptions = {}): Plugin {
-  assertNoRenamedIncludeOption(options);
+  assertNoRenamedOptions(options);
   const mono = resolveMono(options);
   let shaken: Record<ComponentId, string> = {};
   /** Variant request id (`<childPath>?shaker_variant=<n>`) -> residual source. */
@@ -274,25 +301,27 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   let warn: (msg: string) => void = (msg) => console.warn(`[svelte-shaker] ${msg}`);
 
   // Surface the escape scan's diagnostics (docs §4.2) as build warnings: modules the
-  // scan could not parse (a component mounted from one is left un-frozen — a real
-  // soundness hole), and `external` entries that matched no component (a typo leaves
-  // the intended component un-frozen).  Both are actionable and name the offenders,
+  // scan could not parse (a component mounted from one is left unpreserved — a real
+  // soundness hole), and `preserve` entries that matched no component (a typo leaves
+  // the intended component unpreserved).  Both are actionable and name the offenders,
   // but never fail the build — the shake is still emitted.
   const reportEscapeDiagnostics = (result: EscapeScanResult): void => {
     if (result.unscannable.length > 0) {
       warn(
-        `external call-site scan could not parse ${result.unscannable.length} module(s), so a ` +
-          `.svelte component mounted from one of them is NOT protected and may be over-shaken. ` +
-          `If a component is mounted from any of these, add it to the \`external\` option:\n` +
+        `could not parse ${result.unscannable.length} non-\`.svelte\` module(s), so any ` +
+          `component mounted from one of them is invisible to the shake and may be ` +
+          `over-shaken (props it is really passed folded away). If any of these mounts a ` +
+          `component, list that component in the \`preserve\` option to keep its props:\n` +
           result.unscannable.map((f) => `  - ${path.relative(root, f) || f}`).join('\n'),
       );
     }
-    if (result.unmatchedExternal.length > 0) {
+    if (result.unmatchedPreserve.length > 0) {
       warn(
-        `\`external\` matched no component for ${result.unmatchedExternal.length} entr` +
-          `${result.unmatchedExternal.length === 1 ? 'y' : 'ies'} (check the path and that a ` +
-          `file entry keeps its \`.svelte\` extension); the intended component is NOT frozen:\n` +
-          result.unmatchedExternal.map((e) => `  - ${e}`).join('\n'),
+        `\`preserve\` matched no component for ${result.unmatchedPreserve.length} entr` +
+          `${result.unmatchedPreserve.length === 1 ? 'y' : 'ies'} (check the path, and that a ` +
+          `file entry keeps its \`.svelte\` extension); the intended component is NOT ` +
+          `preserved, so its props can still be folded:\n` +
+          result.unmatchedPreserve.map((e) => `  - ${e}`).join('\n'),
       );
     }
   };
@@ -368,7 +397,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         dirs.some((d) => file === d || file.startsWith(d + path.sep));
 
       // Re-scan the non-`.svelte` modules for `.svelte` call sites and re-apply
-      // `external` (docs §4.2).  Dev uses the same relative-only `fsResolve` the dev
+      // `preserve` (docs §4.2).  Dev uses the same relative-only `fsResolve` the dev
       // crawl uses, so the escape scope matches the crawl scope — dev is never more
       // unsound than build.  The sorted-join key lets a change that does not move the
       // escape set skip the reload.
@@ -377,7 +406,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         const result = await computeEscapedComponents({
           entryDirs: dirs,
           root,
-          external: options.external,
+          preserve: options.preserve,
           components: entryComponents,
           resolve: fsResolve,
           readFile: read,
@@ -502,12 +531,12 @@ export function shaker(options: ShakerOptions = {}): Plugin {
 
       // Components used from OUTSIDE the `.svelte` graph must not be folded (docs
       // §4.2): those a non-`.svelte` module imports (found by the scan) plus any the
-      // user froze via `external`.  Hand the engine that escape set, and surface the
-      // scan's diagnostics (unparseable modules / unmatched `external`) as warnings.
+      // user pinned via `preserve`.  Hand the engine that escape set, and surface the
+      // scan's diagnostics (unparseable modules / unmatched `preserve`) as warnings.
       const escapeScan = await computeEscapedComponents({
         entryDirs: dirs,
         root,
-        external: options.external,
+        preserve: options.preserve,
         components: entryComponents,
         resolve,
         readFile: read,

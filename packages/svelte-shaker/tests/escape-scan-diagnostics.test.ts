@@ -44,27 +44,27 @@ describe('computeEscapedComponents — structured diagnostics', () => {
     expect(result.escaped).not.toContain(join(BASE, 'broken.tsx'));
   });
 
-  it('reports an `external` entry that matches nothing (and stays quiet for a hit)', async () => {
+  it('reports a `preserve` entry that matches nothing (and stays quiet for a hit)', async () => {
     const components = collectSvelteFiles(BASE);
     const miss = await computeEscapedComponents({
       entryDirs: [BASE],
       root: BASE,
-      external: ['./DoesNotExist.svelte'],
+      preserve: ['./DoesNotExist.svelte'],
       components,
       resolve: fsResolve,
       readFile: fsReadFile,
     });
-    expect(miss.unmatchedExternal).toEqual(['./DoesNotExist.svelte']);
+    expect(miss.unmatchedPreserve).toEqual(['./DoesNotExist.svelte']);
 
     const hit = await computeEscapedComponents({
       entryDirs: [BASE],
       root: BASE,
-      external: ['./Other.svelte'],
+      preserve: ['./Other.svelte'],
       components,
       resolve: fsResolve,
       readFile: fsReadFile,
     });
-    expect(hit.unmatchedExternal).toEqual([]);
+    expect(hit.unmatchedPreserve).toEqual([]);
     expect(hit.escaped).toContain(join(BASE, 'Other.svelte'));
   });
 });
@@ -113,12 +113,12 @@ describe('vite-plugin-svelte-shaker — scan warnings', () => {
     const w = warnings.find((m) => m.includes('could not parse'));
     expect(w, warnings.join('\n')).toBeDefined();
     expect(w).toContain('broken.tsx');
-    expect(w).toContain('external');
+    expect(w).toContain('preserve');
   });
 
-  it('warns about an `external` entry that matched no component', async () => {
+  it('warns about a `preserve` entry that matched no component', async () => {
     const warnings: string[] = [];
-    await bundleWith(warnings, [shaker({ entries: ['.'], external: ['./Nope.svelte'] })]);
+    await bundleWith(warnings, [shaker({ entries: ['.'], preserve: ['./Nope.svelte'] })]);
     const w = warnings.find((m) => m.includes('matched no component'));
     expect(w, warnings.join('\n')).toBeDefined();
     expect(w).toContain('./Nope.svelte');

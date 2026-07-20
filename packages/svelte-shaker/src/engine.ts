@@ -52,7 +52,7 @@ export class DevShaker {
   /** Last-seen source per file, so an update re-reads only what changed. */
   private readonly codeCache = new Map<ComponentId, string>();
   /** Components with a consumer outside the `.svelte` graph (docs §4.2): a
-   * `.ts`/`.js` call site or a user `external`.  The Shell recomputes and
+   * `.ts`/`.js` call site or a user `preserve`.  The Shell recomputes and
    * {@link setEscaped}s this whenever a non-`.svelte` module changes. */
   private escaped: ComponentId[];
 

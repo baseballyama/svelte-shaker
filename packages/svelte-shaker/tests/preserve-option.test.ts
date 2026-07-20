@@ -7,9 +7,9 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { shaker } from '../src/vite';
 import { buildAnalyzeInput, findNeverPassedProps } from '../src/index';
 import type { ReadFile, Resolve } from '../src/index';
-import { matchExternal } from '../src/escape-scan';
+import { matchPreserve } from '../src/escape-scan';
 
-describe('matchExternal', () => {
+describe('matchPreserve', () => {
   const root = '/proj';
   const components = [
     '/proj/src/Button.svelte',
@@ -18,25 +18,25 @@ describe('matchExternal', () => {
   ];
 
   it('matches a directory prefix (root-relative)', () => {
-    expect(matchExternal(['src/ui'], root, components)).toEqual(['/proj/src/ui/Card.svelte']);
+    expect(matchPreserve(['src/ui'], root, components)).toEqual(['/proj/src/ui/Card.svelte']);
   });
 
   it('matches an exact file (absolute), and not a sibling with a shared name prefix', () => {
     // `src/Table` must NOT match `Table.svelte` by bare string prefix — only an
     // exact file or a directory boundary counts.
-    expect(matchExternal(['/proj/src/Button.svelte'], root, components)).toEqual([
+    expect(matchPreserve(['/proj/src/Button.svelte'], root, components)).toEqual([
       '/proj/src/Button.svelte',
     ]);
-    expect(matchExternal(['/proj/src/Tab'], root, components)).toEqual([]);
+    expect(matchPreserve(['/proj/src/Tab'], root, components)).toEqual([]);
   });
 
   it('is a no-op for an empty / undefined list', () => {
-    expect(matchExternal(undefined, root, components)).toEqual([]);
-    expect(matchExternal([], root, components)).toEqual([]);
+    expect(matchPreserve(undefined, root, components)).toEqual([]);
+    expect(matchPreserve([], root, components)).toEqual([]);
   });
 });
 
-describe('findNeverPassedProps respects `external`', () => {
+describe('findNeverPassedProps respects `preserve`', () => {
   const files: Record<string, string> = {
     '/App.svelte': "<script>import W from './Widget.svelte';</script>\n<W />",
     '/Widget.svelte': '<script>let { p = false } = $props();</script>\n{#if p}x{/if}',
@@ -45,26 +45,26 @@ describe('findNeverPassedProps respects `external`', () => {
     source.startsWith('.') ? new URL(source, `file://${importer}`).pathname : null;
   const readFile: ReadFile = (id) => files[id]!;
 
-  it('over-reports without external, stays quiet once the component is external', async () => {
+  it('over-reports without preserve, stays quiet once the component is preserved', async () => {
     const input = await buildAnalyzeInput(['/App.svelte', '/Widget.svelte'], resolve, readFile);
-    // No external: `p` is genuinely never passed in the `.svelte` graph → reported.
+    // Nothing preserved: `p` is genuinely never passed in the `.svelte` graph → reported.
     expect(
       findNeverPassedProps(input)
         .get('/Widget.svelte')
         ?.map((u) => u.name),
     ).toEqual(['p']);
-    // Declaring Widget external (as an eslint shell would, via matchExternal) makes
-    // the reporter honor it automatically — it reads `input.escaped`.
-    const escaped = matchExternal(['/Widget.svelte'], '/', ['/Widget.svelte']);
-    const withExternal = { ...input, escaped };
-    expect(findNeverPassedProps(withExternal).get('/Widget.svelte')).toBeUndefined();
+    // Preserving Widget (as an eslint shell would, via matchPreserve) makes the
+    // reporter honor it automatically — it reads `input.escaped`.
+    const escaped = matchPreserve(['/Widget.svelte'], '/', ['/Widget.svelte']);
+    const withPreserve = { ...input, escaped };
+    expect(findNeverPassedProps(withPreserve).get('/Widget.svelte')).toBeUndefined();
   });
 });
 
-// End-to-end: `external` freezes a component that would OTHERWISE fold (no `.ts`
-// consumer at all), proving A-semantics — the file stays analyzed, its own prop is
-// just not folded.
-const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '.shaker-tmp-ext-opt');
+// End-to-end: `preserve` keeps the prop interface of a component that would
+// OTHERWISE fold (no `.ts` consumer at all), proving A-semantics — the file stays
+// analyzed, its own prop is just not folded.
+const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), '.shaker-tmp-preserve-opt');
 const IF_MACHINERY = /\bif_block\b|\$\.if\(/;
 
 beforeAll(() => {
@@ -108,13 +108,13 @@ async function bundle(pre: unknown[]): Promise<string> {
   return result.output.map((c) => ('code' in c ? c.code : '')).join('\n');
 }
 
-describe('vite-plugin-svelte-shaker — `external` option', () => {
-  it('folds the frozen prop without external, keeps it once listed', async () => {
+describe('vite-plugin-svelte-shaker — `preserve` option', () => {
+  it('folds the prop without preserve, keeps it once listed', async () => {
     const plain = await bundle([shaker({ entries: ['.'] })]);
     expect(plain).not.toContain('P BRANCH'); // no consumer passes `p` → folded away
 
-    const frozen = await bundle([shaker({ entries: ['.'], external: ['./Widget.svelte'] })]);
-    expect(frozen).toMatch(IF_MACHINERY);
-    expect(frozen).toContain('P BRANCH'); // `external` froze Widget, so `p` survives
+    const preserved = await bundle([shaker({ entries: ['.'], preserve: ['./Widget.svelte'] })]);
+    expect(preserved).toMatch(IF_MACHINERY);
+    expect(preserved).toContain('P BRANCH'); // `preserve` kept Widget's props, so `p` survives
   });
 });

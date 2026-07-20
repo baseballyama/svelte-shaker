@@ -1,7 +1,7 @@
 // ----------------------------------------------------------------------
 // Internal Shell helper (docs/ARCHITECTURE.md §4.2): find the components used from
 // OUTSIDE the analyzed `.svelte` graph — a `.ts`/`.js` call site the crawl cannot
-// parse, or a user-declared `external`.  NOT part of the `svelte-shaker/node` public
+// parse, or a user-declared `preserve`.  NOT part of the `svelte-shaker/node` public
 // surface: only `computeEscapedComponents` is re-exported there (`scan.ts`).  The
 // Vite Shell imports the rest of this module directly.
 // ----------------------------------------------------------------------
@@ -58,20 +58,20 @@ function collectNonSvelteModules(dir: string): string[] {
  * Every module specifier a JS/TS module statically references: `import … from`,
  * `export … from` / `export *`, and a dynamic `import('…')` whose argument is a
  * STRING LITERAL.  A computed dynamic import (`import(expr)`) is unknowable here —
- * the `external` option (docs §4.2) is the sound fallback for it.  Parsed via the
+ * the `preserve` option (docs §4.2) is the sound fallback for it.  Parsed via the
  * Svelte parser's `<script module lang="ts">` wrapper (the same TS-capable parse
  * the engine's barrel-following uses).  Returns `null` when the module does NOT
  * parse — the wrapper handles TS but not JSX, and rejects some exotic syntax
  * (`.jsx`/`.tsx` bodies, bleeding-edge TS), and a parse failure hides any call site
  * inside, so the caller must surface it (a mounted component would go un-escaped);
- * `external` is the fix for that file.
+ * `preserve` is the fix for that file.
  */
 function moduleImportSpecifiers(code: string, id: ComponentId): string[] | null {
   let module: AnyNode | null | undefined;
   try {
     module = parseSvelte(`<script module lang="ts">\n${code}\n</script>`, id).module;
   } catch {
-    return null; // unparseable — the caller reports it (soundness hole, `external` fixes it)
+    return null; // unparseable — the caller reports it (soundness hole, `preserve` fixes it)
   }
   const program = module?.content;
   if (!program) return []; // parsed, no module body — nothing to follow (not a failure)
@@ -142,25 +142,25 @@ async function collectExternalEscapes(
 }
 
 /**
- * Partition user-declared `external` prefixes (docs §4.2) against a known component
- * set into the components they FREEZE and the entries that matched NOTHING.  Each
+ * Partition user-declared `preserve` prefixes (docs §4.2) against a known component
+ * set into the components they PRESERVE and the entries that matched NOTHING.  Each
  * entry is a Vite-root-relative or absolute path naming EITHER a component file
  * (exact match) OR a directory (every component under it) — the same "directory or
  * file prefix" basis as `entries`, with no glob dependency.  An entry matching no
  * component is almost always a typo / wrong path (or a missing `.svelte`
  * extension), so it is returned in `unmatched` for the caller to surface rather
- * than being a silent no-op that leaves the intended component un-frozen.
+ * than being a silent no-op that leaves the intended component unpreserved.
  */
-function partitionExternal(
-  external: string[] | undefined,
+function partitionPreserve(
+  preserve: string[] | undefined,
   root: string,
   components: Iterable<ComponentId>,
 ): { matched: Set<ComponentId>; unmatched: string[] } {
   const matched = new Set<ComponentId>();
   const unmatched: string[] = [];
-  if (!external || external.length === 0) return { matched, unmatched };
+  if (!preserve || preserve.length === 0) return { matched, unmatched };
   const ids = [...components];
-  for (const entry of external) {
+  for (const entry of preserve) {
     // `path.resolve` leaves an absolute entry as-is and resolves a relative one
     // against `root` — exactly "Vite-root-relative or absolute".
     const prefix = path.resolve(root, entry);
@@ -171,31 +171,31 @@ function partitionExternal(
   return { matched, unmatched };
 }
 
-/** The components a set of `external` prefixes freezes (docs §4.2).  The
- * {@link partitionExternal} projection that drops the "matched nothing" diagnostic
+/** The components a set of `preserve` prefixes protects (docs §4.2).  The
+ * {@link partitionPreserve} projection that drops the "matched nothing" diagnostic
  * — kept for callers that only need the ids. */
-export function matchExternal(
-  external: string[] | undefined,
+export function matchPreserve(
+  preserve: string[] | undefined,
   root: string,
   components: Iterable<ComponentId>,
 ): ComponentId[] {
-  return [...partitionExternal(external, root, components).matched];
+  return [...partitionPreserve(preserve, root, components).matched];
 }
 
 /**
  * The whole escape set for a build (docs §4.2), plus the diagnostics a Shell must
  * surface.  `escaped` is the union of components a non-`.svelte` module imports
- * (found by scanning) and those the user named via `external`.  `unscannable` are
+ * (found by scanning) and those the user named via `preserve`.  `unscannable` are
  * modules the scan could not read/parse (a component mounted from one is NOT
- * escaped — the Shell warns and the user lists it in `external`); `unmatchedExternal`
- * are `external` entries that matched no component (a typo leaves the intended
- * component un-frozen).  Returning them as data lets each Shell — the Vite plugin,
+ * escaped — the Shell warns and the user lists it in `preserve`); `unmatchedPreserve`
+ * are `preserve` entries that matched no component (a typo leaves the intended
+ * component unpreserved).  Returning them as data lets each Shell — the Vite plugin,
  * or a future `eslint-plugin-svelte` rule — report in its own voice.
  */
 export interface EscapeScanResult {
   escaped: ComponentId[];
   unscannable: ComponentId[];
-  unmatchedExternal: string[];
+  unmatchedPreserve: string[];
 }
 
 /**
@@ -211,11 +211,11 @@ export async function computeEscapedComponents(opts: {
    * scan for call sites that escape the component graph.
    */
   entryDirs: string[];
-  /** Project root, for resolving relative `external` entries. */
+  /** Project root, for resolving relative `preserve` entries. */
   root: string;
-  /** User-declared `external` prefixes (root-relative or absolute), if any. */
-  external?: string[] | undefined;
-  /** The crawled `.svelte` component ids, for matching `external` prefixes. */
+  /** User-declared `preserve` prefixes (root-relative or absolute), if any. */
+  preserve?: string[] | undefined;
+  /** The crawled `.svelte` component ids, for matching `preserve` prefixes. */
   components: Iterable<ComponentId>;
   resolve: Resolve;
   readFile: ReadFile;
@@ -225,11 +225,11 @@ export async function computeEscapedComponents(opts: {
     opts.resolve,
     opts.readFile,
   );
-  const { matched, unmatched } = partitionExternal(opts.external, opts.root, opts.components);
+  const { matched, unmatched } = partitionPreserve(opts.preserve, opts.root, opts.components);
   for (const id of matched) escaped.add(id);
   return {
     escaped: [...escaped],
     unscannable: [...unscannable].sort(),
-    unmatchedExternal: unmatched,
+    unmatchedPreserve: unmatched,
   };
 }
