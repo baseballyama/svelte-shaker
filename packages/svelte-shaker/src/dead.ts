@@ -215,6 +215,15 @@ function exhaustiveElseSpan(
   const set = setEnv.get(v)!;
   if (set.length === 0 || set.length > MAX_EXHAUSTIVE_SET) return undefined;
 
+  // The removal starts where the last arm's consequent ends — the offset of the
+  // `{:else}` marker.  When that consequent is EMPTY (`{:else if v==='b'}{:else}…`)
+  // it has no end offset to anchor on: `consequentEnd`'s fallback is the block end,
+  // which for the last arm is the whole chain's `{/if}` — past the else content, so
+  // the span would invert and `s.remove` throws on legal input.  We do not
+  // back-scan for the `{:else}` token here (out of scope); bail and keep the else.
+  const last = arms[arms.length - 1]!;
+  if ((last.consequent?.nodes?.length ?? 0) === 0) return undefined;
+
   for (const c of set) {
     // env ∪ {v ↦ c}: the plain evaluator treats v as this single literal.
     const perValue = new Map(env);
@@ -229,7 +238,6 @@ function exhaustiveElseSpan(
   // Remove `{:else}` + its content: from the last arm's consequent end (where the
   // `{:else}` marker begins) to the end of the else fragment — the same span
   // anchors {@link deadTail} uses for a removed arm, so no new span math.
-  const last = arms[arms.length - 1]!;
   return [consequentEnd(last.consequent, last.block.end), nodes[nodes.length - 1]!.end];
 }
 

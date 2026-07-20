@@ -217,6 +217,17 @@ fn exhaustive_else_span(arms: &[ChainArm], else_frag: &Option<Value>, env: &Env,
         return None;
     }
 
+    // The removal starts where the last arm's consequent ends — the offset of the
+    // `{:else}` marker.  When that consequent is EMPTY (`{:else if v==='b'}{:else}…`)
+    // it has no end offset to anchor on: `consequent_end`'s fallback is the block
+    // end, which for the last arm is the whole chain's `{/if}` — past the else
+    // content, so the span would invert. We do not back-scan for the `{:else}`
+    // token here (out of scope); bail and keep the else.
+    let last = arms.last()?;
+    if last.consequent.get("nodes").and_then(Value::as_array).is_none_or(|n| n.is_empty()) {
+        return None;
+    }
+
     for c in set {
         // env ∪ {v ↦ c}: the plain evaluator treats v as this single literal.
         let mut per_value = env.clone();
@@ -230,7 +241,6 @@ fn exhaustive_else_span(arms: &[ChainArm], else_frag: &Option<Value>, env: &Env,
 
     // Remove `{:else}` + its content: from the last arm's consequent end (where the
     // `{:else}` marker begins) to the end of the else fragment.
-    let last = arms.last()?;
     Some((consequent_end(&last.consequent, off(&last.block, "end")), to))
 }
 
