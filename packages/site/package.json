@@ -16,7 +16,7 @@
     "svelte": "^5.56.6",
     "svelte-shaker": "workspace:^",
     "typescript": "7.0.2",
-    "vite": "^6.4.3"
+    "vite": "^8.1.5"
   },
   "dependencies": {
     "shiki": "^4.3.1"
