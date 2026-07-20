@@ -6,12 +6,13 @@ import { build, type Rollup } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 // ----------------------------------------------------------------------
-// The Vite plugin parses with rsvelte's native parser BY DEFAULT (PR12): a
-// bare `shaker()` must load `@rsvelte/vite-plugin-svelte-native`, and `parser:
-// 'svelte'` is the explicit opt-out to svelte/compiler (the fallback for rsvelte
-// bugs). We wrap the real loader so we can both (a) observe that the default path
-// reaches for it and the opt-out does not, and (b) force a load failure to prove
-// the default THROWS with a message pointing at the peer / the opt-out.
+// The Vite plugin parses with rsvelte BY DEFAULT: a bare `shaker()` must load
+// the rsvelte parser from `@rsvelte/compiler` (a bundled WASM dependency), and
+// `parser: 'svelte'` is the explicit opt-out to svelte/compiler (the fallback for
+// rsvelte bugs). We wrap the real loader so we can both (a) observe that the
+// default path reaches for it and the opt-out does not, and (b) force a load
+// failure to prove the default THROWS with a message pointing at the dependency /
+// the opt-out.
 // ----------------------------------------------------------------------
 
 vi.mock('../src/rsvelte-parse', async (importOriginal) => {
@@ -87,19 +88,17 @@ describe('vite-plugin-svelte-shaker: rsvelte is the default parser', () => {
     expect(code).toContain('This is Sub Component');
   });
 
-  it('default throws when the native peer cannot be loaded, pointing at the peer and the opt-out', async () => {
-    loadRsvelte.mockReturnValue(null); // simulate the peer not installed / no binary
-    await expect(bundle([shaker({ include: ['.'] })])).rejects.toThrow(
-      /@rsvelte\/vite-plugin-svelte-native/,
-    );
+  it('default throws when @rsvelte/compiler cannot be loaded, pointing at the dependency and the opt-out', async () => {
+    loadRsvelte.mockReturnValue(null); // simulate a broken install / wasm that won't instantiate
+    await expect(bundle([shaker({ include: ['.'] })])).rejects.toThrow(/@rsvelte\/compiler/);
     loadRsvelte.mockReturnValue(null);
     await expect(bundle([shaker({ include: ['.'] })])).rejects.toThrow(/parser: "svelte"/);
   });
 
-  it("parser: 'svelte' still works when the native peer is unavailable (it is the fallback)", async () => {
+  it("parser: 'svelte' still works when @rsvelte/compiler is unavailable (it is the fallback)", async () => {
     loadRsvelte.mockReturnValue(null);
     const code = await bundle([shaker({ include: ['.'], parser: 'svelte' })]);
-    expect(loadRsvelte).not.toHaveBeenCalled(); // opt-out never touches the native loader
+    expect(loadRsvelte).not.toHaveBeenCalled(); // opt-out never touches the rsvelte loader
     expect(code).not.toMatch(IF_MACHINERY);
   });
 });

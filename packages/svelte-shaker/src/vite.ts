@@ -274,15 +274,15 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   /** The long-lived incremental engine, created in `configureServer` (serve only). */
   let devShaker: DevShaker | null = null;
 
-  // Resolve the parser ONCE (lazily, so the native package is only loaded when a
+  // Resolve the parser ONCE (lazily, so the rsvelte wasm is only loaded when a
   // parser is actually needed). The default is `'rsvelte'`; `undefined` (returned
-  // for the `parser: 'svelte'` opt-out) means svelte/compiler. When the default
-  // `'rsvelte'` can't load the native package it THROWS rather than silently
-  // falling back to svelte/compiler: a silent fallback would make the same source
-  // shake differently depending on whether the native binary happens to be
-  // installed on this platform — a reproducibility footgun. Failing loudly keeps
-  // the parser (and thus the output) deterministic; `parser: 'svelte'` is the
-  // explicit opt-out for when rsvelte can't be used.
+  // for the `parser: 'svelte'` opt-out) means svelte/compiler. `@rsvelte/compiler`
+  // is a bundled dependency, so this normally just works; if it somehow can't be
+  // loaded (a broken install, an environment that can't instantiate the wasm) the
+  // default THROWS rather than silently falling back to svelte/compiler — a silent
+  // swap would make the same source shake differently depending on the machine, a
+  // reproducibility footgun. Failing loudly keeps the output deterministic;
+  // `parser: 'svelte'` is the explicit opt-out.
   let parseResolved = false;
   let parse: Parse | undefined;
   const getParse = (): Parse | undefined => {
@@ -292,10 +292,10 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       parse = tryLoadRsvelteParser() ?? undefined;
       if (!parse)
         throw new Error(
-          '[vite-plugin-svelte-shaker] the default parser "rsvelte" needs the peer ' +
-            '`@rsvelte/vite-plugin-svelte-native`, which could not be loaded (not installed, ' +
-            'or no prebuilt binary for this platform). Install it on every build platform, or ' +
-            'set `parser: "svelte"` to use svelte/compiler (the fallback parser).',
+          '[vite-plugin-svelte-shaker] the default parser "rsvelte" could not load its ' +
+            'bundled dependency `@rsvelte/compiler` (a broken install, or an environment that ' +
+            'can\'t instantiate its wasm). Reinstall dependencies, or set `parser: "svelte"` ' +
+            'to use svelte/compiler (the fallback parser).',
         );
     }
     return parse;
