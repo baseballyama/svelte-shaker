@@ -1,9 +1,10 @@
 import { createRequire } from 'node:module';
 import type { Parse, Root } from './parse.js';
 
-// NODE-ONLY: dynamically loads the OPTIONAL native rsvelte parser. Imported only
-// by the Vite plugin (`vite.ts`, an ESM/Node entry), never by the environment-free
-// engine (`index.ts`/`analyze.ts`), so the browser playground build stays clean.
+// NODE-ONLY: dynamically loads the native rsvelte parser (the required peer
+// `@rsvelte/vite-plugin-svelte-native`). Imported only by the Vite plugin
+// (`vite.ts`, an ESM/Node entry), never by the environment-free engine
+// (`index.ts`/`analyze.ts`), so the browser playground build stays clean.
 
 const require = createRequire(import.meta.url);
 
@@ -13,9 +14,10 @@ interface RsvelteNative {
 
 /**
  * Build a {@link Parse} backed by rsvelte's native parser
- * (`@rsvelte/vite-plugin-svelte-native`), or `null` if that OPTIONAL peer package
- * can't be loaded (not installed / unsupported platform) — the caller then falls
- * back to svelte/compiler.
+ * (`@rsvelte/vite-plugin-svelte-native`, a required peer), or `null` if that
+ * package can't be loaded (not installed / unsupported platform). Since rsvelte
+ * is the default parser, the caller THROWS on `null` rather than silently using
+ * svelte/compiler; `parser: 'svelte'` is the explicit opt-out.
  *
  * `skipExpressionLoc: true` is REQUIRED, not cosmetic: the per-expression `loc`
  * blocks roughly double the AST and make the engine's walk the dominant cost

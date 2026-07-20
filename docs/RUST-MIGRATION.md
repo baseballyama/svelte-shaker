@@ -123,8 +123,9 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
   - **検証（実測）**: 全ゴールデンフィクスチャを rsvelte 駆動で回し svelte/compiler 駆動と file 単位で比較。
     **9 中 7 が byte 完全一致**。残り 2（`rest-prop`/`spread-after`）は唯一の既知差分に起因
     （下記）で、rsvelte 出力も compile 可・**SSR 等価**（`tests/rsvelte-diff.test.ts`）。
-  - **既定は svelte/compiler のまま**。rsvelte は差分オラクルで検証する Rust 経路として導入し、default flip は
-    下記ブロッカー解消後（M4/M5 で恒久差分オラクルとして常設）。
+  - **（M3 時点では）既定は svelte/compiler のまま**。rsvelte は差分オラクルで検証する Rust 経路として導入し、
+    default flip は下記ブロッカー解消後（M4/M5 で恒久差分オラクルとして常設）。**→ ブロッカー全解消後、PR12 で
+    parser 既定を `'rsvelte'` に flip し必須 peer 化（下記 §「上流修正後の再検証」／§3-2）。**
   - **default flip のブロッカー（rsvelte 上流修正 3 件 → 全て✅解決済み。compiler 0.7.6 / native 0.2.3。
     実速度は §6「上流修正後の再検証」: skipExpressionLoc 経路で実フル 1.46x）**:
     0. ✅**【最重要・健全性】AST span が UTF-8 バイトオフセット**（[rsvelte#793](https://github.com/baseballyama/rsvelte/issues/793)・**修正済**）—
@@ -216,13 +217,15 @@ rsvelte_core 非依存・serde_json + wasm-bindgen）、`@rsvelte/compiler`(WASM
    としての価値に留める。
 2. ✅**rsvelte パース（native）の採用**（M3）— **実装済み（opt-in）**。上流修正 **4 件（#791/#792/#793/#916）は全て解決済み**
    （compiler 0.7.8 / native 0.2.4）。実測で **native `parse({skipExpressionLoc:true})` + `JSON.parse` がフル 1.46x**（§6）。
-   - **opt-in `parser: 'rsvelte'`（既定 `svelte`）** を Vite プラグインに追加。`Parse` 注入を `parseCached`→`buildAnalyzeInput`
-     →`svelteShaker`/`svelteShakerWithMono`/`DevShaker` に通し、crawl と analysis で**共有 cache に 1 parse/file**。
+   - **`parser: 'rsvelte'`（当初 opt-in・既定 `svelte`。PR12 で既定化）** を Vite プラグインに追加。`Parse` 注入を
+     `parseCached`→`buildAnalyzeInput`→`svelteShaker`/`svelteShakerWithMono`/`DevShaker` に通し、crawl と analysis で
+     **共有 cache に 1 parse/file**。
    - **必ず `skipExpressionLoc: true`**（loc 込みだとフル 0.72x まで沈む。エンジンは start/end しか見ないので出力は不変）。
-   - native は OPTIONAL peer。**explicit 指定で読めない時は throw**（silent fallback は「native 有無でバンドルが変わる」
-     再現性の罠なので避ける）。
+   - native は **必須 peer**（PR12 で optional 解除）。**読めない時は throw**（既定 `parser:'rsvelte'` の silent fallback は
+     「native 有無でバンドルが変わる」再現性の罠なので避ける。`parser:'svelte'` が明示フォールバック）。
    - **健全性検証済み**: native 駆動の実コーパス **474/474 が compile 可**、svelte 差 22 は全て「native の方がよく shake」（SSR 等価）。
-   - **既定 flip は別判断**: 既定 'rsvelte' は未導入環境への silent fallback が必須＝再現性が崩れる + 出力が変わるので opt-in 据え置き。
+   - **既定 flip 済み（PR12）**: parser 既定を `'rsvelte'` に変更。再現性のため未導入時は throw（`parser:'svelte'` が明示
+     オプトアウト）。環境フリー API とブラウザ playground は native を要求できないため `svelte/compiler` のまま（境界）。
    - **envelope（さらに上積み）は [#908](https://github.com/baseballyama/rsvelte/issues/908) 解決待ち**。
    - **WASM（0.61x）/ loc 込み native（0.72x）は不採用**。Rust/WASM エンジン化も速度目的では非推奨（上記 1）。
 3. **monomorphization の Rust 化**、**sourcemap**（`TransformResult.map`）、**CI に `cargo test`+`build:wasm`
@@ -324,13 +327,14 @@ parse 速度優位がフルでは消える**ことが分かった（`tests/_benc
 
 - **native `parse({skipExpressionLoc:true})` + `JSON.parse` で実フル 1.46x**。クラッシュ無し・skipExprLoc は出力不変。
   WASM（0.61x）でも loc 込み native（0.72x）でもなく、**この経路が現実解**。
-- **実装済み（opt-in `parser: 'rsvelte'`、既定 `svelte`）**: `parseCached`→`buildAnalyzeInput`→`svelteShaker`/`DevShaker`
-  に `Parse` を注入。crawl と analysis で**共有 cache に 1 parse/file**（既定 svelte 経路の二重 parse より効率的）。native は
-  OPTIONAL peer `@rsvelte/vite-plugin-svelte-native`、ローダーは node 専用 `rsvelte-parse.ts`（vite entry に同梱）。
+- **実装済み（`parser: 'rsvelte'`。当初 opt-in・既定 `svelte`、PR12 で既定化）**: `parseCached`→`buildAnalyzeInput`→
+  `svelteShaker`/`DevShaker` に `Parse` を注入。crawl と analysis で**共有 cache に 1 parse/file**（svelte 経路の二重 parse
+  より効率的）。native は **必須 peer** `@rsvelte/vite-plugin-svelte-native`、ローダーは node 専用 `rsvelte-parse.ts`（vite entry に同梱）。
 - **健全性（上流 #791/#792/#793/#916 全解決後、native 0.2.4）**: native 駆動の shake は実コーパス **474/474 が compile 可**。
   svelte 駆動との差 22 は全て「native の方がよく shake（未渡し prop を undefined 畳み・冗長属性除去、SSR 等価）」。
 - **再現性のため explicit `parser:'rsvelte'` は native ロード失敗時に throw**（silent fallback だと「native 有無で
   バンドルが変わる」罠になる）。
-- **既定 flip は別判断（follow-up）**: 既定を 'rsvelte' にすると未導入環境への silent fallback が要り再現性が崩れる + 出力が
-  変わる（より shake）ので、opt-in 据え置きが穏当。envelope（#908）解決でさらに高速化。エンジン本体の Rust/WASM 化は
-  **速度目的では非推奨**（全体の ~15%・境界で逆効果）。
+- **既定 flip 済み（PR12）**: parser 既定を `'rsvelte'`（native）に変更し、必須 peer 化。再現性のため未導入時は silent
+  fallback せず throw、`parser:'svelte'` が svelte/compiler への明示フォールバック。環境フリー API とブラウザ playground は
+  native バイナリを要求できないため `svelte/compiler` のまま（境界）。envelope（#908）解決でさらに高速化。エンジン本体の
+  Rust/WASM 化は **速度目的では非推奨**（全体の ~15%・境界で逆効果）。

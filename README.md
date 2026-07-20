@@ -44,13 +44,20 @@ reachable value set of `variant` and removes the `.btn-danger` rule.
 ## Install
 
 ```sh
-npm i -D svelte-shaker   # requires svelte@^5
+npm i -D svelte-shaker @rsvelte/vite-plugin-svelte-native   # requires svelte@^5
 ```
+
+`@rsvelte/vite-plugin-svelte-native` is a required peer: by default the plugin
+parses with rsvelte's native Rust parser (the fast path — see
+[Options](#options)). Install it on every platform your build runs on. If you
+can't, set `parser: 'svelte'` to fall back to svelte/compiler.
 
 ## Usage (Vite)
 
 Add the plugin **before** `svelte()`. It runs only in `vite build` — dev/HMR is
-a pass-through by design.
+a pass-through by design. Out of the box it runs the native **Rust (WASM)
+engine** and parses with the native **rsvelte** parser; both fall back cleanly
+(see [Options](#options)).
 
 ```ts
 // vite.config.ts
@@ -72,7 +79,10 @@ For plain-Rollup pipelines, wire the shake up yourself with the public engine
 API (`svelte-shaker`) and the file-system helpers in `svelte-shaker/node`. Note
 that monomorphization additionally needs the `?shaker_variant` requests routed
 through your plugin's `resolveId`/`load` hooks; the unused-prop fold / constant
-fold / value-set narrowing shake only needs the `transform` swap.
+fold / value-set narrowing shake only needs the `transform` swap. The
+environment-free engine and the in-browser playground parse with svelte/compiler
+(no native binary to require) — the rsvelte default is a Vite-plugin concern; the
+engine takes an optional `parse` argument if you want to swap it.
 
 ### Options
 
@@ -80,26 +90,55 @@ fold / value-set narrowing shake only needs the `transform` swap.
 shaker({
   include: ['src'], // dirs (relative to root) holding every .svelte call site
   monomorphize: true, // default on; `false` disables it for faster builds,
-  // or { maxVariants: 16, minSavings: 0.15 } to tune
-  engine: 'auto', // 'auto' (default) | 'js' | 'rust'
-  parser: 'svelte', // 'svelte' (default) | 'rsvelte'
+  // or { maxVariants: 16, minSavings: 0.05 } to tune
   verbose: false, // true = per-file size breakdown after the build
+
+  // Escape hatches — the defaults ARE the fast Rust path; set these only to opt
+  // out (e.g. if you ever hit a bug in it).
+  engine: 'auto', // 'auto' (default: Rust/WASM, else JS) | 'js' | 'rust'
+  parser: 'rsvelte', // 'rsvelte' (default: native parser) | 'svelte' (fallback)
 });
 ```
 
-- **`engine`** — which engine runs the shake. `'auto'` uses the native Rust
-  (WASM) engine when it can be loaded, else the JS engine. Both are
-  differentially tested to produce **byte-identical** output, so the choice only
-  affects speed. `'rust'` throws if the WASM module can't load.
-- **`parser: 'rsvelte'`** — swaps in [rsvelte](https://github.com/rsvelte/rsvelte)'s
-  native Rust parser: **~1.46x** faster full build (parse alone ~2.2x) on a real
-  474-component app. Requires the optional peer
-  `@rsvelte/vite-plugin-svelte-native`; if it can't be loaded the plugin
-  **throws** instead of silently falling back, so the same source always shakes
-  the same on every machine. Soundness is parser-independent.
-- **Monomorphization never bloats** — a measured net-win gate only specializes a
-  component when that strictly shrinks the whole program, so its only cost is
-  build time.
+- **The defaults are the Rust fast path.** Out of the box svelte-shaker runs the
+  native **Rust (WASM) engine** and parses with **rsvelte**'s native parser
+  ([`@rsvelte/vite-plugin-svelte-native`](https://github.com/rsvelte/rsvelte)),
+  which is **~1.46x** faster full build (parse alone ~2.2x) on a real
+  474-component app. The Rust (WASM) engine is differentially tested to shake
+  **byte-identically** to the JS engine. The rsvelte parser is different: it
+  shakes a **sound superset** of svelte/compiler — equal or more, never less,
+  with SSR-observed output equivalent either way — so soundness is independent
+  of either choice; the fast path never changes what renders, only how fast
+  (and occasionally how much) it shakes.
+- **`monomorphize`** — the one shaking knob, **on** by default. A measured
+  net-win gate only specializes a component when that strictly shrinks the whole
+  program, so monomorphization **never bloats**: whatever the knobs are set to,
+  a build with `monomorphize` on is never larger, byte for byte, than the same
+  build with it off (the 3 always-on passes alone). The knobs only trade off how
+  much specialization is *attempted* against build time:
+  - `maxVariants` (default `8`) — cap on distinct residual variants per
+    component. A child whose call sites produce more distinct shapes than the
+    cap can't be specialized at every site, so it keeps its base entirely
+    (all-sites-or-nothing — no partial split). Raise it for a large
+    design-system component (e.g. a `Button` used with more than 8 prop shapes
+    app-wide) you know is worth specializing further.
+  - `minSavings` (default `0`, i.e. any strict net reduction) — the net-win
+    threshold: a specialization is applied only when it measures
+    `Σ_spec < Σ_base × (1 − minSavings)`. Raising it only makes the gate more
+    conservative (fewer, bigger wins, faster builds) — no value makes
+    monomorphization unsound.
+
+  ```ts
+  monomorphize: { maxVariants: 16, minSavings: 0.05 } // e.g. a variant-heavy
+  // design system, while skipping specializations that save under 5%
+  ```
+- **Escape hatches (`engine` / `parser`).** If you ever hit a bug in the Rust
+  path, opt out per axis: `engine: 'js'` forces the JS engine, `parser: 'svelte'`
+  forces svelte/compiler (the previous default). When the default `parser:
+  'rsvelte'` peer can't be loaded (not installed, or no binary for this platform)
+  the plugin **throws** rather than silently falling back — so the same source
+  always shakes the same on every machine. Install the peer everywhere your build
+  runs, or set `parser: 'svelte'`.
 
 ## What it removes
 
