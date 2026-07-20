@@ -43,6 +43,8 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     'css-reverse-only',
     'css-variant',
     'drop-trailing-run',
+    'else-empty-consequent',
+    'else-exhaustive',
     'fold-alias',
     'fold-nested',
     'fold-shorthand',
@@ -186,5 +188,52 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     expect(viaRust['/Child.svelte']).not.toMatch(/let \{ variant/);
     expect(viaRust['/Mid.svelte']).not.toContain('variant=');
     expect(viaRust['/Leaf.svelte']).not.toMatch(/let \{ k/);
+  });
+
+  it('deep pass-through chain: leaf fold matches the TS engine past the old cap', async () => {
+    // A 14-stage forwarding chain needs more propagation rounds than the old fixed
+    // cap of 10. Both engines scale the fixpoint bound with the component count, so
+    // the deepest fold (S14) must reach the leaf identically — byte-for-byte.
+    const files: Record<string, string> = {
+      '/App.svelte': `<script>\n  import S1 from './S1.svelte';\n</script>\n<S1 v="go" />\n`,
+    };
+    for (let k = 1; k < 14; k++) {
+      files[`/S${k}.svelte`] =
+        `<script>\n  import S${k + 1} from './S${k + 1}.svelte';\n  let { v } = $props();\n</script>\n` +
+        `<S${k + 1} v={v} />\n`;
+    }
+    files['/S14.svelte'] =
+      `<script>\n  let { v = 'stop' } = $props();\n</script>\n` +
+      `{#if v === 'go'}<b>GO</b>{:else}<i>stop</i>{/if}\n`;
+    const resolve = (source: string, importer: string): string | null => {
+      if (!source.startsWith('.')) return null;
+      const base = importer.slice(0, importer.lastIndexOf('/'));
+      const parts: string[] = [];
+      for (const seg of `${base}/${source}`.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return `/${parts.join('/')}`;
+    };
+    const readFile = (id: string): string => files[id]!;
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const programInput = {
+      files: input.files.map((f) => ({ id: f.id, ast: parseSvelte(f.code, f.id), code: f.code })),
+      edges: input.edges,
+      entries: input.entries,
+    };
+    const viaRust = JSON.parse(wasm.shake_program(JSON.stringify(programInput))) as Record<
+      string,
+      string
+    >;
+    const viaTs = await svelteShaker('/App.svelte', resolve, readFile);
+    expect(viaRust).toEqual(viaTs);
+    for (const [id, code] of Object.entries(viaRust)) assertCompiles(code, id);
+    // The fold reached the leaf in both engines: dead arm gone, prop dropped.
+    expect(viaRust['/S14.svelte']).toContain('<b>GO</b>');
+    expect(viaRust['/S14.svelte']).not.toContain('stop</i>');
+    expect(viaRust['/S14.svelte']).not.toMatch(/let \{ v/);
   });
 });

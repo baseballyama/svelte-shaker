@@ -14,9 +14,17 @@
 
 import { walk, type AnyNode } from './parse.js';
 import type { Literal } from './ir.js';
-import { evaluateWithSets } from './eval.js';
+import { evaluate, evaluateWithSets } from './eval.js';
 
 export type Span = [number, number];
+
+/**
+ * Cap on a narrowed set's size for the `{:else}` exhaustiveness check.  Same
+ * intent as css.ts's `MAX_CLASS_COMBOS`: the per-value evaluation is `|set| ×
+ * arms`, and a set this large is never literal-derived narrowing in practice, so
+ * we skip the check (keep the else) rather than pay for it.
+ */
+const MAX_EXHAUSTIVE_SET = 64;
 
 /** One arm of an `{#if}` / `{:else if}` chain in source order. */
 interface ChainArm {
@@ -141,10 +149,13 @@ export function decideChain(
   if (firstKept === 0) {
     // Head survives in place: only later provably-false arms are removed, and
     // nested `{#if}` inside the kept arms must still be folded -> recurse.
+    const removed = deadTail(arms, truth, firstKept);
+    const elseSpan = exhaustiveElseSpan(arms, elseFrag, env, setEnv);
+    if (elseSpan) removed.push(elseSpan);
     return {
       span,
       kept: undefined,
-      removed: deadTail(arms, truth, firstKept),
+      removed,
       recurse: true,
     };
   }
@@ -154,6 +165,8 @@ export function decideChain(
   // is re-emitted verbatim, so we do not recurse into it.
   const kept = arms[firstKept]!.block;
   const removed: Span[] = [[span[0], kept.start], ...deadTail(arms, truth, firstKept)];
+  const elseSpan = exhaustiveElseSpan(arms, elseFrag, env, setEnv);
+  if (elseSpan) removed.push(elseSpan);
   return {
     span,
     kept: undefined,
@@ -162,6 +175,84 @@ export function decideChain(
     // `{:else if ` -> `{#if ` (header runs from the block start to its test).
     headerRewrite: { from: kept.start, to: kept.test!.start, text: '{#if ' },
   };
+}
+
+/**
+ * The removed span for a dead `{:else}` arm proven unreachable by exhaustiveness,
+ * or `undefined` when the else must stay.
+ *
+ * When a chain ends in `{:else}` and every test is driven by exactly ONE narrowed
+ * prop `v` (value set known), the else is dead iff for every value the set can
+ * take, some test fires.  We enumerate the set and evaluate each test under a
+ * single-value binding `v ↦ c` with the plain constant evaluator: a value is
+ * covered only when a test is *provably* TRUE there (no guessing); one value we
+ * cannot settle keeps the else.  Multiple set-vars (a cartesian product), zero
+ * set-vars, an empty/too-large set, or an empty else all skip the check.
+ *
+ * Soundness: narrow's contract is "at runtime v ∈ set".  If every value in the
+ * set makes some test fire, the else body is unreachable in every execution.
+ *
+ * Fixpoint monotonicity: the set only ever SHRINKS across rounds, and a proof
+ * that holds for a set holds for every subset (each value's proof is unchanged),
+ * so an else proven dead never revives — the removal is a monotone dead-span
+ * addition and convergence stays `plansEqual`.
+ */
+function exhaustiveElseSpan(
+  arms: ChainArm[],
+  elseFrag: AnyNode | undefined,
+  env: Map<string, Literal>,
+  setEnv: Map<string, Literal[]>,
+): Span | undefined {
+  const nodes = elseFrag?.nodes ?? [];
+  if (nodes.length === 0) return undefined; // no else, or one that renders nothing
+
+  // Exactly one narrowed prop may drive the chain; the cartesian product of two
+  // or more sets is out of scope (kept conservative).
+  const vars = new Set<string>();
+  for (const arm of arms) collectSetVars(arm.test, setEnv, vars);
+  if (vars.size !== 1) return undefined;
+  const v = [...vars][0]!;
+  const set = setEnv.get(v)!;
+  if (set.length === 0 || set.length > MAX_EXHAUSTIVE_SET) return undefined;
+
+  // The removal starts where the last arm's consequent ends — the offset of the
+  // `{:else}` marker.  When that consequent is EMPTY (`{:else if v==='b'}{:else}…`)
+  // it has no end offset to anchor on: `consequentEnd`'s fallback is the block end,
+  // which for the last arm is the whole chain's `{/if}` — past the else content, so
+  // the span would invert and `s.remove` throws on legal input.  We do not
+  // back-scan for the `{:else}` token here (out of scope); bail and keep the else.
+  const last = arms[arms.length - 1]!;
+  if ((last.consequent?.nodes?.length ?? 0) === 0) return undefined;
+
+  for (const c of set) {
+    // env ∪ {v ↦ c}: the plain evaluator treats v as this single literal.
+    const perValue = new Map(env);
+    perValue.set(v, c);
+    const covered = arms.some((a) => {
+      const t = evaluate(a.test, perValue);
+      return t.known && Boolean(t.value);
+    });
+    if (!covered) return undefined; // this value reaches the else -> keep it
+  }
+
+  // Remove `{:else}` + its content: from the last arm's consequent end (where the
+  // `{:else}` marker begins) to the end of the else fragment — the same span
+  // anchors {@link deadTail} uses for a removed arm, so no new span math.
+  return [consequentEnd(last.consequent, last.block.end), nodes[nodes.length - 1]!.end];
+}
+
+/** Collect identifiers in a test expression that name a set-var (a `setEnv` key). */
+function collectSetVars(
+  test: AnyNode | undefined,
+  setEnv: Map<string, Literal[]>,
+  out: Set<string>,
+): void {
+  if (!test) return;
+  walk<null>(test, null, {
+    Identifier(node) {
+      if (node.name && setEnv.has(node.name)) out.add(node.name);
+    },
+  });
 }
 
 /** The two ranges of `span` that fall outside the kept inner `[s, e]`. */

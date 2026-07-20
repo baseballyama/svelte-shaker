@@ -210,10 +210,30 @@ export interface AnalyzeResult {
 
 const isSvelte = (source: string) => source.endsWith('.svelte');
 
-/** Hard cap on fixpoint iterations: convergence is monotone (dead spans only
- * grow as profiles shrink), so this is reached only if something is non-monotone
- * — in which case we stop on the last stable plans rather than loop forever. */
-const MAX_FIXPOINT_ITERATIONS = 10;
+/** Floor for the fixpoint iteration bound (see {@link fixpointIterationBound}). */
+const MIN_FIXPOINT_ITERATIONS = 10;
+
+/**
+ * How many refinement rounds the fixpoint may run before giving up.
+ *
+ * Pass-through propagation (docs §13.1) advances exactly one hop per round: a
+ * folded owner prop is only visible to the round that reads the PREVIOUS round's
+ * folds, so a value forwarded down an N-component chain needs N rounds to reach
+ * the leaf.  A forwarding chain can be at most as long as the component count, so
+ * `components + 1` rounds let every reachable fold converge (the `+ 1` is the
+ * extra round that observes the last fold and lets `plansEqual` stop).  A
+ * {@link MIN_FIXPOINT_ITERATIONS} floor keeps tiny programs unaffected.
+ *
+ * This is not a performance knob: convergence is monotone (dead spans only grow
+ * as profiles shrink), so `plansEqual` stops shallow programs in 2–3 rounds and
+ * the bound is never approached.  It exists purely to guarantee termination if a
+ * future non-monotone bug ever makes the plans oscillate — the bound stays finite
+ * so we stop on the last stable plans rather than loop forever.  Should that
+ * insurance ever trigger, the wasted work scales with this bound, i.e. grows with
+ * the project's component count rather than staying a fixed constant. */
+function fixpointIterationBound(componentCount: number): number {
+  return Math.max(MIN_FIXPOINT_ITERATIONS, componentCount + 1);
+}
 
 /** Bail reason stamped on a component leaked as a value (docs §4.1 escape). */
 const ESCAPE_REASON = 'escapes as value (e.g. <svelte:component this={X}>)';
@@ -316,7 +336,8 @@ export function planFixpoint(models: Map<ComponentId, FileModel>): Map<Component
   const noPlans = new Map<ComponentId, ComponentPlan>();
   let plans = buildPlans(models, buildUsage(models, new Map()), noPlans);
 
-  for (let i = 0; i < MAX_FIXPOINT_ITERATIONS; i++) {
+  const bound = fixpointIterationBound(models.size);
+  for (let i = 0; i < bound; i++) {
     const deadSpans = deadSpansForPlans(models, plans);
     const nextPlans = buildPlans(models, buildUsage(models, deadSpans), plans);
     // Convergence is monotone: excluding a folded-away call site can only shrink

@@ -1,10 +1,16 @@
 //! If/else-if chain dead-span analysis (dead.ts `decideChain` / `computeDeadSpans`):
 //! the single source of truth shared by the analysis and the transform.
 
+use std::collections::HashSet;
+
 use serde_json::Value;
 
 use crate::ast::*;
-use crate::eval::{evaluate_with_sets, Env, SetEnv};
+use crate::eval::{evaluate, evaluate_with_sets, Env, SetEnv};
+
+/// Cap on a narrowed set's size for the `{:else}` exhaustiveness check — mirrors
+/// dead.ts `MAX_EXHAUSTIVE_SET` (same intent as css.rs `MAX_CLASS_COMBOS`).
+const MAX_EXHAUSTIVE_SET: usize = 64;
 
 pub(crate) struct ChainArm {
     pub(crate) block: Value,
@@ -150,18 +156,21 @@ pub(crate) fn decide_chain(top: &Value, env: &Env, set_env: &SetEnv) -> ChainDec
                 ChainDecision { span, removed: vec![span], kept: None, recurse: false, header_rewrite: None }
             }
         }
-        Some(0) => ChainDecision {
-            span,
-            removed: dead_tail(&arms, &truth, 0),
-            kept: None,
-            recurse: true,
-            header_rewrite: None,
-        },
+        Some(0) => {
+            let mut removed = dead_tail(&arms, &truth, 0);
+            if let Some(else_span) = exhaustive_else_span(&arms, &else_frag, env, set_env) {
+                removed.push(else_span);
+            }
+            ChainDecision { span, removed, kept: None, recurse: true, header_rewrite: None }
+        }
         Some(k) => {
             let kept_block = &arms[k].block;
             let kept_start = off(kept_block, "start");
             let mut removed = vec![(span.0, kept_start)];
             removed.extend(dead_tail(&arms, &truth, k));
+            if let Some(else_span) = exhaustive_else_span(&arms, &else_frag, env, set_env) {
+                removed.push(else_span);
+            }
             ChainDecision {
                 span,
                 removed,
@@ -172,6 +181,80 @@ pub(crate) fn decide_chain(top: &Value, env: &Env, set_env: &SetEnv) -> ChainDec
             }
         }
     }
+}
+
+/// The removed span for a dead `{:else}` arm proven unreachable by exhaustiveness,
+/// or `None` when the else must stay.  Mirrors dead.ts `exhaustiveElseSpan`.
+///
+/// When a chain ends in `{:else}` and every test is driven by exactly ONE narrowed
+/// prop `v` (value set known), the else is dead iff for every value the set can
+/// take, some test fires.  We enumerate the set and evaluate each test under a
+/// single-value binding `v ↦ c` with the plain constant evaluator: a value is
+/// covered only when a test is *provably* TRUE there; one value we cannot settle
+/// keeps the else.  Multiple set-vars, zero set-vars, an empty/too-large set, or
+/// an empty else all skip the check.
+///
+/// Soundness: narrow's contract is "at runtime v ∈ set", so if every value makes
+/// some test fire the else body is unreachable in every execution.  Fixpoint
+/// monotonicity: the set only ever SHRINKS, and a proof over a set holds for every
+/// subset, so an else proven dead never revives (a monotone dead-span addition).
+fn exhaustive_else_span(arms: &[ChainArm], else_frag: &Option<Value>, env: &Env, set_env: &SetEnv) -> Option<Span> {
+    let ef = else_frag.as_ref()?;
+    let (_, to) = fragment_span(ef)?; // None when the else renders nothing
+
+    // Exactly one narrowed prop may drive the chain (a cartesian product of two or
+    // more sets is out of scope).
+    let mut vars: HashSet<String> = HashSet::new();
+    for arm in arms {
+        collect_set_vars(&arm.test, set_env, &mut vars);
+    }
+    if vars.len() != 1 {
+        return None;
+    }
+    let v = vars.into_iter().next()?;
+    let set = set_env.get(&v)?;
+    if set.is_empty() || set.len() > MAX_EXHAUSTIVE_SET {
+        return None;
+    }
+
+    // The removal starts where the last arm's consequent ends — the offset of the
+    // `{:else}` marker.  When that consequent is EMPTY (`{:else if v==='b'}{:else}…`)
+    // it has no end offset to anchor on: `consequent_end`'s fallback is the block
+    // end, which for the last arm is the whole chain's `{/if}` — past the else
+    // content, so the span would invert. We do not back-scan for the `{:else}`
+    // token here (out of scope); bail and keep the else.
+    let last = arms.last()?;
+    if last.consequent.get("nodes").and_then(Value::as_array).is_none_or(|n| n.is_empty()) {
+        return None;
+    }
+
+    for c in set {
+        // env ∪ {v ↦ c}: the plain evaluator treats v as this single literal.
+        let mut per_value = env.clone();
+        per_value.insert(v.clone(), c.clone());
+        let covered =
+            arms.iter().any(|a| evaluate(&a.test, &per_value).map(|lit| lit.is_truthy()).unwrap_or(false));
+        if !covered {
+            return None; // this value reaches the else -> keep it
+        }
+    }
+
+    // Remove `{:else}` + its content: from the last arm's consequent end (where the
+    // `{:else}` marker begins) to the end of the else fragment.
+    Some((consequent_end(&last.consequent, off(&last.block, "end")), to))
+}
+
+/// Collect identifiers in a test expression that name a set-var (a `set_env` key).
+fn collect_set_vars(test: &Value, set_env: &SetEnv, out: &mut HashSet<String>) {
+    walk(test, &mut |node| {
+        if type_of(node) == Some("Identifier") {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                if set_env.contains_key(name) {
+                    out.insert(name.to_string());
+                }
+            }
+        }
+    });
 }
 
 pub(crate) fn compute_dead_spans(fragment: &Value, env: &Env, set_env: &SetEnv) -> Vec<Span> {
