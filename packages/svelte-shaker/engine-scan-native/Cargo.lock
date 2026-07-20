@@ -1712,7 +1712,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "rsvelte_core"
 version = "0.7.17"
-source = "git+https://github.com/baseballyama/rsvelte?rev=12fb8cf25777370a8bd393171000ff4b6db3915a#12fb8cf25777370a8bd393171000ff4b6db3915a"
+source = "git+https://github.com/baseballyama/rsvelte?rev=852f80e27a442ea209a19b9f1e4339b62a5dbde2#852f80e27a442ea209a19b9f1e4339b62a5dbde2"
 dependencies = [
  "bumpalo",
  "chrono",
@@ -1751,7 +1751,7 @@ dependencies = [
 [[package]]
 name = "rsvelte_esrap"
 version = "0.7.11"
-source = "git+https://github.com/baseballyama/rsvelte?rev=12fb8cf25777370a8bd393171000ff4b6db3915a#12fb8cf25777370a8bd393171000ff4b6db3915a"
+source = "git+https://github.com/baseballyama/rsvelte?rev=852f80e27a442ea209a19b9f1e4339b62a5dbde2#852f80e27a442ea209a19b9f1e4339b62a5dbde2"
 dependencies = [
  "oxc_allocator 0.138.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "oxc_ast 0.138.0 (registry+https://github.com/rust-lang/crates.io-index)",
