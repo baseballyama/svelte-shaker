@@ -12,7 +12,29 @@ use crate::dead_code::compute_dead_spans;
 use crate::eval::{Env, Literal, SetEnv};
 use crate::props::*;
 
-pub(crate) const MAX_FIXPOINT_ITERATIONS: usize = 10;
+/// Floor for the fixpoint iteration bound (see [`fixpoint_iteration_bound`]).
+pub(crate) const MIN_FIXPOINT_ITERATIONS: usize = 10;
+
+/// How many refinement rounds the fixpoint may run before giving up.
+///
+/// Pass-through propagation (docs §13.1) advances exactly one hop per round: a
+/// folded owner prop is only visible to the round that reads the PREVIOUS round's
+/// folds, so a value forwarded down an N-component chain needs N rounds to reach
+/// the leaf. A forwarding chain can be at most as long as the component count, so
+/// `components + 1` rounds let every reachable fold converge (the `+ 1` is the
+/// extra round that observes the last fold and lets `plans_equal` stop). A
+/// [`MIN_FIXPOINT_ITERATIONS`] floor keeps tiny programs unaffected.
+///
+/// This is not a performance knob: convergence is monotone (dead spans only grow
+/// as profiles shrink), so `plans_equal` stops shallow programs in 2-3 rounds and
+/// the bound is never approached. It exists purely to guarantee termination if a
+/// future non-monotone bug ever makes the plans oscillate — the bound stays finite
+/// so we stop on the last stable plans rather than loop forever. Should that
+/// insurance ever trigger, the wasted work scales with this bound, i.e. grows with
+/// the project's component count rather than staying a fixed constant.
+fn fixpoint_iteration_bound(component_count: usize) -> usize {
+    MIN_FIXPOINT_ITERATIONS.max(component_count + 1)
+}
 
 pub(crate) struct ComponentPlan {
     pub(crate) id: String,
@@ -294,7 +316,8 @@ pub(crate) fn run_fixpoint(models: &[Model]) -> Plans {
     // keeping the derivation order-independent and monotone toward more folding.
     let no_plans: Plans = HashMap::new();
     let mut plans = build_plans(models, &build_usage(models, &HashMap::new()), &no_plans);
-    for _ in 0..MAX_FIXPOINT_ITERATIONS {
+    let bound = fixpoint_iteration_bound(models.len());
+    for _ in 0..bound {
         let dead = dead_spans_for_plans(models, &plans);
         let next = build_plans(models, &build_usage(models, &dead), &plans);
         if plans_equal(&plans, &next) {
