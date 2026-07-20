@@ -1,5 +1,194 @@
 # svelte-shaker
 
+## 0.13.0
+
+### Minor Changes
+
+- 06ee2c9: Remove a trailing `{:else}` arm the reachable value set can never hit.
+
+  When an if/else-if chain ends in `{:else}` and every test is driven by a single
+  narrowed prop (`variant ∈ {'primary','secondary'}`), the shaker now enumerates
+  that value set and checks each value against the arms: if every value makes some
+  earlier test provably fire, the `{:else}` body is unreachable and is deleted —
+  taking its call sites, imports, and any `<style>` rules that only its markup could
+  produce along with it (via the existing cascade and CSS pruning). This is a
+  soundness-preserving precision improvement: a value whose test cannot be settled,
+  a chain driven by two or more narrowed props, or a value set larger than 64 all
+  leave the `{:else}` untouched.
+
+- c6cd1d1: Never fold a component's props when a `.ts`/`.js` module uses it, and add an
+  `external` option to freeze components by hand.
+
+  The shake only reads `.svelte`, so a call site in a plain module — `mount(Component,
+{ props })`, `render(...)`, a lazy `import('./X.svelte')` — used to be invisible.
+  A component used from **both** a `.svelte` template and a `.ts` module could have a
+  prop folded to its default even though the module passed it, changing what you see.
+
+  The Vite plugin now scans your non-`.svelte` modules under `include` and freezes any
+  component reached by a static import, `export … from`, or a literal
+  `import('./X.svelte')` — so ordinary `mount(...)` call sites are handled for you, in
+  both `vite build` and incremental dev.
+
+  For the cases the scan can't follow — a **non-literal** dynamic `import(expr)`, or a
+  call site in a module outside `include` — the new `external` option freezes named
+  components: `shaker({ include: ['src'], external: ['src/widgets/Chart.svelte'] })`.
+  Entries are root-relative or absolute paths naming a component file or a directory
+  of them. `external` freezes the component only — the file stays fully analyzed and
+  its own call sites keep counting; it is not a way to exclude a file from the scan.
+
+- ebd2801: **BREAKING:** The `level` plugin option was removed. The always-on passes
+  (unused-prop fold / constant fold / value-set narrowing) have no switch;
+  monomorphization is controlled solely by `monomorphize: false | { ... }`.
+
+  `level: 0|1|2` and `monomorphize` were two paths to the same on/off, and
+  `level: 0` vs `level: 1` never differed — a parallel API for one capability.
+  Now there is one knob.
+
+  Migrate:
+
+  - `level: 0` / `level: 1` → `monomorphize: false`
+  - `level: 2` → remove the option (monomorphization is on by default)
+
+  `monomorphize` keeps its tuning object form (`{ maxVariants, minSavings }`).
+
+- ba2fe00: **BREAKING:** The Vite plugin now parses with rsvelte by default
+  (`parser: 'rsvelte'`); svelte/compiler becomes the fallback. rsvelte is loaded
+  from `@rsvelte/compiler`, a bundled WASM dependency — there is **nothing extra
+  to install** and no platform-specific binary.
+
+  Soundness is parser-independent: the engine reads only UTF-16 `start`/`end`, so
+  svelte/compiler and rsvelte are differentially tested to produce SSR-equivalent
+  output — the default never changes what renders. Because a silent fallback would
+  make the same source shake differently depending on the machine, the plugin
+  **throws** when the default parser can't be loaded (an unlikely broken install)
+  rather than quietly using svelte/compiler.
+
+  Nothing to do to adopt it — a plain install ships the parser. To keep the
+  previous parser instead, set `shaker({ parser: 'svelte' })`. This also applies
+  if you opt into dev shaking (`dev: 'coarse' | 'incremental'`, still off by
+  default): it uses the same default `parser: 'rsvelte'`.
+
+  Unaffected: the environment-free `svelteShaker` engine API and the in-browser
+  playground still parse with svelte/compiler (they don't load the Node-only WASM
+  module). The `engine` default (`'auto'`: Rust/WASM when loadable, else JS) is
+  unchanged.
+
+- b568b8f: Declared-but-never-read props are now dropped, and their call-site attributes
+  removed.
+
+  When a component destructures a prop out of `$props()` but never reads it in a
+  value position (instance script or template), the shaker removes the pointless
+  attribute at every call site — so a heavy import passed only to an unread prop
+  (`<Icon icon={Heavy}/>`) goes unreferenced and the bundler can drop it — and, when
+  it is safe, drops the prop from the child's `$props()` signature entirely. This
+  complements the reverse pass (which removes inputs a child never _declares_).
+
+  It is sound-first: the attribute is removed only when its value is side-effect-free
+  AND the prop's default cannot be observed (absent, a literal, or `undefined`),
+  because Svelte evaluates a destructure default eagerly when the prop is omitted;
+  the declaration is dropped only with no `...rest`, a harmless default, and every
+  call site either spread-carrying or side-effect-free — and a parent `bind:` is
+  never touched. TS type-position references do not count as reads (types are
+  erased), so a prop used only in a type is still eliminated.
+
+- 493994a: Attributes and snippet bodies a child component can never read are now removed at
+  every call site.
+
+  Reverse analysis: because a Svelte 5 (runes) component reads inputs only through
+  its `$props()` destructure, an input it does not declare — and cannot capture via
+  `...rest` — is invisible to it. The shaker now uses each child's reachable-input
+  set to delete, at every call site, the things that supply an input the child can
+  never observe: a side-effect-free attribute for an undeclared prop, a
+  `{#snippet foo}` block for a snippet the child never renders, and the body content
+  when the child never reads `children`. This is a whole-program deletion no
+  single-file tool can make — dropping `<Icon icon={Heavy}/>` when `Icon` never
+  reads `icon` can leave the owner's `import Heavy` unreferenced, so the bundler
+  drops the module.
+
+  It stays sound-first: nothing is removed when the child bailed, carries a
+  `...rest`, or the call site has a spread; a `bind:` directive and any value that
+  could have an evaluation side effect (a call, member access, template/logical
+  expression) are always kept.
+
+### Patch Changes
+
+- 45185a7: Props forwarded through intermediate components now fold when the whole app passes
+  a single value.
+
+  When a component folds a prop to a constant and then forwards it to a child
+  (`<Child prop={prop}/>`, `<Child prop={prop === 'a' ? 'x' : 'y'}/>`, or a pure
+  literal expression like `prop={'a' + 'b'}`), the shaker now evaluates that
+  call-site expression against the owner's folded value and propagates the constant
+  into the child — so the child folds, drops the prop from `$props()`, and the
+  now-pointless attribute is removed at the forwarding site. This is a
+  soundness-preserving precision improvement: it only ever folds a value the app
+  provably passes, and value-set (narrow) forwarding is intentionally left dynamic.
+
+- 92f61ec: CSS pruning now ignores class sources inside branches the shaker removes.
+
+  When computing which classes a component can produce, the shaker now excludes any
+  class-bearing markup that sits inside a region it deletes — a folded-away `{#if}`
+  arm, or a call-site input a child never reads. Previously a dynamic `class={expr}`
+  or a spread hiding in a dead branch made the whole component's class set
+  "unbounded" and blocked every `<style>` rule removal; now that source never
+  renders, so it no longer counts and the reachable rules can still be shaken. A
+  branch that collapses to a kept `{:else}` arm still counts that arm's classes, so
+  no rule that can match is ever removed.
+
+- 8a78443: CSS pruning now fires for components that only have inputs removed, not folded.
+
+  A component that folds or narrows nothing — but whose body still has a call-site
+  input a child never reads (or an unread declared prop) removed — used to skip CSS
+  pruning entirely. So when the removed region was the only home of an unbounded
+  class source (`class={dynamic}`, `{...rest}`), the class set stayed "unbounded"
+  and no `<style>` rule could be shaken, even though that source no longer renders.
+  The shaker now prunes CSS on that path too, using the removed region as the
+  excluded set. This only ever removes a rule whose class the component provably
+  cannot produce; a component with nothing removed is left byte-identical.
+
+- db2717d: Pass-through folds now reach the deepest components of long forwarding chains.
+
+  Propagating a folded constant through intermediate components advances one hop per
+  analysis round, so a value forwarded down a chain longer than 10 components used
+  to stop short — the deepest components stayed dynamic (still correct, just less
+  optimized). The fixpoint iteration bound now scales with the component count, so
+  the fold reaches the leaf of realistically deep chains and the dead branches
+  behind it are removed. Shallow projects are unaffected: the analysis still stops
+  as soon as the plans stabilize, which is well before the bound.
+
+- f16fa47: Value sets now flow through pass-through call sites.
+
+  Building on the folded-constant forwarding, a prop the app narrows to a known
+  reachable set (`variant ∈ {primary, secondary}`) now propagates that whole set
+  into a child it is forwarded to verbatim (`<Child variant={variant}/>`). The
+  child's own value-set narrowing then fires across the component boundary — dead
+  `{#if}` arms and provably-unmatchable `<style>` rules are removed in the child
+  too, not just in the component that originally passed the prop. Only a bare
+  forwarded prop propagates a set; a compound expression over it stays dynamic. As
+  before this is soundness-preserving: it only ever contributes values the app
+  provably passes.
+
+- 679292c: fix: never fold a prop the component writes to (soundness)
+
+  A prop that the component reassigns (`p = …`), mutates (`p++`), destructure-assigns
+  (`({ p } = obj)`), or two-way binds (`bind:value={p}`) is not a constant, even when
+  every call site passes the same literal — the write changes it at runtime. Such props
+  are no longer const-folded, so the value seen after the write, and the call-site
+  attribute that supplies the initial value, are both preserved. As an extra safety
+  net, if a transform ever emits source that fails to re-parse, the shaker now reverts
+  the whole affected component graph together instead of just the broken file, so a
+  child and its parent can never end up in an inconsistent state.
+
+- 5b33080: Stop the Vite plugin from triggering Rollup/Rolldown's `[SOURCEMAP_BROKEN]
+Sourcemap is likely to be incorrect` warning.
+
+  When the shaker slims a component it replaces the source in its `transform` hook,
+  but until source-level mappings land it has no sourcemap to hand back. It now
+  returns the `{ mappings: '' }` sentinel for those files — the value Rollup's
+  `SourceMapInput` type carries to mean "no map declared", which its runtime skips
+  instead of flagging as a missing map — so the misleading warning no longer appears
+  during `vite build`.
+
 ## 0.12.0
 
 ### Minor Changes
