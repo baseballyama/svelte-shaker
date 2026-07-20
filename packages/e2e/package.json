@@ -13,7 +13,7 @@
     "svelte": "^5.56.6",
     "svelte-shaker": "workspace:*",
     "vite": "^8.1.5",
-    "vitest": "1.6.1"
+    "vitest": "4.1.10"
   },
   "engines": {
     "node": ">=22.23.1"
