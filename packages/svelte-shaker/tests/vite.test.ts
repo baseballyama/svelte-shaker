@@ -40,7 +40,10 @@ async function bundle(
       sourcemap: opts.sourcemap ?? false,
       reportCompressedSize: false,
       target: 'esnext',
-      rollupOptions: { input: join(APP, 'main.ts'), onwarn: opts.onwarn },
+      rollupOptions: {
+        input: join(APP, 'main.ts'),
+        ...(opts.onwarn ? { onwarn: opts.onwarn } : {}),
+      },
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plugins: [...pre, svelte({ compilerOptions: { runes: true } })] as any,

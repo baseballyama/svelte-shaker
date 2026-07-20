@@ -9,10 +9,10 @@
     "mode-watcher": "^1.1.0"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^4.0.4",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "svelte": "^5.56.6",
     "svelte-shaker": "workspace:*",
-    "vite": "^5.4.21",
+    "vite": "^8.1.5",
     "vitest": "1.6.1"
   },
   "engines": {
