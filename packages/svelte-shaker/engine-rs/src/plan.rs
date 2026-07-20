@@ -29,7 +29,9 @@ pub(crate) const MIN_FIXPOINT_ITERATIONS: usize = 10;
 /// as profiles shrink), so `plans_equal` stops shallow programs in 2-3 rounds and
 /// the bound is never approached. It exists purely to guarantee termination if a
 /// future non-monotone bug ever makes the plans oscillate — the bound stays finite
-/// so we stop on the last stable plans rather than loop forever.
+/// so we stop on the last stable plans rather than loop forever. Should that
+/// insurance ever trigger, the wasted work scales with this bound, i.e. grows with
+/// the project's component count rather than staying a fixed constant.
 fn fixpoint_iteration_bound(component_count: usize) -> usize {
     MIN_FIXPOINT_ITERATIONS.max(component_count + 1)
 }

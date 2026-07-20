@@ -228,7 +228,9 @@ const MIN_FIXPOINT_ITERATIONS = 10;
  * as profiles shrink), so `plansEqual` stops shallow programs in 2–3 rounds and
  * the bound is never approached.  It exists purely to guarantee termination if a
  * future non-monotone bug ever makes the plans oscillate — the bound stays finite
- * so we stop on the last stable plans rather than loop forever. */
+ * so we stop on the last stable plans rather than loop forever.  Should that
+ * insurance ever trigger, the wasted work scales with this bound, i.e. grows with
+ * the project's component count rather than staying a fixed constant. */
 function fixpointIterationBound(componentCount: number): number {
   return Math.max(MIN_FIXPOINT_ITERATIONS, componentCount + 1);
 }
