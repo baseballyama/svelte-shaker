@@ -240,7 +240,7 @@ const ESCAPE_REASON = 'escapes as value (e.g. <svelte:component this={X}>)';
 
 /** Bail reason stamped on a component with a consumer OUTSIDE the analyzed
  * `.svelte` graph — a `.ts`/`.js` call site the crawl cannot parse, or a
- * user-declared `external` (docs §4.2, {@link AnalyzeInput.escaped}).  Kept
+ * user-declared `preserve` (docs §4.2, {@link AnalyzeInput.escaped}).  Kept
  * byte-identical to the Rust engine's constant so the two agree. */
 const EXTERNAL_ESCAPE_REASON = 'has a consumer outside the analyzed .svelte graph';
 
@@ -248,7 +248,7 @@ const EXTERNAL_ESCAPE_REASON = 'has a consumer outside the analyzed .svelte grap
  * Stamp {@link EXTERNAL_ESCAPE_REASON} on every model in `escaped` that exists in
  * the program — the single injection point both the whole-program shake and
  * {@link findNeverPassedProps} share (docs §4.2).  Ids not in the program are
- * ignored (a stale `external` entry or a scanned `.ts` import to a component
+ * ignored (a stale `preserve` entry or a scanned `.ts` import to a component
  * outside the crawl is simply a no-op, never an error).
  */
 function stampExternalEscapes(
@@ -308,7 +308,7 @@ export function analyzeInput(input: AnalyzeInput, parseCache?: ParseCache): Anal
     if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
   }
   // Components with consumers outside the `.svelte` graph (a `.ts`/`.js` call site
-  // or a user `external`, docs §4.2) join the same whole-component escape bail.
+  // or a user `preserve`, docs §4.2) join the same whole-component escape bail.
   stampExternalEscapes(models, input.escaped);
 
   return { models, plans: planFixpoint(models) };
@@ -763,7 +763,7 @@ export interface UnpassedProp {
  *    spread that could set it (`readCallSite` already folds `bind:`, known
  *    spreads, and `children`/snippet body into `explicit`/`hadSpread`);
  *  - a component in `input.escaped` — one the Shell knows has a consumer OUTSIDE
- *    the `.svelte` graph (a `.ts`/`.js` call site, or a user `external`, docs
+ *    the `.svelte` graph (a `.ts`/`.js` call site, or a user `preserve`, docs
  *    §4.2) — is skipped, because that consumer may pass a prop the crawl cannot see.
  *
  * Missing a `.svelte` EDGE (e.g. an unfollowed barrel) only DROPS call sites, so it
@@ -782,7 +782,7 @@ export function findNeverPassedProps(input: AnalyzeInput): Map<ComponentId, Unpa
     const model = models.get(id);
     if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
   }
-  // External consumers (`.ts`/`.js` call sites or `external`) escape too, so a prop
+  // External consumers (`.ts`/`.js` call sites or `preserve`) escape too, so a prop
   // they pass is never mis-reported as never-passed (docs §4.2).
   stampExternalEscapes(models, input.escaped);
 

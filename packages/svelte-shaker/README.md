@@ -91,7 +91,7 @@ module); the engine takes an optional `parse` argument if you want to swap it.
 shaker({
   entries: ['src'], // dirs (relative to root) the crawl starts from; they must
   // hold every .svelte call site in the app. Not a glob, not a filter.
-  external: [], // components to freeze — never fold their props (see below)
+  preserve: [], // components whose props must never be folded (see below)
   monomorphize: true, // default on; `false` disables it for faster builds,
   // or { maxVariants: 16, minSavings: 0.05 } to tune
   verbose: false, // true = per-file size breakdown after the build
@@ -143,19 +143,30 @@ shaker({
   can't (a broken install), the plugin **throws** rather than silently falling
   back — so the same source always shakes the same on every machine. Reinstall
   dependencies, or set `parser: 'svelte'`.
-- **`external`** — freeze components a `.ts`/`.js` module uses in a way the shake
-  can't see, so their props are never folded. The plugin already scans your
-  non-`.svelte` modules and auto-freezes any component reached by a static import,
-  `export … from`, or a **literal** `import('./X.svelte')` — so a plain
-  `mount(Component, { props })` is handled for you. Use `external` for what the
-  scan can't follow: a **non-literal** dynamic `import(expr)`, or a call site in a
-  module outside the `entries` roots. Each is a root-relative or absolute path
-  naming a component file (with its `.svelte` extension) or a directory of them
-  (same path-prefix basis as `entries`). It **freezes** the component — the file stays fully analyzed and
-  its own call sites still count; only its own prop folding is turned off. It is not
-  a scan-exclusion filter. The build **warns** (with the file path) about any module
-  the scan couldn't parse — so a mounted component isn't silently left unprotected —
-  and about `external` entries that matched no component.
+- **`preserve`** — keep a component's **prop interface** exactly as written, because
+  something the shake can't see passes props to it. What is preserved is the props,
+  **not** the file's presence in the bundle: this is unrelated to Rollup/Vite's
+  `external`, and it never keeps a file out of the bundle or out of the analysis.
+
+  You need it when the consumer lives outside the `.svelte` graph and the shaker
+  can't observe the call site — a `mount()` behind a **non-literal** dynamic
+  `import(expr)`, or a module outside the `entries` roots. Consumers reached by a
+  static import, `export … from`, or a **literal** `import('./X.svelte')` are found
+  by the plugin's own scan of your non-`.svelte` modules, so a plain
+  `mount(Component, { props })` is already handled for you.
+
+  Each entry is a root-relative or absolute path naming a component file (with its
+  `.svelte` extension) or a directory of them (same path-prefix basis as `entries`).
+  The file stays fully analyzed and its own call sites still count toward its
+  children — only that component's own prop folding is turned off. It is not a
+  scan-exclusion filter.
+
+  **When in doubt, list it.** Unlike `entries`, over-listing errs safe: a component
+  preserved without needing it is just shaken less, never wrongly.
+
+  The build **warns** (with the file path) about any module the scan couldn't
+  parse — so a mounted component isn't silently left unprotected — and about
+  `preserve` entries that matched no component.
 
 ## What it removes
 
@@ -200,11 +211,11 @@ The whole point is to **never change observable behavior**.
   (Components reached _from_ the roots — including library ones in `node_modules`
   — are crawled and shaken without being listed.) Call sites in `.ts`/`.js`
   modules under the roots (e.g. `mount(Component, { props })`) are scanned and the
-  component is frozen automatically; a **non-literal** dynamic `import(expr)`
-  can't be followed, so reach for `external` there. That scan covers modules
+  component's props are kept automatically; a **non-literal** dynamic `import(expr)`
+  can't be followed, so reach for `preserve` there. That scan covers modules
   **under the `entries` roots only** — a library that mounts its own component
-  from its own bundled `.js`/`.ts` inside `node_modules` is not scanned, so freeze
-  it via `external` (with its resolved path) if you hit that.
+  from its own bundled `.js`/`.ts` inside `node_modules` is not scanned, so list
+  it in `preserve` (with its resolved path) if you hit that.
 
 See [`docs/ARCHITECTURE.md`](https://github.com/baseballyama/svelte-shaker/blob/main/docs/ARCHITECTURE.md)
 for the full design and implementation status.

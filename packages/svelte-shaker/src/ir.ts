@@ -61,7 +61,7 @@ export interface AnalyzeInput {
   /**
    * Components with at least one consumer OUTSIDE the analyzed `.svelte` graph —
    * a call site in a `.ts`/`.js` module (`mount(Comp, …)`, a lazy `import()`), or
-   * a user-declared `external` (docs/ARCHITECTURE.md §4.2).  The Shell computes
+   * a user-declared `preserve` (docs/ARCHITECTURE.md §4.2).  The Shell computes
    * this set (its FS scan cannot parse `.ts` call sites); the engine unions it
    * into the same whole-component escape bail auto-detected escapes use, so these
    * components are never folded and never reported as never-passed — while their

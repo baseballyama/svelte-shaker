@@ -97,6 +97,17 @@ describe('vite-plugin-svelte-shaker (end-to-end build)', () => {
     expect(() => shaker(staleConfig)).toThrow(/"include" option was renamed to "entries"/);
   });
 
+  it('the removed `external` option throws, and says it is not Rollup `external`', () => {
+    // Same runtime-only guard as `include`: the key is gone from `ShakerOptions`, so
+    // a stale config reaches us at runtime. Ignoring it is the WORSE failure of the
+    // two — the components the user meant to protect get folded and the build ships
+    // an over-shaken component. The message must also break the Rollup reading of
+    // the old name, which is why the rename happened.
+    const staleConfig: ShakerOptions & { external: string[] } = { external: ['./Widget.svelte'] };
+    expect(() => shaker(staleConfig)).toThrow(/"external" option was renamed to "preserve"/);
+    expect(() => shaker(staleConfig)).toThrow(/nothing to do with Rollup/);
+  });
+
   it('engine: "rust" shakes with monomorphization on by default (native)', async () => {
     // The Rust engine implements monomorphization too, so engine: "rust" with the
     // default options shakes the dead branch (and would specialize where it wins)
