@@ -5,3 +5,12 @@ packages:
 # to be explicitly allowed (see https://pnpm.io/settings#allowbuilds).
 allowBuilds:
   esbuild: true
+
+# Vite 8 pulls lightningcss@^1.32.0 and postcss@^8; a fresh resolve grabs the
+# newest, which trips the minimumReleaseAge supply-chain gate when those were
+# published within the last day. Pin to the newest builds old enough to pass
+# (postcss 8.5.19 is what main already ships). Remove once the gate no longer
+# blocks the latest.
+overrides:
+  lightningcss: 1.32.0
+  postcss: 8.5.19
