@@ -27,6 +27,23 @@ export function transformAll(
 const EMPTY_LOCAL_ENV: ReadonlyMap<string, Literal> = new Map();
 
 /**
+ * Merge an owner's static script constants with its remapped folded props for the
+ * phase-2 side-effect check.  Both are keyed by LOCAL name and are disjoint (a
+ * `$props()` local and a top-level script const cannot share a name — JS
+ * redeclaration), so the merge is order-independent; either operand is returned
+ * as-is when the other is empty (the common case).  Mirrors analyze.ts's
+ * `mergeScriptConsts` (kept separate so neither module imports the other).
+ */
+function mergeLocalConstEnv(
+  scriptConsts: ReadonlyMap<string, Literal>,
+  foldedProps: ReadonlyMap<string, Literal>,
+): ReadonlyMap<string, Literal> {
+  if (scriptConsts.size === 0) return foldedProps;
+  if (foldedProps.size === 0) return scriptConsts;
+  return new Map([...scriptConsts, ...foldedProps]);
+}
+
+/**
  * Phases 1–2, shared by {@link transformAll} and {@link transformAllWithMono}:
  * fold each component body and drop its folded props (phase 1), then strip the
  * now-pointless attribute at every call site of a dropped prop (phase 2).
@@ -85,11 +102,13 @@ function runBasePhases(
   // skipping any call site phase 1 folded away (its attributes went with it).
   for (const model of models.values()) {
     const plan = plans.get(model.id)!;
-    // A forwarded expression (`<Child prop={ownerProp}/>`) was substituted to a
-    // literal in phase 1 when `ownerProp` is folded; its attribute is then just
-    // as removable as a written literal.  Give phase 2 the owner's fold env
-    // (local-keyed, as the expression references props) so it can recognize that.
-    const ownerEnv = plan.bail ? EMPTY_LOCAL_ENV : remapToLocalNames(plan.constFold, model);
+    // A forwarded expression (`<Child prop={ownerProp}/>`) that the owner proves
+    // constant — a folded prop OR an owner-local script constant (docs §13.1) — is
+    // side-effect-free, so once the child drops the prop its attribute is as
+    // removable as a written literal.  Give phase 2 the owner's fold env plus its
+    // `scriptConstEnv`, both local-keyed as the expression references props/locals.
+    const foldEnv = plan.bail ? EMPTY_LOCAL_ENV : remapToLocalNames(plan.constFold, model);
+    const ownerEnv = mergeLocalConstEnv(model.scriptConstEnv, foldEnv);
     removeCallSiteAttributes(
       model,
       dropped,

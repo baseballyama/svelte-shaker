@@ -18,7 +18,7 @@ import {
   type ResolvedEdge,
 } from './ir.js';
 import { computeDeadSpans, inSpans, type Span } from './dead.js';
-import { evaluate, setVar } from './eval.js';
+import { evaluate, setVar, type EvalResult } from './eval.js';
 
 export type Resolve = (
   source: string,
@@ -135,6 +135,17 @@ export interface FileModel {
    * the write.  We never fold such a prop, exactly like a shadowed one.
    */
   writtenNames: Set<string>;
+  /**
+   * Owner-local bindings that are provably a single primitive CONSTANT, keyed by
+   * the LOCAL name a forwarded call-site expression references (docs §13.1
+   * interprocedural pass-through).  Merged into the owner's fold env so that
+   * `<Child {count}/>` — where `count` is an unmutated `let count = $state(0)` or
+   * a `const count = 0` — folds in the child exactly as a call-site literal would,
+   * feeding BOTH constant fold and value-set narrowing.  A static property of the
+   * source (independent of the fixpoint's plans), so it is computed ONCE here.
+   * See {@link computeScriptConstEnv} for the (conservative) admission rules.
+   */
+  scriptConstEnv: ReadonlyMap<string, Literal>;
   /**
    * Resolved ids of CHILD components this file leaks as a value (escape, docs
    * §4.1) — e.g. `<svelte:component this={Child}>`.  `analyze` unions these
@@ -626,6 +637,28 @@ type OwnerEnv = (owner: ComponentId | undefined) => OwnerFoldEnv;
 const EMPTY_OWNER_ENV: OwnerFoldEnv = { fold: EMPTY_ENV, narrow: EMPTY_SET_ENV };
 
 /**
+ * Merge an owner's static script constants ({@link FileModel.scriptConstEnv})
+ * with its remapped folded props into a single fold env.  The two key spaces are
+ * DISJOINT by construction: a folded prop is keyed by the LOCAL binding name its
+ * `$props()` destructure introduces, and a script const by its top-level
+ * declarator name; a top-level `const`/`let` reusing a `$props()` local name is a
+ * JS redeclaration error, so no name can appear in both.  The merge is therefore
+ * order-independent — folded props are applied last purely to document that
+ * invariant — and either operand is returned as-is when the other is empty (the
+ * common case: no owner-forwarded expressions, or a prop-less component).
+ */
+function mergeScriptConsts(
+  scriptConsts: ReadonlyMap<string, Literal>,
+  foldedProps: ReadonlyMap<string, Literal>,
+): ReadonlyMap<string, Literal> {
+  if (scriptConsts.size === 0) return foldedProps;
+  if (foldedProps.size === 0) return scriptConsts;
+  const merged = new Map(scriptConsts);
+  for (const [name, value] of foldedProps) merged.set(name, value);
+  return merged;
+}
+
+/**
  * Recompute every component's plan from the (cascade-filtered) usage, evaluating
  * forwarded call-site expressions against `prevPlans` — the PREVIOUS fixpoint
  * round's folds (docs §13.1 interprocedural pass-through).  Using the previous
@@ -646,13 +679,22 @@ function buildPlans(
     const cached = envCache.get(owner);
     if (cached) return cached;
     const model = models.get(owner);
-    const plan = prevPlans.get(owner);
     let env = EMPTY_OWNER_ENV;
-    if (model && plan && !plan.bail && (plan.constFold.size > 0 || plan.narrow.size > 0)) {
-      env = {
-        fold: plan.constFold.size > 0 ? remapToLocalNames(plan.constFold, model) : EMPTY_ENV,
-        narrow: plan.narrow.size > 0 ? remapToLocalNames(plan.narrow, model) : EMPTY_SET_ENV,
-      };
+    if (model) {
+      const plan = prevPlans.get(owner);
+      // A bailed owner still forwards its own SCRIPT CONSTANTS unchanged — its
+      // bail only makes ITS props unobservable, but it keeps rendering its call
+      // sites (docs §4.2 "自身のコールサイトは数える"), so `scriptConstEnv` (a
+      // static source fact) participates regardless of `plan.bail`.  Only the
+      // fold/narrow derived from the owner's OWN prop plan is gated on the plan
+      // being present and not bailed.
+      const foldable = plan !== undefined && !plan.bail;
+      const foldedProps =
+        foldable && plan.constFold.size > 0 ? remapToLocalNames(plan.constFold, model) : EMPTY_ENV;
+      const narrow =
+        foldable && plan.narrow.size > 0 ? remapToLocalNames(plan.narrow, model) : EMPTY_SET_ENV;
+      const fold = mergeScriptConsts(model.scriptConstEnv, foldedProps);
+      if (fold.size > 0 || narrow.size > 0) env = { fold, narrow };
     }
     envCache.set(owner, env);
     return env;
@@ -941,6 +983,13 @@ function buildModelFromInput(
     debugNames,
     writtenNames,
   );
+  const scriptConstEnv = computeScriptConstEnv(
+    ast,
+    instance,
+    ast.module,
+    propsDeclaration,
+    writtenNames,
+  );
 
   // Escape detection (docs §4.1): an imported component referenced as a *value*
   // (most notably `<svelte:component this={X}>`, but also assigned / passed /
@@ -964,6 +1013,7 @@ function buildModelFromInput(
     shadowedNames,
     debugNames,
     writtenNames,
+    scriptConstEnv,
     escapedComponents,
     bailReasons,
   };
@@ -1053,6 +1103,197 @@ function computeUnreadDeclaredProps(
     if (!readLocals.has(local)) unread.add(name);
   }
   return unread;
+}
+
+/**
+ * Owner-local, provably-constant primitive bindings, keyed by the LOCAL name a
+ * forwarded call-site expression references (docs §13.1 interprocedural
+ * pass-through).  Walks the module then the instance `<script>`'s TOP-LEVEL
+ * declarations in order, extending the env sequentially so `const a = 1; const b
+ * = a + 1;` both resolve.  Every rule is conservative for soundness — a binding
+ * is admitted ONLY when its identifier definitely denotes one constant primitive
+ * at every call site:
+ *  - `const x = <expr>` / `let|var x = <expr>` whose `<expr>` constant-evaluates
+ *    against the env built so far;
+ *  - `$state(<arg>)` / `$state.raw(<arg>)` are unwrapped to `<arg>` (a bare
+ *    `$state()` is `undefined`): the reactive wrapper does not change the value a
+ *    never-written binding forwards.  `$derived` / `$props` / any OTHER rune is
+ *    not unwrapped, so its `CallExpression` never constant-evaluates and is
+ *    skipped (out of scope);
+ *  - primitives only — the `Literal` domain excludes object/array initializers,
+ *    so deep mutation through a `$state` proxy can never be folded away;
+ *  - the name is NEVER written (reassigned / `++` / destructure-assigned /
+ *    `bind:`), tested against {@link writtenNames} extended with module-internal
+ *    writes (docs §4.1: a written binding is not a constant);
+ *  - the name is bound EXACTLY ONCE across the whole file (its own top-level
+ *    declarator).  A name a template binder (`{#each as}`, snippet param, …) or a
+ *    nested/duplicate scope also binds is a DIFFERENT entity at some call site,
+ *    and call-site evaluation ({@link evaluate}) is scope-blind, so folding it
+ *    could read the wrong entity there (docs §4.1 shadowing; the same soundness
+ *    argument as {@link isFoldBlockedName}, but on the owner's OWN bindings — for
+ *    which the file-wide `shadowedNames` cannot be reused: it already contains
+ *    every top-level script declaration, so it would reject every candidate);
+ *  - exported bindings (`export const x`) are excluded — they are wrapped in an
+ *    `ExportNamedDeclaration`, not a bare `VariableDeclaration`, so the top-level
+ *    scan below skips them; like an escaped component they are reachable from
+ *    outside the analyzed graph.
+ */
+function computeScriptConstEnv(
+  ast: Root,
+  instance: AnyNode | null | undefined,
+  moduleScript: AnyNode | null | undefined,
+  propsDeclaration: AnyNode | undefined,
+  writtenNames: Set<string>,
+): Map<string, Literal> {
+  const env = new Map<string, Literal>();
+
+  // A name is admissible only if bound EXACTLY ONCE anywhere in the file, so no
+  // template binder or nested scope can shadow it at a call site.
+  const bindingCounts = new Map<string, number>();
+  countBindingNames(moduleScript?.content, bindingCounts);
+  countBindingNames(instance?.content, bindingCounts);
+  countBindingNames(ast.fragment, bindingCounts);
+
+  // `writtenNames` (from collectTemplateBindings) scans the instance script and
+  // the template but NOT the module script, so a module-internal write
+  // (`<script module>let n = 0; function inc(){ n++ }</script>`) would be missed.
+  // Close that gap here before admitting any module-level binding.
+  const written = new Set(writtenNames);
+  collectScriptWrites(moduleScript?.content, written);
+
+  // Module script runs before the instance and its bindings are visible to it,
+  // so extend module-first, then instance, each in declaration order.
+  for (const program of [moduleScript?.content, instance?.content]) {
+    for (const stmt of program?.body ?? []) {
+      // Only a bare `VariableDeclaration`; an `export const` is wrapped in an
+      // `ExportNamedDeclaration` and is deliberately excluded (see doc comment).
+      if (stmt.type !== 'VariableDeclaration' || stmt === propsDeclaration) continue;
+      for (const decl of stmt.declarations ?? []) {
+        // A single-identifier binding only: a destructuring `const { a } = …`
+        // has no one primitive name to key, so it never folds.
+        if (decl.id?.type !== 'Identifier' || !decl.id.name) continue;
+        const name = decl.id.name;
+        if (written.has(name) || bindingCounts.get(name) !== 1) continue;
+        const value = evalDeclaratorValue(decl.init, env);
+        if (value.known) env.set(name, value.value);
+      }
+    }
+  }
+  return env;
+}
+
+/**
+ * Constant value of a declarator initializer for {@link computeScriptConstEnv},
+ * unwrapping the two runes whose argument IS the value a never-written binding
+ * holds: `$state(<arg>)` / `$state.raw(<arg>)` (a bare `$state()` /
+ * `$state.raw()` is `undefined`).  Any other initializer — including every other
+ * rune call — is evaluated verbatim, so a non-value rune simply falls to unknown.
+ */
+function evalDeclaratorValue(
+  init: AnyNode | undefined,
+  env: ReadonlyMap<string, Literal>,
+): EvalResult {
+  if (isStateRuneCall(init)) {
+    const arg = init?.arguments?.[0];
+    if (arg == null) return { known: true, value: undefined }; // bare `$state()` -> undefined
+    return evaluate(arg, env);
+  }
+  return evaluate(init, env);
+}
+
+/**
+ * `$state(...)` or `$state.raw(...)` — the two runes whose sole argument is the
+ * plain value a never-written binding evaluates to.  `$state.snapshot`,
+ * `$derived`, `$props`, `$bindable`, etc. are intentionally NOT matched: they are
+ * not value-preserving wrappers, so they must stay unknown.
+ */
+function isStateRuneCall(node: AnyNode | undefined): boolean {
+  if (node?.type !== 'CallExpression') return false;
+  const callee = node.callee;
+  if (callee?.type === 'Identifier') return callee.name === '$state';
+  return (
+    callee?.type === 'MemberExpression' &&
+    callee.computed !== true &&
+    callee.object?.type === 'Identifier' &&
+    callee.object.name === '$state' &&
+    callee.property?.type === 'Identifier' &&
+    callee.property.name === 'raw'
+  );
+}
+
+/**
+ * Increment `counts` for every name a binding introduces in `root` (a `<script>`
+ * Program or the template fragment): variable declarators (including
+ * destructuring), function ids and parameters, and every template binder
+ * ({@link collectTemplateBindings} covers the same binders).  A name whose total
+ * count exceeds one is bound in more than one place — a nested/duplicate
+ * declaration or a template binder — so it is shadowed at some scope and is
+ * disqualified from {@link computeScriptConstEnv}.
+ */
+function countBindingNames(root: AnyNode | null | undefined, counts: Map<string, number>): void {
+  if (!root) return;
+  const bump = (name: string | undefined): void => {
+    if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+  };
+  const bumpPattern = (pattern: AnyNode | null | undefined): void => {
+    const names = new Set<string>();
+    addPatternNames(pattern, names);
+    for (const n of names) bump(n);
+  };
+  // A `try {} catch (e) {}` param is intentionally NOT counted: a call-site
+  // expression only resolves against the TOP-LEVEL script scope, which a
+  // catch-block-scoped name can never enter, so it cannot shadow a fold there.
+  walk<null>(root, null, {
+    _(node, { next }) {
+      switch (node.type) {
+        case 'VariableDeclarator':
+          bumpPattern(node.id);
+          break;
+        case 'FunctionDeclaration':
+        case 'FunctionExpression':
+        case 'ArrowFunctionExpression':
+          if (node.id?.type === 'Identifier') bump(node.id.name);
+          for (const p of node.params ?? []) bumpPattern(p);
+          break;
+        case 'EachBlock':
+          bumpPattern(node.context);
+          if (typeof node.index === 'string') bump(node.index);
+          break;
+        case 'SnippetBlock':
+          if (node.expression?.type === 'Identifier') bump(node.expression.name);
+          for (const p of node.parameters ?? []) bumpPattern(p);
+          break;
+        case 'AwaitBlock':
+          bumpPattern(node.value as AnyNode | undefined);
+          bumpPattern(node.error);
+          break;
+        case 'LetDirective':
+          bump(node.name);
+          break;
+        case 'ConstTag':
+          for (const d of node.declaration?.declarations ?? []) bumpPattern(d.id);
+          break;
+      }
+      next();
+    },
+  });
+}
+
+/** Add every name a `<script>` Program WRITES (bare-identifier assignment /
+ * update targets, at any nesting) to `out` — the module-script counterpart of
+ * the write collection {@link collectTemplateBindings} runs over the instance. */
+function collectScriptWrites(program: AnyNode | null | undefined, out: Set<string>): void {
+  if (!program) return;
+  walk<null>(program, null, {
+    AssignmentExpression(node, { next }) {
+      collectWrittenNames(node, out);
+      next();
+    },
+    UpdateExpression(node, { next }) {
+      collectWrittenNames(node, out);
+      next();
+    },
+  });
 }
 
 /**

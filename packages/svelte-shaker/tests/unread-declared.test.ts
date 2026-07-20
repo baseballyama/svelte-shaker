@@ -94,10 +94,10 @@ describe('unread declared props: drop props the component never reads', () => {
 
   it('2. literal default: removes the attribute AND drops the declaration', async () => {
     const files = {
-      // `label` is a `$state`, so it stays dynamic and is neither folded nor
-      // dropped — isolating the unread removal of `icon`.
+      // `heavy` / `label` are dynamic entry inputs (unknown `$props()` values), so
+      // neither folds — isolating the unread removal of `icon` from const folding.
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n  let label = $state('hi');\n</script>\n` +
+        `<script>\n  import Child from './Child.svelte';\n  let { heavy, label } = $props();\n</script>\n` +
         `<Child icon={heavy} label={label} />\n`,
       '/Child.svelte':
         `<script>\n  let { icon = 'default', label } = $props();\n</script>\n` +
@@ -113,7 +113,7 @@ describe('unread declared props: drop props the component never reads', () => {
   it('3. call-expression default: keeps everything (default would newly run — unsound to remove)', async () => {
     const files = {
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
+        `<script>\n  import Child from './Child.svelte';\n  let { heavy } = $props();\n</script>\n` +
         `<Child icon={heavy} label="hi" />\n`,
       // A non-trivial default is evaluated eagerly when the prop is omitted, so
       // removing the attribute would run `compute()` where it did not before.
@@ -147,7 +147,7 @@ describe('unread declared props: drop props the component never reads', () => {
   it('5. read props (template / function / {@debug}) are left untouched', async () => {
     const template = {
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
+        `<script>\n  import Child from './Child.svelte';\n  let { heavy } = $props();\n</script>\n` +
         `<Child icon={heavy} />\n`,
       '/Child.svelte':
         `<script>\n  let { icon } = $props();\n</script>\n` + `<span>{icon}</span>\n`,
@@ -156,7 +156,7 @@ describe('unread declared props: drop props the component never reads', () => {
 
     const fn = {
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
+        `<script>\n  import Child from './Child.svelte';\n  let { heavy } = $props();\n</script>\n` +
         `<Child icon={heavy} />\n`,
       '/Child.svelte':
         `<script>\n  let { icon } = $props();\n  function show() { return icon; }\n</script>\n` +
@@ -166,7 +166,7 @@ describe('unread declared props: drop props the component never reads', () => {
 
     const debug = {
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
+        `<script>\n  import Child from './Child.svelte';\n  let { heavy } = $props();\n</script>\n` +
         `<Child icon={heavy} />\n`,
       '/Child.svelte':
         `<script>\n  let { icon } = $props();\n</script>\n` + `{@debug icon}\n<span>x</span>\n`,
@@ -250,7 +250,7 @@ describe('unread declared props: drop props the component never reads', () => {
   it('11. spread site keeps its attribute; a plain site is removed and the decl dropped', async () => {
     const files = {
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n  const rest = { other: 1 };\n</script>\n` +
+        `<script>\n  import Child from './Child.svelte';\n  let { heavy } = $props();\n  const rest = { other: 1 };\n</script>\n` +
         `<Child icon={heavy} />\n<Child {...rest} icon={heavy} />\n`,
       '/Child.svelte': `<script>\n  let { icon } = $props();\n</script>\n` + `<span>z</span>\n`,
     };
@@ -271,7 +271,7 @@ describe('unread declared props: drop props the component never reads', () => {
     // dangling the forward — this pins that regression.
     const files = {
       '/App.svelte':
-        `<script>\n  import Parent from './Parent.svelte';\n  let outer = $state('hi');\n</script>\n` +
+        `<script>\n  import Parent from './Parent.svelte';\n  let { outer } = $props();\n</script>\n` +
         `<Parent label={outer} />\n`,
       '/Parent.svelte':
         `<script>\n  import GrandChild from './GrandChild.svelte';\n  let { label } = $props();\n</script>\n` +
@@ -296,7 +296,7 @@ describe('unread declared props: drop props the component never reads', () => {
     for (const child of Object.values(cases)) {
       const files = {
         '/App.svelte':
-          `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n</script>\n` +
+          `<script>\n  import Child from './Child.svelte';\n  let { heavy } = $props();\n</script>\n` +
           `<Child size={heavy} />\n`,
         '/Child.svelte': child,
       };
@@ -308,7 +308,7 @@ describe('unread declared props: drop props the component never reads', () => {
   it('14. two adjacent unread props drop together with clean comma tiling', async () => {
     const files = {
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n  let keep = $state('k');\n</script>\n` +
+        `<script>\n  import Child from './Child.svelte';\n  let { heavy, keep } = $props();\n</script>\n` +
         `<Child a={heavy} b={heavy} c={keep} />\n`,
       // `a` and `b` are adjacent unread props; dropping the run must not leave a
       // dangling comma in the destructure.  `c` is dynamic + read, so it stays.

@@ -71,10 +71,11 @@ async function shakeSound(files: Record<string, string>): Promise<Record<string,
 describe('reverse analysis: drop inputs a child can never read', () => {
   it('1. removes an undeclared prop whose value is a bare identifier', async () => {
     const files = {
-      // `label` is dynamic (a `$state`), so forward folding cannot drop it — it
-      // stays declared and passed, isolating the reverse removal of `icon`.
+      // `heavy` / `label` are dynamic entry inputs (unknown `$props()` values), so
+      // forward folding cannot fold or drop either — isolating the reverse removal
+      // of the UNDECLARED `icon` from any const-fold interaction.
       '/App.svelte':
-        `<script>\n  import Child from './Child.svelte';\n  const heavy = 'H';\n  let label = $state('hi');\n</script>\n` +
+        `<script>\n  import Child from './Child.svelte';\n  let { heavy, label } = $props();\n</script>\n` +
         `<Child icon={heavy} label={label} />\n`,
       '/Child.svelte':
         `<script>\n  let { label } = $props();\n</script>\n` + `<span>{label}</span>\n`,

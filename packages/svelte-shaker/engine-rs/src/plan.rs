@@ -160,6 +160,11 @@ pub(crate) struct Model {
     pub(crate) debug: HashSet<String>,
     /// Prop names the component WRITES TO — never folded (see `is_fold_blocked`).
     pub(crate) written: HashSet<String>,
+    /// Owner-local, provably-constant primitive bindings (docs §13.1), keyed by the
+    /// LOCAL name a forwarded call-site expression references — merged into the
+    /// owner's fold env so `<Child {count}/>` (an unmutated `let count = $state(0)`
+    /// / `const count = 0`) folds in the child. Static per file (`compute_script_const_env`).
+    pub(crate) script_const_env: HashMap<String, Literal>,
     /// (childId, the `<Child/>` Component node) for every rendered child.
     pub(crate) child_calls: Vec<(String, Value)>,
     pub(crate) escaped: Vec<String>,
@@ -175,6 +180,8 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
     let debug: HashSet<String> = debug_vec.into_iter().collect();
     let written: HashSet<String> = written_vec.into_iter().collect();
     let unread_declared = compute_unread_declared(&ast, &props_info, &shadowed, &debug, &written);
+    let props_declaration = props_info.as_ref().map(|p| p.declaration.clone()).unwrap_or(Value::Null);
+    let script_const_env = compute_script_const_env(&ast, &props_declaration, &written);
     let mut bail_reasons = component_bail(&ast);
     if props_info.as_ref().map(|p| p.shares_statement).unwrap_or(false) {
         bail_reasons.push("$props() shares a multi-declarator statement".to_string());
@@ -199,6 +206,7 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
         shadowed,
         debug,
         written,
+        script_const_env,
         child_calls,
         escaped,
         bail_reasons,
@@ -252,19 +260,47 @@ pub(crate) fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -
 fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
     let mut envs = OwnerEnvs::new();
     for model in models {
-        if let Some(plan) = prev.get(&model.id) {
-            if !plan.bail && (!plan.const_fold.is_empty() || !plan.narrow.is_empty()) {
-                envs.insert(
-                    model.id.clone(),
-                    OwnerEnv {
-                        fold: remap_to_local_names(&plan.const_env(), model),
-                        narrow: remap_to_local_names(&plan.set_env(), model),
-                    },
-                );
-            }
+        // A bailed owner still forwards its own SCRIPT CONSTANTS unchanged — its
+        // bail only makes ITS props unobservable, but it keeps rendering its call
+        // sites (docs §4.2), so `script_const_env` (a static source fact)
+        // participates regardless of `plan.bail`. Only the fold/narrow derived from
+        // the owner's OWN prop plan is gated on a present, non-bailed plan.
+        let plan = prev.get(&model.id);
+        let foldable = plan.map(|p| !p.bail).unwrap_or(false);
+        let folded_props = match plan {
+            Some(p) if foldable && !p.const_fold.is_empty() => remap_to_local_names(&p.const_env(), model),
+            _ => HashMap::new(),
+        };
+        let narrow = match plan {
+            Some(p) if foldable && !p.narrow.is_empty() => remap_to_local_names(&p.set_env(), model),
+            _ => HashMap::new(),
+        };
+        let fold = merge_script_consts(&model.script_const_env, folded_props);
+        if !fold.is_empty() || !narrow.is_empty() {
+            envs.insert(model.id.clone(), OwnerEnv { fold, narrow });
         }
     }
     envs
+}
+
+/// Merge an owner's static script constants ([`Model::script_const_env`]) with its
+/// remapped folded props into one fold env. The two key spaces are DISJOINT by
+/// construction — a folded prop is keyed by its `$props()` LOCAL binding name, a
+/// script const by its top-level declarator name, and a `const`/`let` reusing a
+/// prop's local name is a JS redeclaration error — so the merge is order-independent
+/// (folded props applied last purely to document that). Mirrors `mergeScriptConsts`.
+pub(crate) fn merge_script_consts(script_consts: &HashMap<String, Literal>, folded_props: Env) -> Env {
+    if script_consts.is_empty() {
+        return folded_props;
+    }
+    if folded_props.is_empty() {
+        return script_consts.clone();
+    }
+    let mut merged = script_consts.clone();
+    for (k, v) in folded_props {
+        merged.insert(k, v);
+    }
+    merged
 }
 
 pub(crate) fn build_plans(models: &[Model], usage: &HashMap<String, Vec<CallSite>>, prev: &Plans) -> Plans {
