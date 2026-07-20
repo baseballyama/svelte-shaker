@@ -90,7 +90,7 @@ engine takes an optional `parse` argument if you want to swap it.
 shaker({
   include: ['src'], // dirs (relative to root) holding every .svelte call site
   monomorphize: true, // default on; `false` disables it for faster builds,
-  // or { maxVariants: 16, minSavings: 0.15 } to tune
+  // or { maxVariants: 16, minSavings: 0.05 } to tune
   verbose: false, // true = per-file size breakdown after the build
 
   // Escape hatches — the defaults ARE the fast Rust path; set these only to opt
@@ -104,14 +104,34 @@ shaker({
   native **Rust (WASM) engine** and parses with **rsvelte**'s native parser
   ([`@rsvelte/vite-plugin-svelte-native`](https://github.com/rsvelte/rsvelte)),
   which is **~1.46x** faster full build (parse alone ~2.2x) on a real
-  474-component app. Both are differentially tested to shake **byte-identically**
-  to the JS engine / svelte/compiler, and soundness is independent of either
-  choice — the fast path never changes what renders, only how fast it gets there.
+  474-component app. The Rust (WASM) engine is differentially tested to shake
+  **byte-identically** to the JS engine. The rsvelte parser is different: it
+  shakes a **sound superset** of svelte/compiler — equal or more, never less,
+  with SSR-observed output equivalent either way — so soundness is independent
+  of either choice; the fast path never changes what renders, only how fast
+  (and occasionally how much) it shakes.
 - **`monomorphize`** — the one shaking knob, **on** by default. A measured
   net-win gate only specializes a component when that strictly shrinks the whole
-  program, so monomorphization **never bloats**; its only cost is build time. Set
-  `monomorphize: false` to skip it for faster builds, or pass
-  `{ maxVariants, minSavings }` to tune.
+  program, so monomorphization **never bloats**: whatever the knobs are set to,
+  a build with `monomorphize` on is never larger, byte for byte, than the same
+  build with it off (the 3 always-on passes alone). The knobs only trade off how
+  much specialization is *attempted* against build time:
+  - `maxVariants` (default `8`) — cap on distinct residual variants per
+    component. A child whose call sites produce more distinct shapes than the
+    cap can't be specialized at every site, so it keeps its base entirely
+    (all-sites-or-nothing — no partial split). Raise it for a large
+    design-system component (e.g. a `Button` used with more than 8 prop shapes
+    app-wide) you know is worth specializing further.
+  - `minSavings` (default `0`, i.e. any strict net reduction) — the net-win
+    threshold: a specialization is applied only when it measures
+    `Σ_spec < Σ_base × (1 − minSavings)`. Raising it only makes the gate more
+    conservative (fewer, bigger wins, faster builds) — no value makes
+    monomorphization unsound.
+
+  ```ts
+  monomorphize: { maxVariants: 16, minSavings: 0.05 } // e.g. a variant-heavy
+  // design system, while skipping specializations that save under 5%
+  ```
 - **Escape hatches (`engine` / `parser`).** If you ever hit a bug in the Rust
   path, opt out per axis: `engine: 'js'` forces the JS engine, `parser: 'svelte'`
   forces svelte/compiler (the previous default). When the default `parser:

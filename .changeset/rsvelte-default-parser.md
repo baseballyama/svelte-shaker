@@ -20,6 +20,10 @@ Migrate — do one of:
   `npm i -D @rsvelte/vite-plugin-svelte-native`
 - Or keep the previous parser: `shaker({ parser: 'svelte' })`.
 
+This also applies if you opt into dev shaking (`dev: 'coarse' | 'incremental'`,
+still off by default): it uses the same default `parser: 'rsvelte'`, so
+enabling dev shaking requires the peer too, unless you set `parser: 'svelte'`.
+
 Unaffected: the environment-free `svelteShaker` engine API and the in-browser
 playground still parse with svelte/compiler (they can't require a native
 binary). The `engine` default (`'auto'`: Rust/WASM when loadable, else JS) is
