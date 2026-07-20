@@ -666,15 +666,23 @@ pub(crate) fn shake_body(
     extra_drops: &HashSet<String>,
 ) -> HashSet<String> {
     if env.is_empty() && set_env.is_empty() {
-        // With no value sets to bound a class against we skip `shake_css` entirely.
-        // This deliberately passes up one case (mirrors shakeBody in transform.ts): a
-        // component whose only edit is a reverse/unread removal could, since §PR8,
-        // lose an unbounded class source with that region and become bounded — but
-        // running shake_css here is left as future work.  It is a sound MISSED
-        // opportunity (keeping every rule never changes styling), not an unsound one.
-        // …an unread-prop drop (docs §PR7) still edits the signature, though.
+        // Nothing to fold or narrow: the fold-driven passes have no purchase and we
+        // skip them.  But CSS removal does NOT read the fold env — when the
+        // reverse/unread pass still deletes a region (`seed_dead`), an unbounded
+        // class source hiding in it (`class={dynamic}`, `{...rest}`) vanishes with
+        // the region (docs §PR8), so the component can become bounded and a
+        // now-unreachable rule removable.  Run `shake_css` with `seed_dead` as the
+        // pruned set and the (empty) envs — sound because the removal condition
+        // never reads the env; an empty env only makes more interpolations unbounded
+        // (strictly more conservative).  Mirrors shakeBody in transform.ts.
+        // …an unread-prop drop (docs §PR7) still edits the signature, too.
         if !extra_drops.is_empty() {
             drop_props(model, extra_drops, edits);
+        }
+        // With no reverse/unread region there is nothing to prune, so keep the
+        // original early return: the component is left byte-identical.
+        if !seed_dead.is_empty() {
+            shake_css(model, env, set_env, edits, seed_dead);
         }
         return HashSet::new();
     }

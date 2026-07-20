@@ -353,21 +353,27 @@ export function shakeBody(
    */
   extraDrops?: Set<string>,
 ): Set<string> {
-  // Nothing to fold (constant fold) and nothing to narrow (value-set narrowing): no branch/prop edits.
-  // With no value sets there is nothing to bound a class against, so branch-driven
-  // CSS removal has no purchase and we skip {@link shakeCss} entirely, leaving the
-  // component untouched.  One case this passes up (deliberately): a component whose
-  // ONLY edit is a reverse/unread removal (docs §PR4/§PR7) could, since §PR8, have
-  // an unbounded class source deleted along with that region and thereby become
-  // bounded — running shakeCss with those removed spans as `pruned` might then drop
-  // a now-unreachable rule.  We do NOT do that here: it is a sound MISSED
-  // opportunity, not an unsound one (keeping every rule can never change styling),
-  // and wiring shakeCss into this fold-free path is left as future work.  Reverse
-  // removals then run over pristine source, so no protection is needed on this path.
+  // Nothing to fold (constant fold) and nothing to narrow (value-set narrowing):
+  // no branch/prop edits, so the fold-driven passes (branch/ternary folding,
+  // reference substitution, folded-prop drops) have no purchase and we skip them.
+  // But CSS removal does NOT depend on the fold env: when the reverse/unread pass
+  // still deletes a region (`seedDead`), an unbounded class source hiding in it
+  // (`class={dynamic}`, `{...rest}`) vanishes with the region (docs §PR8), so the
+  // component can become bounded and a now-unreachable rule removable.  Run
+  // {@link shakeCss} with `seedDead` as the pruned set and EMPTY envs — sound
+  // because the removal condition (a bounded possible-class set + rules whose class
+  // is outside it + no `:global`) never reads the fold env; an empty env only makes
+  // more interpolations unbounded, i.e. strictly more conservative.
   if (env.size === 0 && setEnv.size === 0) {
     // …but an unread-prop drop (docs §PR7) still edits the signature, even with
     // nothing to fold.  Apply it and return no folded props (phase 2 does nothing).
     if (extraDrops && extraDrops.size > 0) dropProps(model, extraDrops, s);
+    // With no reverse/unread region there is nothing to prune, so keep the original
+    // early return: the component is left byte-identical (behaviour + perf unchanged).
+    if (seedDead && seedDead.length > 0) {
+      const cssView: ComponentPlan = { ...cssPlan, constFold: new Map(), narrow: new Map() };
+      shakeCss(model, cssView, s, seedDead);
+    }
     return new Set();
   }
   const code = model.code;
