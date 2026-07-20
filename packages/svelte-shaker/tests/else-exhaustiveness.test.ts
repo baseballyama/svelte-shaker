@@ -216,6 +216,52 @@ describe('{:else} exhaustiveness removal', () => {
     expect(out['/Child.svelte']!).toContain('<Heavy'); // no narrowing -> no exhaustiveness
   });
 
+  it('9: an empty last-arm consequent bails (no span-inversion crash, else kept)', async () => {
+    // `{:else if variant === 'secondary'}{:else}…` — the last arm before the else
+    // renders nothing, so it has no consequent-end offset to anchor the removal on.
+    // We must bail (keep the else) rather than fall back to the block end, which is
+    // the chain's `{/if}` past the else content and would invert the span.
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Child from './Child.svelte';\n</script>\n` +
+        `<Child variant="primary" />\n<Child variant="secondary" />\n`,
+      '/Child.svelte':
+        `<script>\n  import Heavy from './Heavy.svelte';\n  let { variant = 'other' } = $props();\n</script>\n` +
+        `{#if variant === 'primary'}<b>P</b>{:else if variant === 'secondary'}{:else}<Heavy />{/if}\n`,
+      '/Heavy.svelte': `<div>HEAVY</div>\n`,
+    };
+    const plans = await plansFor(files);
+    expect(plans.get('/Child.svelte')!.narrow.get('variant')).toEqual(['primary', 'secondary']);
+
+    // shakeSound throws if the transform crashes; the byte oracle proves soundness.
+    const out = await shakeSound(files);
+    expect(out['/Child.svelte']!).toContain('<Heavy'); // no anchor -> else kept
+  });
+
+  it('10: a provably-false head promotes AND the {:else} dies by exhaustiveness', async () => {
+    const files = {
+      '/App.svelte':
+        `<script>\n  import Child from './Child.svelte';\n</script>\n` +
+        `<Child variant="primary" />\n<Child variant="secondary" />\n`,
+      '/Child.svelte':
+        `<script>\n  import Heavy from './Heavy.svelte';\n  let { variant = 'other' } = $props();\n</script>\n` +
+        `{#if variant === 'zzz'}<x>Z</x>` +
+        `{:else if variant === 'primary'}<b>P</b>` +
+        `{:else if variant === 'secondary'}<em>S</em>` +
+        `{:else}<Heavy />{/if}\n`,
+      '/Heavy.svelte': `<div>HEAVY</div>\n`,
+    };
+    const plans = await plansFor(files);
+    expect(plans.get('/Child.svelte')!.narrow.get('variant')).toEqual(['primary', 'secondary']);
+
+    const out = await shakeSound(files);
+    const child = out['/Child.svelte']!;
+    expect(child).not.toContain('<x>Z</x>'); // provably-false head dropped
+    expect(child).toContain("{#if variant === 'primary'}"); // arm promoted to head
+    expect(child).not.toContain('<Heavy'); // else removed by exhaustiveness
+    expect(child).toContain('<em>S</em>');
+  });
+
   it('8: an out-of-set middle arm dies AND the {:else} dies by exhaustiveness together', async () => {
     const files = {
       '/App.svelte':
