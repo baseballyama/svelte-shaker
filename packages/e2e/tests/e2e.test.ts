@@ -19,11 +19,11 @@ const TMP = join(HERE, '.e2e-tmp');
 // `node_modules`, but will scan an explicit absolute path inside one fine.
 const modeWatcherComponents = join(ROOT, 'node_modules', 'mode-watcher', 'dist', 'components');
 
-// Shaker include list: the full app src plus mode-watcher's own .svelte
+// Shaker crawl entries: the full app src plus mode-watcher's own .svelte
 // components.  Without the latter, the shaker never sees ModeWatcher.svelte's
 // call sites and cannot fold its never-passed props — the #37 bug would be
 // silently skipped instead of caught.
-const SHAKER_INCLUDE = [join(ROOT, 'src'), modeWatcherComponents];
+const SHAKER_ENTRIES = [join(ROOT, 'src'), modeWatcherComponents];
 
 interface RenderBundle {
   render: () => { head: string; body: string };
@@ -35,7 +35,7 @@ interface RenderBundle {
  */
 async function buildSsr(outDir: string, withShaker: boolean): Promise<void> {
   const plugins: PluginOption[] = withShaker
-    ? [shaker({ include: SHAKER_INCLUDE }), svelte()]
+    ? [shaker({ entries: SHAKER_ENTRIES }), svelte()]
     : [svelte()];
 
   await build({
@@ -132,7 +132,7 @@ describe('differential SSR oracle', () => {
 describe('client build smoke test', () => {
   it('vite build (client) with shaker succeeds', async () => {
     const outDir = join(TMP, 'client');
-    const plugins: PluginOption[] = [shaker({ include: SHAKER_INCLUDE }), svelte()];
+    const plugins: PluginOption[] = [shaker({ entries: SHAKER_ENTRIES }), svelte()];
     await build({
       root: ROOT,
       logLevel: 'silent',

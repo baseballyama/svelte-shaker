@@ -110,10 +110,10 @@ async function bundle(pre: unknown[]): Promise<string> {
 
 describe('vite-plugin-svelte-shaker — `external` option', () => {
   it('folds the frozen prop without external, keeps it once listed', async () => {
-    const plain = await bundle([shaker({ include: ['.'] })]);
+    const plain = await bundle([shaker({ entries: ['.'] })]);
     expect(plain).not.toContain('P BRANCH'); // no consumer passes `p` → folded away
 
-    const frozen = await bundle([shaker({ include: ['.'], external: ['./Widget.svelte'] })]);
+    const frozen = await bundle([shaker({ entries: ['.'], external: ['./Widget.svelte'] })]);
     expect(frozen).toMatch(IF_MACHINERY);
     expect(frozen).toContain('P BRANCH'); // `external` froze Widget, so `p` survives
   });

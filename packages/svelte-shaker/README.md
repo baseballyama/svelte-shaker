@@ -67,9 +67,10 @@ import { shaker } from 'svelte-shaker/vite';
 
 export default defineConfig({
   plugins: [
-    // `include` must cover EVERY call site in the app, or prop elimination
-    // would be unsound. Defaults to the Vite root.
-    shaker({ include: ['src'] }),
+    // `entries` is where the component crawl STARTS, not a file filter. It
+    // must cover EVERY call site in the app, or prop elimination would be
+    // unsound. Defaults to the Vite root.
+    shaker({ entries: ['src'] }),
     svelte(),
   ],
 });
@@ -88,7 +89,8 @@ module); the engine takes an optional `parse` argument if you want to swap it.
 
 ```ts
 shaker({
-  include: ['src'], // dirs (relative to root) holding every .svelte call site
+  entries: ['src'], // dirs (relative to root) the crawl starts from; they must
+  // hold every .svelte call site in the app. Not a glob, not a filter.
   external: [], // components to freeze — never fold their props (see below)
   monomorphize: true, // default on; `false` disables it for faster builds,
   // or { maxVariants: 16, minSavings: 0.05 } to tune
@@ -147,9 +149,9 @@ shaker({
   `export … from`, or a **literal** `import('./X.svelte')` — so a plain
   `mount(Component, { props })` is handled for you. Use `external` for what the
   scan can't follow: a **non-literal** dynamic `import(expr)`, or a call site in a
-  module outside `include`. Entries are root-relative or absolute paths naming a
-  component file (with its `.svelte` extension) or a directory of them (same basis
-  as `include`). It **freezes** the component — the file stays fully analyzed and
+  module outside the `entries` roots. Each is a root-relative or absolute path
+  naming a component file (with its `.svelte` extension) or a directory of them
+  (same path-prefix basis as `entries`). It **freezes** the component — the file stays fully analyzed and
   its own call sites still count; only its own prop folding is turned off. It is not
   a scan-exclusion filter. The build **warns** (with the file path) about any module
   the scan couldn't parse — so a mounted component isn't silently left unprotected —
@@ -192,14 +194,17 @@ The whole point is to **never change observable behavior**.
   unshaken; distribute via `svelte-package`.
 - **Build only** — whole-program analysis is incompatible with dev/HMR locality,
   so dev is always a pass-through.
-- **`include` must cover the whole app** — a call site outside the scanned dirs
-  is invisible, which would make prop elimination unsound. Call sites in
-  `.ts`/`.js` modules under `include` (e.g. `mount(Component, { props })`) are
-  scanned and the component is frozen automatically; a **non-literal** dynamic
-  `import(expr)` can't be followed, so reach for `external` there. The scan covers
-  modules **under `include`** — a library that mounts its own component from its own
-  bundled `.js`/`.ts` inside `node_modules` is not scanned, so freeze it via
-  `external` (with its resolved path) if you hit that.
+- **`entries` must cover the whole app** — the crawl starts there, and every
+  `.svelte` file it finds is a call-site source. A call site outside those roots
+  is invisible, so narrowing `entries` does not shake less, it shakes _wrongly_.
+  (Components reached _from_ the roots — including library ones in `node_modules`
+  — are crawled and shaken without being listed.) Call sites in `.ts`/`.js`
+  modules under the roots (e.g. `mount(Component, { props })`) are scanned and the
+  component is frozen automatically; a **non-literal** dynamic `import(expr)`
+  can't be followed, so reach for `external` there. That scan covers modules
+  **under the `entries` roots only** — a library that mounts its own component
+  from its own bundled `.js`/`.ts` inside `node_modules` is not scanned, so freeze
+  it via `external` (with its resolved path) if you hit that.
 
 See [`docs/ARCHITECTURE.md`](https://github.com/baseballyama/svelte-shaker/blob/main/docs/ARCHITECTURE.md)
 for the full design and implementation status.

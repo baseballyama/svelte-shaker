@@ -15,8 +15,8 @@ import { shaker } from '../src/vite';
 // It builds the SAME app three ways and sizes each bundle:
 //
 //   control    : [svelte()]                                          — no shaking
-//   narrowed   : [shaker({ include:['.'], monomorphize:false }), svelte()] — mono off
-//   mono       : [shaker({ include:['.'] }), svelte()]               — default (mono ON)
+//   narrowed   : [shaker({ entries:['.'], monomorphize:false }), svelte()] — mono off
+//   mono       : [shaker({ entries:['.'] }), svelte()]               — default (mono ON)
 //
 // total emitted bytes = Σ every output chunk's `code.length`
 //                     + Σ every emitted `.css` asset's `source.length`.
@@ -77,8 +77,8 @@ async function buildBytes(root: string, pre: unknown[]): Promise<number> {
 /** Build the same app three ways (control / narrowed / mono) and size each. */
 async function benchAll(root: string): Promise<Sizes> {
   const control = await buildBytes(root, []);
-  const narrowed = await buildBytes(root, [shaker({ include: ['.'], monomorphize: false })]);
-  const mono = await buildBytes(root, [shaker({ include: ['.'] })]);
+  const narrowed = await buildBytes(root, [shaker({ entries: ['.'], monomorphize: false })]);
+  const mono = await buildBytes(root, [shaker({ entries: ['.'] })]);
   return { control, narrowed, mono };
 }
 
@@ -187,8 +187,8 @@ describe('vite-plugin-svelte-shaker / monomorphization BYTE BENCH (the ground tr
     // The marker is the visible proof Heavy is in/out of the bundle.  value-set
     // narrowing keeps it (cannot kill the correlated `{#if}`); monomorphization
     // drops it (orphaned module).
-    const codeNarrowed = await buildCode(APP_A, [shaker({ include: ['.'], monomorphize: false })]);
-    const codeMono = await buildCode(APP_A, [shaker({ include: ['.'] })]);
+    const codeNarrowed = await buildCode(APP_A, [shaker({ entries: ['.'], monomorphize: false })]);
+    const codeMono = await buildCode(APP_A, [shaker({ entries: ['.'] })]);
     expect(codeNarrowed).toContain(HEAVY_MARK);
     expect(codeMono).not.toContain(HEAVY_MARK);
 

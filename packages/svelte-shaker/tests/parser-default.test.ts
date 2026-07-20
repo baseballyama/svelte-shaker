@@ -75,14 +75,14 @@ async function bundle(pre: unknown[]): Promise<string> {
 
 describe('vite-plugin-svelte-shaker: rsvelte is the default parser', () => {
   it('a bare shaker() loads the rsvelte native parser and shakes', async () => {
-    const code = await bundle([shaker({ include: ['.'] })]);
+    const code = await bundle([shaker({ entries: ['.'] })]);
     expect(loadRsvelte).toHaveBeenCalled(); // default reached for rsvelte
     expect(code).not.toMatch(IF_MACHINERY); // and shook the dead branch
     expect(code).toContain('This is Sub Component');
   });
 
   it("parser: 'svelte' opts out — svelte/compiler is used, rsvelte is never loaded", async () => {
-    const code = await bundle([shaker({ include: ['.'], parser: 'svelte' })]);
+    const code = await bundle([shaker({ entries: ['.'], parser: 'svelte' })]);
     expect(loadRsvelte).not.toHaveBeenCalled();
     expect(code).not.toMatch(IF_MACHINERY);
     expect(code).toContain('This is Sub Component');
@@ -90,14 +90,14 @@ describe('vite-plugin-svelte-shaker: rsvelte is the default parser', () => {
 
   it('default throws when @rsvelte/compiler cannot be loaded, pointing at the dependency and the opt-out', async () => {
     loadRsvelte.mockReturnValue(null); // simulate a broken install / wasm that won't instantiate
-    await expect(bundle([shaker({ include: ['.'] })])).rejects.toThrow(/@rsvelte\/compiler/);
+    await expect(bundle([shaker({ entries: ['.'] })])).rejects.toThrow(/@rsvelte\/compiler/);
     loadRsvelte.mockReturnValue(null);
-    await expect(bundle([shaker({ include: ['.'] })])).rejects.toThrow(/parser: "svelte"/);
+    await expect(bundle([shaker({ entries: ['.'] })])).rejects.toThrow(/parser: "svelte"/);
   });
 
   it("parser: 'svelte' still works when @rsvelte/compiler is unavailable (it is the fallback)", async () => {
     loadRsvelte.mockReturnValue(null);
-    const code = await bundle([shaker({ include: ['.'], parser: 'svelte' })]);
+    const code = await bundle([shaker({ entries: ['.'], parser: 'svelte' })]);
     expect(loadRsvelte).not.toHaveBeenCalled(); // opt-out never touches the rsvelte loader
     expect(code).not.toMatch(IF_MACHINERY);
   });

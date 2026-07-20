@@ -306,14 +306,14 @@ whole-program クロールは **`.svelte` しかパースしない**。よって
 
 この集合を埋める **フィーダーは 2 つ**（どちらも Shell 側。Engine は純データを受け取るだけ）：
 
-1. **非 `.svelte` モジュールの自動スキャン**：include 配下の `.js`/`.mjs`/`.cjs`/`.ts`/`.mts`/`.cts`/
+1. **非 `.svelte` モジュールの自動スキャン**：`entries` 配下の `.js`/`.mjs`/`.cjs`/`.ts`/`.mts`/`.cts`/
    `.jsx`/`.tsx`（`.svelte.[jt]s` を含む、`.d.ts` を除く）を走査し、静的 import・`export … from`・
    **リテラル**動的 `import('…')` のうち `.svelte` に解決される先を escape に加える。specifier 解決は
    クロールと同じ注入済み Resolve を再利用（bare は `node_modules` へも解決）。走査対象ファイル自体は
-   include 配下のみ（`node_modules` 内の `.ts` は対象外＝seed スキャンと同スコープ）。
+   `entries` 配下のみ（`node_modules` 内の `.ts` は対象外＝seed スキャンと同スコープ）。
    **非リテラル動的 import（`import(expr)`）は検出不能** — その穴を塞ぐのが次の `external`。
-2. **`external` オプション（ユーザー指定）**：スキャンが届かない消費者（`import(expr)`、include 外の
-   モジュール）への健全な逃げ道。`include` と同じ「ディレクトリ or ファイルのプレフィックス一致」基準
+2. **`external` オプション（ユーザー指定）**：スキャンが届かない消費者（`import(expr)`、`entries` 外の
+   モジュール）への健全な逃げ道。`entries` と同じ「ディレクトリ or ファイルのプレフィックス一致」基準
    （glob 非依存）でコンポーネントを **freeze** する。**A セマンティクス**：ファイルは解析対象に残り
    （その中のコールサイトは数え続ける）、当該コンポーネント**自身**の fold / unused 判定だけが止まる。
    「スキャンから外すフィルタ」ではない。
@@ -553,8 +553,8 @@ packages/
 
 ```ts
 shaker({
-  include,
-  exclude, // glob
+  entries, // クロールの起点ディレクトリ（glob 非対応。§8.1.1）
+  external, // 見えない消費者を持つコンポーネントを freeze（§4.2）
   dev: false, // dev でも走らせるか（既定 false = build のみ）
   monomorphize: { maxVariants: 8, minSavings: 0.15 }, // 既定 ON。false で OFF
   unsafe: { allowRestProps: false }, // bail を緩める脱出口
@@ -562,19 +562,36 @@ shaker({
 });
 ```
 
+#### 8.1.1 なぜ glob（`exclude` / パターン指定）を持たないのか
+
+`entries` は「処理対象ファイルのフィルタ」ではなく**クロールの起点**であり、`exclude` のような
+除外パターンはこの設計に接続しない（起点から到達したコンポーネントは、`node_modules` 内の
+ライブラリ component も含めて shake される — 起点集合はそれを狭めない）。glob を入れない理由は 2 つ：
+
+1. **失敗モードが一方向にしか倒れない。** 起点が広すぎても健全性は損なわれない（余分な `.svelte` が
+   コールサイト源として数えられるだけ）が、**覆い漏れ**は不可視のコールサイトを生み、prop の誤った
+   fold ＝無音の破壊になる。パターン言語は「意図せず狭める」操作を簡単にするだけで、安全側には効かない。
+2. **同じディレクトリ列が 2 つの異なる走査を駆動している。** `collectSvelteFiles` による `.svelte`
+   起点収集と、`collectNonSvelteModules` による**非 `.svelte` モジュールのエスケープスキャン**（§4.2）
+   である。`.svelte` 向けに書かれた glob は後者を表現できず、`external` で拾うべき消費者を静かに
+   取りこぼす — つまり glob は不健全側に倒れる。
+
+見えない消費者への逃げ道は `external` 一本に集約する（§4.2）。こちらも glob ではなく
+「ディレクトリ or ファイルのプレフィックス一致」で、`entries` と同じ基準である。
+
 **現状の実装サーフェス**（Vite `src/vite.ts`）：
 
 ```ts
 // unused-prop fold / constant fold / value-set narrowing + monomorphization
 // （既定。monomorphization は net-win ゲートで肥大しないので既定 ON）
-shaker({ include: ['.'] });
+shaker({ entries: ['.'] });
 
 // monomorphization を OFF（ビルドを速くする。圧縮率は少し落ちる）
-shaker({ include: ['.'], monomorphize: false });
+shaker({ entries: ['.'], monomorphize: false });
 
 // monomorphization を切らずにチューニング
-shaker({ include: ['.'], monomorphize: { maxVariants: 16 } });
-shaker({ include: ['.'], monomorphize: { minSavings: 0.15 } }); // >=15% 純減を要求
+shaker({ entries: ['.'], monomorphize: { maxVariants: 16 } });
+shaker({ entries: ['.'], monomorphize: { minSavings: 0.15 } }); // >=15% 純減を要求
 
 // エンジン直叩き（Shell 非依存）
 import { svelteShakerWithMono } from 'svelte-shaker';

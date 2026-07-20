@@ -146,7 +146,7 @@ async function collectExternalEscapes(
  * set into the components they FREEZE and the entries that matched NOTHING.  Each
  * entry is a Vite-root-relative or absolute path naming EITHER a component file
  * (exact match) OR a directory (every component under it) — the same "directory or
- * file prefix" basis as `include`, with no glob dependency.  An entry matching no
+ * file prefix" basis as `entries`, with no glob dependency.  An entry matching no
  * component is almost always a typo / wrong path (or a missing `.svelte`
  * extension), so it is returned in `unmatched` for the caller to surface rather
  * than being a silent no-op that leaves the intended component un-frozen.
@@ -199,13 +199,18 @@ export interface EscapeScanResult {
 }
 
 /**
- * Compute the {@link EscapeScanResult} from "include roots + resolver + component
+ * Compute the {@link EscapeScanResult} from "entry roots + resolver + component
  * set".  The one helper a Shell calls (the only escape-scan symbol re-exported from
  * `svelte-shaker/node`).
  */
 export async function computeEscapedComponents(opts: {
-  /** Absolute include roots (already resolved against the project root). */
-  includeDirs: string[];
+  /**
+   * Absolute crawl-entry roots (already resolved against the project root) — the
+   * Vite plugin's `entries`.  The SAME roots drive two different walks: collecting
+   * the `.svelte` crawl entries, and (here) collecting the non-`.svelte` modules to
+   * scan for call sites that escape the component graph.
+   */
+  entryDirs: string[];
   /** Project root, for resolving relative `external` entries. */
   root: string;
   /** User-declared `external` prefixes (root-relative or absolute), if any. */
@@ -216,7 +221,7 @@ export async function computeEscapedComponents(opts: {
   readFile: ReadFile;
 }): Promise<EscapeScanResult> {
   const { escaped, unscannable } = await collectExternalEscapes(
-    opts.includeDirs.flatMap(collectNonSvelteModules),
+    opts.entryDirs.flatMap(collectNonSvelteModules),
     opts.resolve,
     opts.readFile,
   );

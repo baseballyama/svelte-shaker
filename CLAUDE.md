@@ -63,8 +63,9 @@ pnpm all:check       # typecheck + lint + format:check
 - **Build-only by design.** The engine runs in `vite build`, not dev/HMR
   (whole-program analysis is incompatible with HMR locality). Dev is a
   pass-through.
-- **`include` must cover the whole app.** Prop elimination is only sound if every
-  call site is in scope.
+- **`entries` must cover the whole app.** It names the roots the component crawl
+  starts from, not a file filter. Prop elimination is only sound if every call
+  site is in scope.
 
 ---
 

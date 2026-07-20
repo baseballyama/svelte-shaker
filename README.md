@@ -67,9 +67,10 @@ import { shaker } from 'svelte-shaker/vite';
 
 export default defineConfig({
   plugins: [
-    // `include` must cover EVERY call site in the app, or prop elimination
-    // would be unsound. Defaults to the Vite root.
-    shaker({ include: ['src'] }),
+    // `entries` is where the component crawl STARTS, not a file filter. It
+    // must cover EVERY call site in the app, or prop elimination would be
+    // unsound. Defaults to the Vite root.
+    shaker({ entries: ['src'] }),
     svelte(),
   ],
 });
@@ -88,7 +89,8 @@ module); the engine takes an optional `parse` argument if you want to swap it.
 
 ```ts
 shaker({
-  include: ['src'], // dirs (relative to root) holding every .svelte call site
+  entries: ['src'], // dirs (relative to root) the crawl starts from; they must
+  // hold every .svelte call site in the app. Not a glob, not a filter.
   monomorphize: true, // default on; `false` disables it for faster builds,
   // or { maxVariants: 16, minSavings: 0.05 } to tune
   verbose: false, // true = per-file size breakdown after the build
@@ -178,8 +180,11 @@ The whole point is to **never change observable behavior**.
   unshaken; distribute via `svelte-package`.
 - **Build only** — whole-program analysis is incompatible with dev/HMR locality,
   so dev is always a pass-through.
-- **`include` must cover the whole app** — a call site outside the scanned dirs
-  is invisible, which would make prop elimination unsound.
+- **`entries` must cover the whole app** — the crawl starts there, and every
+  `.svelte` file it finds is a call-site source. A call site outside those roots
+  is invisible, so narrowing `entries` does not shake less, it shakes _wrongly_.
+  (Components reached _from_ the roots — including library ones in
+  `node_modules` — are crawled and shaken without being listed.)
 
 See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design and
 implementation status.

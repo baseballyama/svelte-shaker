@@ -79,7 +79,7 @@ describe('vite-plugin-svelte-shaker / CSS rule removal (end-to-end build)', () =
   });
 
   it('shaker: `.btn-danger`/`.btn-ghost` are removed, `.btn`/primary/secondary kept', async () => {
-    const css = await bundleCss([shaker({ include: ['.'] })]);
+    const css = await bundleCss([shaker({ entries: ['.'] })]);
     // We proved variant ∈ {primary,secondary}, so danger/ghost can never exist.
     expect(css).not.toContain('btn-danger');
     expect(css).not.toContain('btn-ghost');

@@ -78,7 +78,7 @@ afterAll(() => rmSync(BASE, { recursive: true, force: true }));
 
 describe('vite-plugin-svelte-shaker — external (.ts) call-site scan', () => {
   it('folds `p` away when NO .ts consumer passes it (baseline)', async () => {
-    const code = await bundle(join(BASE, 'nomount'), [shaker({ include: ['.'] })]);
+    const code = await bundle(join(BASE, 'nomount'), [shaker({ entries: ['.'] })]);
     // App renders <Widget/> with no `p`, and nothing else passes it → `p` folds to
     // false and the branch is removed at source, so no conditional is compiled.
     expect(code).not.toMatch(IF_MACHINERY);
@@ -87,7 +87,7 @@ describe('vite-plugin-svelte-shaker — external (.ts) call-site scan', () => {
   });
 
   it('keeps `p` when a .ts module mounts Widget with it (scan escapes the component)', async () => {
-    const code = await bundle(join(BASE, 'mount'), [shaker({ include: ['.'] })]);
+    const code = await bundle(join(BASE, 'mount'), [shaker({ entries: ['.'] })]);
     // main.ts mounts Widget with `p: true`; the scan sees that import and escapes
     // Widget, so the branch survives and Svelte compiles the conditional.
     expect(code).toMatch(IF_MACHINERY);
@@ -95,8 +95,8 @@ describe('vite-plugin-svelte-shaker — external (.ts) call-site scan', () => {
   });
 
   it('JS and Rust engines scan identically (byte-identical bundle)', async () => {
-    const js = await bundle(join(BASE, 'mount'), [shaker({ include: ['.'], engine: 'js' })]);
-    const rust = await bundle(join(BASE, 'mount'), [shaker({ include: ['.'], engine: 'rust' })]);
+    const js = await bundle(join(BASE, 'mount'), [shaker({ entries: ['.'], engine: 'js' })]);
+    const rust = await bundle(join(BASE, 'mount'), [shaker({ entries: ['.'], engine: 'rust' })]);
     expect(rust).toBe(js);
     expect(rust).toContain('P BRANCH');
   });
