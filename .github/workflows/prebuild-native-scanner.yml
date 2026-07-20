@@ -57,7 +57,7 @@ jobs:
       run:
         working-directory: packages/svelte-shaker/engine-scan-native
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # cargo unconditionally updates a git dependency's submodules, and rsvelte
       # has private SSH ecosystem-test submodules (`submodules/{vize,corsa-bind}`)
@@ -111,7 +111,7 @@ jobs:
           echo "binary: $bin -> $out"
           cp "$bin" "$out"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ matrix.target }}
           path: packages/svelte-shaker/engine-scan-native/*.node
@@ -128,10 +128,10 @@ jobs:
       run:
         working-directory: packages/svelte-shaker/engine-scan-native
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Do NOT set `registry-url` — it writes an (empty) `_authToken` into .npmrc and
       # forces token auth, blocking OIDC.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.18.0
       - name: Ensure OIDC-capable npm
@@ -141,7 +141,7 @@ jobs:
 
       # Collect every platform's `.node` next to index.cjs (the loader picks the
       # matching one at require time) and publish the single bundled package.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: packages/svelte-shaker/engine-scan-native/artifacts
       - name: Gather binaries
