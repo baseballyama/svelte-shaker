@@ -234,6 +234,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "compact_str"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79fcda08c33bb58b97008b2cdada6622500e949e060f5913361763121abd2416"
+dependencies = [
+ "castaway",
+ "cfg-if",
+ "itoa",
+ "serde",
+ "static_assertions",
+ "zmij",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1352,7 +1366,7 @@ version = "11.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fa374d03b255c070a32ae65b8a05231b8e658104d6ef22034c09da8fa0c2fd9"
 dependencies = [
- "compact_str",
+ "compact_str 0.9.1",
  "dashmap",
  "fast-glob",
  "indexmap",
@@ -1415,7 +1429,7 @@ version = "0.138.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8faf48e243cdacc96018515701bea560664a4cdef545c1fc50be139c0637db13"
 dependencies = [
- "compact_str",
+ "compact_str 0.9.1",
  "oxc-miette",
  "oxc_allocator 0.138.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "oxc_ast_macros 0.138.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1429,7 +1443,7 @@ name = "oxc_span"
 version = "0.138.0"
 source = "git+https://github.com/oxc-project/oxc?rev=39677ba50d908ea09f6d9e58ded328461212f52a#39677ba50d908ea09f6d9e58ded328461212f52a"
 dependencies = [
- "compact_str",
+ "compact_str 0.9.1",
  "oxc-miette",
  "oxc_allocator 0.138.0 (git+https://github.com/oxc-project/oxc?rev=39677ba50d908ea09f6d9e58ded328461212f52a)",
  "oxc_ast_macros 0.138.0 (git+https://github.com/oxc-project/oxc?rev=39677ba50d908ea09f6d9e58ded328461212f52a)",
@@ -1443,7 +1457,7 @@ version = "0.138.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7beac249fbb9815b974f1b1c2d22cb59be0c2a4a2ad42f1ee948e2600f4ff04c"
 dependencies = [
- "compact_str",
+ "compact_str 0.9.1",
  "hashbrown 0.17.1",
  "oxc_allocator 0.138.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "oxc_estree 0.138.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -1455,7 +1469,7 @@ name = "oxc_str"
 version = "0.138.0"
 source = "git+https://github.com/oxc-project/oxc?rev=39677ba50d908ea09f6d9e58ded328461212f52a#39677ba50d908ea09f6d9e58ded328461212f52a"
 dependencies = [
- "compact_str",
+ "compact_str 0.9.1",
  "hashbrown 0.17.1",
  "oxc_allocator 0.138.0 (git+https://github.com/oxc-project/oxc?rev=39677ba50d908ea09f6d9e58ded328461212f52a)",
  "oxc_estree 0.138.0 (git+https://github.com/oxc-project/oxc?rev=39677ba50d908ea09f6d9e58ded328461212f52a)",
@@ -1698,12 +1712,12 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "rsvelte_core"
 version = "0.7.17"
-source = "git+https://github.com/baseballyama/rsvelte?rev=c92f0ab70345f3da9824189372da1120b3a3997f#c92f0ab70345f3da9824189372da1120b3a3997f"
+source = "git+https://github.com/baseballyama/rsvelte?rev=12fb8cf25777370a8bd393171000ff4b6db3915a#12fb8cf25777370a8bd393171000ff4b6db3915a"
 dependencies = [
  "bumpalo",
  "chrono",
  "clap",
- "compact_str",
+ "compact_str 0.10.0",
  "im",
  "indexmap",
  "itoa",
@@ -1737,7 +1751,7 @@ dependencies = [
 [[package]]
 name = "rsvelte_esrap"
 version = "0.7.11"
-source = "git+https://github.com/baseballyama/rsvelte?rev=c92f0ab70345f3da9824189372da1120b3a3997f#c92f0ab70345f3da9824189372da1120b3a3997f"
+source = "git+https://github.com/baseballyama/rsvelte?rev=12fb8cf25777370a8bd393171000ff4b6db3915a#12fb8cf25777370a8bd393171000ff4b6db3915a"
 dependencies = [
  "oxc_allocator 0.138.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "oxc_ast 0.138.0 (registry+https://github.com/rust-lang/crates.io-index)",
