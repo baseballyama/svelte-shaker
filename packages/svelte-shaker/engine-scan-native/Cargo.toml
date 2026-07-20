@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # napi 2.16: the native function `scan` is synchronous and returns a JSON string.
-napi = { version = "2.16.17", default-features = false, features = ["napi8"] }
+napi = { version = "3.10.5", default-features = false, features = ["napi8"] }
 napi-derive = "2.16.13"
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
 rayon = "1.12.0"
@@ -22,7 +22,7 @@ rayon = "1.12.0"
 # pulled in. rsvelte is public, so cargo fetches it with no credentials. For local
 # dev against a side-by-side checkout, override with a `[patch]` in a local
 # `.cargo/config.toml` (uncommitted) pointing `rsvelte_core` at the path.
-rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "12fb8cf25777370a8bd393171000ff4b6db3915a", default-features = false }
+rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "852f80e27a442ea209a19b9f1e4339b62a5dbde2", default-features = false }
 
 # The Value-based analysis engine, reused verbatim (rlib): its
 # `find_never_passed_props` is already pinned byte-for-byte to the JS engine by
