@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@rsvelte/compiler": "0.6.1",
-    "magic-string": "0.30.21",
+    "magic-string": "1.0.0",
     "zimmerframe": "1.1.4"
   },
   "devDependencies": {
