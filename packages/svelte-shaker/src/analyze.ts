@@ -42,8 +42,10 @@ export type ReadFileSync = (id: ComponentId) => string;
  *    never be seen and is safe to drop;
  *  - `{ kind: 'all' }` — anything we cannot pin down: a `...rest` (captures
  *    undeclared inputs), an Identifier/Array binding (`let p = $props()`),
- *    more than one `$props()` call, or `$props()` outside a `let <pat> = …`
- *    declarator.  Then any input might be observed, so nothing is dropped.
+ *    more than one `$props()` call, `$props()` outside a `let <pat> = …`
+ *    declarator, or a component that observes slotted content outside `$props()`
+ *    — a legacy `<slot>` element or a `$$slots` read (both legal in runes mode).
+ *    Then any input might be observed, so nothing is dropped.
  */
 export type ReachableInputs = { kind: 'all' } | { kind: 'names'; names: Set<string> };
 
@@ -970,7 +972,13 @@ function buildModelFromInput(
     }
   }
 
-  const reachableInputs = computeReachableInputs(instance, props, hasRestProp, propsPattern);
+  const reachableInputs = computeReachableInputs(
+    instance,
+    props,
+    hasRestProp,
+    propsPattern,
+    usesLegacySlotInputs(ast),
+  );
   const childCalls = collectChildCalls(ast, imports);
   const { shadowedNames, debugNames, writtenNames } = collectTemplateBindings(
     ast,
@@ -2266,7 +2274,15 @@ function computeReachableInputs(
   props: PropDecl[] | null,
   hasRestProp: boolean,
   propsPattern: AnyNode | undefined,
+  usesSlotInputs: boolean,
 ): ReachableInputs {
+  // A legacy `<slot>` (or a bare `$$slots` read) observes slotted content —
+  // inputs that arrive OUTSIDE `$props()` (in Svelte 5 terms, the synthetic
+  // `children` input and named-slot / `let:` inputs a call site supplies as body
+  // content).  The `$props()` shape cannot model them, so the reverse pass must
+  // treat every input as observable, or it would delete the slot-carrying body at
+  // each call site.  This holds whether or not an instance script exists.
+  if (usesSlotInputs) return { kind: 'all' };
   // No instance script -> no `$props()` -> the component reads no input at all.
   if (!instance) return { kind: 'names', names: new Set() };
   const propsCalls = countPropsCalls(instance);
@@ -2282,6 +2298,36 @@ function computeReachableInputs(
   // attribute would be wrongly droppable.  Fall back to ALL when one is present.
   if (hasUnrepresentableKey(propsPattern)) return { kind: 'all' };
   return { kind: 'names', names: new Set(props.map((p) => p.name)) };
+}
+
+/** True when the component observes slotted content outside `$props()`: a legacy
+ * `<slot>` element, or a read of the `$$slots` identifier (legal in runes mode,
+ * unlike `$$props`/`$$restProps`).  Either signal means {@link
+ * computeReachableInputs} cannot model the inputs and must fall back to ALL.
+ * `$$slots` can appear in the instance script OR a template expression
+ * (`{#if $$slots.default}`), so both trees are scanned; its `$$` prefix cannot be
+ * a user binding, so no shadowing check is needed. */
+function usesLegacySlotInputs(ast: Root): boolean {
+  return (
+    nodeSignalsSlotInputs(ast.fragment) || (!!ast.instance && nodeSignalsSlotInputs(ast.instance))
+  );
+}
+
+function nodeSignalsSlotInputs(root: AnyNode): boolean {
+  let found = false;
+  walk<null>(root, null, {
+    SlotElement(_node, { stop }) {
+      found = true;
+      stop();
+    },
+    Identifier(node, { stop }) {
+      if (node.name === '$$slots') {
+        found = true;
+        stop();
+      }
+    },
+  });
+  return found;
 }
 
 /** True when a `$props()` ObjectPattern binds a prop whose external name is not a
