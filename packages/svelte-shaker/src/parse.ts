@@ -100,6 +100,97 @@ export function parseSvelte(code: string, filename: string): Root {
   return parse(code, { modern: true, filename }) as unknown as Root;
 }
 
+/** Matches every `</script` in module text (any case), the sequence that would
+ * otherwise close the {@link parseModuleProgram} wrapper early. */
+const CLOSING_SCRIPT = /<\/script/gi;
+
+/** What `CLOSING_SCRIPT` is rewritten to: a space after the `<` breaks the
+ * `</script\s*>` the Svelte parser scans for, while staying a recognizable
+ * marker so a corrupted specifier can be detected afterwards. */
+const NEUTRALIZED_SCRIPT = '< /script';
+
+/**
+ * Parse a plain `.js`/`.ts` module (NOT a `.svelte` component) and return its
+ * top-level ESTree Program, or `null` if it does not parse.  The engine has no
+ * standalone JS parser, so we reuse the Svelte parser via a `<script module
+ * lang="ts">` wrapper: `lang="ts"` is what lets a TypeScript barrel — `export
+ * type { … }`, type-only specifiers, annotations, the norm for a design-system
+ * `index.ts` — parse where a plain-JS parse would throw.
+ *
+ * The Svelte parser ends a `<script>` at the first `</script…>` it finds in the
+ * RAW text (`read_until(/<\/script\s*>/)`), so a valid module whose text merely
+ * MENTIONS `</script>` — in a comment, string, regex or template literal, as an
+ * HTML sanitizer or a markdown pipeline routinely does — would close the wrapper
+ * early and fail to parse (issue #146).  We break every `</script` in the body
+ * before wrapping by inserting a space after the `<`.  In valid JS/TS `</script`
+ * only ever occurs inside a comment or a string/regex/template literal (it is
+ * never part of executable syntax), so this alters only inert text — with ONE
+ * exception a caller does read: a module SPECIFIER that itself contains
+ * `</script` (`import x from './a</script>b.js'`).  Rewriting it would silently
+ * change which file it resolves to, turning a parse failure into a partial one
+ * (a missed escape / an unfollowed export).  Rather than claim such a specifier
+ * cannot exist, we detect a rewritten one after parsing and fail the whole
+ * module (return `null`), the same loud degrade a parse failure gives — the
+ * specifier is absurd (`<`/`>` are invalid in real paths and package names), so
+ * this only trades one conservative outcome for another.  The inserted spaces
+ * shift byte offsets, but no caller reads spans off this AST — only specifier
+ * names and string values.
+ *
+ * Returns `null` on a genuine parse failure (a JSX body, exotic/bleeding-edge
+ * TS) or a specifier the neutralization would corrupt: a call site hidden inside
+ * then goes unfollowed, which each caller handles conservatively (escape scan
+ * reports the file as unscannable; barrel-following leaves the barrel unfollowed).
+ */
+export function parseModuleProgram(code: string, filename: string): AnyNode | null {
+  const wrapped = `<script module lang="ts">\n${code.replace(CLOSING_SCRIPT, NEUTRALIZED_SCRIPT)}\n</script>`;
+  let program: AnyNode | null;
+  try {
+    program = parseSvelte(wrapped, filename).module?.content ?? null;
+  } catch {
+    return null; // unparseable — the caller decides how to degrade (see above)
+  }
+  // A specifier that carried `</script` was rewritten by the neutralization and
+  // no longer names the real module; degrade loudly rather than resolve a lie.
+  if (program && hasNeutralizedSpecifier(program)) return null;
+  return program;
+}
+
+/** True when any static import/export/dynamic-`import()` specifier string in
+ * `program` contains the {@link NEUTRALIZED_SCRIPT} marker — i.e. the source
+ * originally held `</script` and was rewritten by {@link parseModuleProgram}, so
+ * it can no longer be trusted to resolve. */
+function hasNeutralizedSpecifier(program: AnyNode): boolean {
+  let corrupted = false;
+  const check = (source: AnyNode | undefined): void => {
+    if (
+      source?.type === 'Literal' &&
+      typeof source.value === 'string' &&
+      source.value.includes(NEUTRALIZED_SCRIPT)
+    ) {
+      corrupted = true;
+    }
+  };
+  walk<null>(program, null, {
+    ImportDeclaration(node, { next }) {
+      check(node.source);
+      next();
+    },
+    ExportNamedDeclaration(node, { next }) {
+      check(node.source);
+      next();
+    },
+    ExportAllDeclaration(node, { next }) {
+      check(node.source);
+      next();
+    },
+    ImportExpression(node, { next }) {
+      check(node.source);
+      next();
+    },
+  });
+  return corrupted;
+}
+
 /**
  * Content-keyed parse cache: a hit returns the IDENTICAL AST for unchanged
  * source, so the dev engine re-parses only the files that actually changed

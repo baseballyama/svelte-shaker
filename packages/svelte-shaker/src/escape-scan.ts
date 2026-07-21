@@ -7,7 +7,7 @@
 // ----------------------------------------------------------------------
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parseSvelte, walk, type AnyNode } from './parse.js';
+import { parseModuleProgram, walk, type AnyNode } from './parse.js';
 import type { ComponentId } from './ir.js';
 import type { Resolve, ReadFile } from './analyze.js';
 import { compileDevOnly, type DevOnlyFilter } from './dev-only.js';
@@ -59,23 +59,16 @@ function collectNonSvelteModules(dir: string, devOnly: DevOnlyFilter, out: strin
  * Every module specifier a JS/TS module statically references: `import … from`,
  * `export … from` / `export *`, and a dynamic `import('…')` whose argument is a
  * STRING LITERAL.  A computed dynamic import (`import(expr)`) is unknowable here —
- * the `preserve` option (docs §4.2) is the sound fallback for it.  Parsed via the
- * Svelte parser's `<script module lang="ts">` wrapper (the same TS-capable parse
- * the engine's barrel-following uses).  Returns `null` when the module does NOT
- * parse — the wrapper handles TS but not JSX, and rejects some exotic syntax
- * (`.jsx`/`.tsx` bodies, bleeding-edge TS), and a parse failure hides any call site
- * inside, so the caller must surface it (a mounted component would go un-escaped);
- * `preserve` is the fix for that file.
+ * the `preserve` option (docs §4.2) is the sound fallback for it.  Parsed via
+ * {@link parseModuleProgram} (the same TS-capable parse the engine's
+ * barrel-following uses).  Returns `null` when the module does NOT parse — a JSX
+ * body or exotic/bleeding-edge TS the wrapper rejects — because a parse failure
+ * hides any call site inside, so the caller must surface it (a mounted component
+ * would go un-escaped); `preserve` is the fix for that file.
  */
 function moduleImportSpecifiers(code: string, id: ComponentId): string[] | null {
-  let module: AnyNode | null | undefined;
-  try {
-    module = parseSvelte(`<script module lang="ts">\n${code}\n</script>`, id).module;
-  } catch {
-    return null; // unparseable — the caller reports it (soundness hole, `preserve` fixes it)
-  }
-  const program = module?.content;
-  if (!program) return []; // parsed, no module body — nothing to follow (not a failure)
+  const program = parseModuleProgram(code, id);
+  if (program === null) return null; // unparseable — the caller reports it (`preserve` fixes it)
   const specs: string[] = [];
   const literalSource = (node: AnyNode | undefined): string | undefined =>
     node?.type === 'Literal' && typeof node.value === 'string' ? node.value : undefined;
