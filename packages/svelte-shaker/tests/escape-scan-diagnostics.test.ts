@@ -69,6 +69,116 @@ describe('computeEscapedComponents — structured diagnostics', () => {
   });
 });
 
+// ----------------------------------------------------------------------
+// Issue #146: a module whose TEXT mentions `</script>` (in a comment, string,
+// regex or template literal) must still be scanned.  The `<script module>`
+// wrapper the scan uses would otherwise close early on that text and drop a
+// perfectly valid file into `unscannable`.
+// ----------------------------------------------------------------------
+const BASE_146 = join(dirname(fileURLToPath(import.meta.url)), '.shaker-tmp-146');
+
+// The exact issue repro: `</script>` in a comment AND a regex, plus a string.
+const SANITIZER_TS = `// Turns </script> into an entity so it is inert in markup.
+export function sanitize(s: string): string {
+  return s.replaceAll('</script>', '&lt;/script&gt;').replace(/<\\/script\\s*>/gi, '');
+}
+import Widget from './Widget.svelte';
+export const w = Widget;
+`;
+
+// `</script>` inside a template literal.
+const TEMPLATE_TS = `export const page = \`<div></script></div>\`;
+import Tmpl from './Tmpl.svelte';
+export const t = Tmpl;
+`;
+
+// A `.svelte.ts` rune module that mentions `</script>` in its text.
+const RUNE_MODULE = `// a rune module that documents </script> handling
+import Rune from './Rune.svelte';
+export const child = Rune;
+`;
+
+// A genuinely broken module that also mentions `</script>`: neutralizing the
+// closing tag must not mask the real syntax error — it still lands unscannable.
+const BROKEN_WITH_TAG = `// mentions </script> but is not valid TS
+export const = ;
+`;
+
+// A specifier that ITSELF carries `</script`: the neutralization would rewrite it,
+// so the scan must degrade loudly (unscannable) rather than resolve a lie.
+const CORRUPT_SPEC_TS = `import x from './a</script>b.svelte';
+export const y = x;
+`;
+
+// Uppercase `</SCRIPT>` in the text — the neutralization is case-insensitive on
+// purpose, so this valid module must still scan and escape its `.svelte` import.
+const UPPER_TAG_TS = `// mentions </SCRIPT> in uppercase
+import Up from './Upper.svelte';
+export const u = Up;
+`;
+
+beforeAll(() => {
+  rmSync(BASE_146, { recursive: true, force: true });
+  mkdirSync(BASE_146, { recursive: true });
+  writeFileSync(join(BASE_146, 'sanitizer.ts'), SANITIZER_TS);
+  writeFileSync(join(BASE_146, 'template.ts'), TEMPLATE_TS);
+  writeFileSync(join(BASE_146, 'rune.svelte.ts'), RUNE_MODULE);
+  writeFileSync(join(BASE_146, 'broken.ts'), BROKEN_WITH_TAG);
+  writeFileSync(join(BASE_146, 'corrupt-spec.ts'), CORRUPT_SPEC_TS);
+  writeFileSync(join(BASE_146, 'upper.ts'), UPPER_TAG_TS);
+  writeFileSync(join(BASE_146, 'Widget.svelte'), WIDGET);
+  writeFileSync(join(BASE_146, 'Tmpl.svelte'), '<p>tmpl</p>\n');
+  writeFileSync(join(BASE_146, 'Rune.svelte'), '<p>rune</p>\n');
+  writeFileSync(join(BASE_146, 'Upper.svelte'), '<p>upper</p>\n');
+});
+afterAll(() => rmSync(BASE_146, { recursive: true, force: true }));
+
+describe('computeEscapedComponents — `</script>` in module text (issue #146)', () => {
+  async function scan(): Promise<Awaited<ReturnType<typeof computeEscapedComponents>>> {
+    return computeEscapedComponents({
+      entryDirs: [BASE_146],
+      root: BASE_146,
+      components: collectSvelteFiles(BASE_146),
+      resolve: fsResolve,
+      readFile: fsReadFile,
+    });
+  }
+
+  it('scans a module with `</script>` in a comment and a regex, escaping its `.svelte` import', async () => {
+    const result = await scan();
+    expect(result.escaped).toContain(join(BASE_146, 'Widget.svelte'));
+    expect(result.unscannable).not.toContain(join(BASE_146, 'sanitizer.ts'));
+  });
+
+  it('scans a module with `</script>` in a template literal', async () => {
+    const result = await scan();
+    expect(result.escaped).toContain(join(BASE_146, 'Tmpl.svelte'));
+    expect(result.unscannable).not.toContain(join(BASE_146, 'template.ts'));
+  });
+
+  it('scans a `.svelte.ts` rune module with `</script>` in its text', async () => {
+    const result = await scan();
+    expect(result.escaped).toContain(join(BASE_146, 'Rune.svelte'));
+    expect(result.unscannable).not.toContain(join(BASE_146, 'rune.svelte.ts'));
+  });
+
+  it('still reports a genuinely broken module (neutralizing the tag does not mask the error)', async () => {
+    const result = await scan();
+    expect(result.unscannable).toContain(join(BASE_146, 'broken.ts'));
+  });
+
+  it('reports a module whose specifier itself carries `</script` as unscannable (no silent corruption)', async () => {
+    const result = await scan();
+    expect(result.unscannable).toContain(join(BASE_146, 'corrupt-spec.ts'));
+  });
+
+  it('scans a module that mentions `</SCRIPT>` in uppercase (over-neutralization is harmless)', async () => {
+    const result = await scan();
+    expect(result.escaped).toContain(join(BASE_146, 'Upper.svelte'));
+    expect(result.unscannable).not.toContain(join(BASE_146, 'upper.ts'));
+  });
+});
+
 /** A Vite logger that records `warn` messages so we can assert the plugin surfaces
  * the scan diagnostics. Only `warn` matters; the rest are no-op stubs. */
 function recordingLogger(warnings: string[]): Logger {

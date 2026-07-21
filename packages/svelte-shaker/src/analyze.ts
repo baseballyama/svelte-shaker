@@ -1,6 +1,6 @@
 import {
   parseCached,
-  parseSvelte,
+  parseModuleProgram,
   walk,
   type AnyNode,
   type Parse,
@@ -2243,20 +2243,15 @@ function followLocalImport(
 }
 
 /**
- * Parse a `.js`/`.ts` module's top-level body by reusing the Svelte parser via a
- * `<script module>` wrapper (the engine has no standalone JS parser).  `lang="ts"`
- * is required so TypeScript barrels parse — `export type { … }`, type-only
- * specifiers and annotations are the norm for a design-system's `index.ts`, and a
- * plain JS parse throws on them, leaving the whole library unfollowed.  Returns
- * `null` if it cannot be parsed — callers then leave the barrel unfollowed.
+ * Parse a `.js`/`.ts` barrel's top-level body via {@link parseModuleProgram}
+ * (the engine has no standalone JS parser; the shared helper wraps the source in
+ * a `<script module lang="ts">` so TypeScript barrels — `export type { … }`,
+ * type-only specifiers — parse, and neutralizes any `</script>` in the text so a
+ * valid module that merely mentions it still parses, issue #146).  Returns `null`
+ * if it cannot be parsed — callers then leave the barrel unfollowed.
  */
 function parseModuleBody(code: string, id: ComponentId): AnyNode[] | null {
-  try {
-    const ast = parseSvelte(`<script module lang="ts">\n${code}\n</script>`, id);
-    return ast.module?.content?.body ?? null;
-  } catch {
-    return null;
-  }
+  return parseModuleProgram(code, id)?.body ?? null;
 }
 
 /**

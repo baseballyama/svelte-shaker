@@ -148,6 +148,25 @@ export { default as Lib } from './Lib.svelte';`,
     expect(out['/Lib.svelte']!).not.toContain('variant');
   });
 
+  it('follows a barrel whose text mentions `</script>` (issue #146)', async () => {
+    // The same `<script module>` wrapper the escape scan uses drives
+    // barrel-following, so a barrel that merely mentions `</script>` in a comment
+    // must still parse and be chased — otherwise the library goes unfollowed.
+    const files: Record<string, string> = {
+      '/App.svelte': `<script lang="ts">
+  import { Lib } from './ui.ts';
+</script>
+<Lib msg="hi" />`,
+      '/ui.ts': `// re-exports the design system; see the </script> note in the docs
+export { default as Lib } from './Lib.svelte';`,
+      '/Lib.svelte': NS_FILES['/Lib.svelte']!,
+    };
+    const { resolve, readFile } = memGraph(files);
+    const out = await svelteShaker('/App.svelte', resolve, readFile);
+    expect(out['/Lib.svelte']!).not.toContain('SECONDARY_ARM');
+    expect(out['/Lib.svelte']!).not.toContain('variant');
+  });
+
   it('bails when the namespace object itself escapes as a value', async () => {
     const files: Record<string, string> = {
       '/App.svelte': `<script lang="ts">
