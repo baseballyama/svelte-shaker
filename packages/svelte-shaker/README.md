@@ -54,10 +54,10 @@ binary). `parser: 'svelte'` falls back to svelte/compiler if you ever need it
 
 ## Usage (Vite)
 
-Add the plugin **before** `svelte()`. It runs only in `vite build` — dev/HMR is
-a pass-through by design. Out of the box it runs the native **Rust (WASM)
-engine** and parses with **rsvelte**; both fall back cleanly (see
-[Options](#options)).
+Add the plugin **before** `svelte()`. By default it runs only in `vite build` —
+dev/HMR is a pass-through (opt into dev shaking with the `dev` option, see
+[Options](#options)). Out of the box it runs the native **Rust (WASM) engine**
+and parses with **rsvelte**; both fall back cleanly (see [Options](#options)).
 
 ```ts
 // vite.config.ts
@@ -103,6 +103,9 @@ shaker({
   // out (e.g. if you ever hit a bug in it).
   engine: 'auto', // 'auto' (default: Rust/WASM, else JS) | 'js' | 'rust'
   parser: 'rsvelte', // 'rsvelte' (default) | 'svelte' (fallback)
+
+  dev: false, // default off: dev is a pass-through. 'incremental' (re-parse only
+  // changed files) | 'coarse' (re-analyze everything) opts in; never monomorphizes
 });
 ```
 
@@ -150,6 +153,14 @@ options that do exist. A typo would otherwise be ignored — and a misspelled
   can't (a broken install), the plugin **throws** rather than silently falling
   back — so the same source always shakes the same on every machine. Reinstall
   dependencies, or set `parser: 'svelte'`.
+- **`dev`** — whether to shake in `vite dev` too. **Off** by default: dev is a
+  pass-through, which is always correct and keeps HMR simple. Opt in with
+  `dev: 'incremental'` — re-parses only the changed files and re-runs the
+  whole-program fixpoint over a long-lived incremental engine (the intended mode)
+  — or `dev: 'coarse'`, which re-analyzes the whole program on every change (the
+  slow but trivially-correct safety valve). Monomorphization is **never** applied
+  in dev; only the always-on passes (unused-prop fold / constant fold / value-set
+  narrowing) run.
 - **`preserve`** — keep a component's **prop interface** exactly as written, because
   something the shake can't see passes props to it. What is preserved is the props,
   **not** the file's presence in the bundle: this is unrelated to Rollup/Vite's
@@ -236,8 +247,9 @@ The whole point is to **never change observable behavior**.
   scope.
 - **Needs `.svelte` source** — libraries shipping compiled JS pass through
   unshaken; distribute via `svelte-package`.
-- **Build only** — whole-program analysis is incompatible with dev/HMR locality,
-  so dev is always a pass-through.
+- **Build-first** — whole-program analysis is incompatible with dev/HMR locality,
+  so dev is a pass-through by default; opt into incremental dev shaking with the
+  `dev` option.
 - **`entries` must cover the whole app** — the crawl starts there, and every
   `.svelte` file it finds is a call-site source. A call site outside those roots
   is invisible, so narrowing `entries` does not shake less, it shakes _wrongly_.
