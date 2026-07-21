@@ -73,6 +73,67 @@
 import &#123; shaker &#125; from <span class="s">'svelte-shaker/vite'</span>;
 plugins: [shaker(&#123; entries: [<span class="s">'src'</span>] &#125;), svelte()]</pre>
   </section>
+
+  <section id="options" class="options">
+    <h2>Options</h2>
+    <p class="opt-sub">
+      Every key is optional. Only <code>entries</code> matters for most apps — it
+      must cover every call site. The rest tune speed and edge cases.
+    </p>
+    <div class="opt-scroll">
+      <dl class="opts">
+        <dt><code>entries</code></dt>
+        <dd>
+          <span class="def">Vite root</span> Dirs the component crawl starts from;
+          must reach every call site. Not an include filter.
+        </dd>
+        <dt><code>preserve</code></dt>
+        <dd>
+          <span class="def">[]</span> Components whose prop interface must stay as
+          written — a consumer the shake can't see passes props. Over-listing errs
+          safe.
+        </dd>
+        <dt><code>devOnly</code></dt>
+        <dd>
+          <span class="def">test/mock/story globs</span> Files that never ship;
+          their call sites stop counting. Replaces the default — spread
+          <code>DEFAULT_DEV_ONLY</code> to extend.
+        </dd>
+        <dt><code>monomorphize</code></dt>
+        <dd>
+          <span class="def">on</span> Per-call-site specialization behind a
+          measured net-win gate; never bloats. <code>false</code> for faster
+          builds.
+        </dd>
+        <dt><code>engine</code></dt>
+        <dd>
+          <span class="def">'auto'</span> Rust/WASM engine when loadable, else JS.
+          Byte-identical output either way.
+        </dd>
+        <dt><code>parser</code></dt>
+        <dd>
+          <span class="def">'rsvelte'</span> Soundness-neutral; <code>'svelte'</code>
+          is the fallback escape hatch.
+        </dd>
+        <dt><code>dev</code></dt>
+        <dd>
+          <span class="def">false</span> Dev is a pass-through; opt into
+          <code>'incremental'</code> or <code>'coarse'</code> dev shaking.
+        </dd>
+        <dt><code>verbose</code></dt>
+        <dd>
+          <span class="def">false</span> Print a per-file size breakdown after the
+          build.
+        </dd>
+      </dl>
+    </div>
+    <p class="opt-more">
+      Full reference:
+      <a href="https://github.com/baseballyama/svelte-shaker#options" target="_blank" rel="noreferrer"
+        >svelte-shaker options ↗</a
+      >
+    </p>
+  </section>
 </main>
 
 <style>
@@ -243,6 +304,61 @@ plugins: [shaker(&#123; entries: [<span class="s">'src'</span>] &#125;), svelte(
     color: var(--code-fg);
   }
 
+  .options {
+    padding-top: 72px;
+    scroll-margin-top: 64px;
+    max-width: 74ch;
+  }
+  .opt-sub {
+    margin: 10px 0 0;
+    max-width: 66ch;
+    color: var(--ink-dim);
+    font-size: 15px;
+    line-height: 1.7;
+  }
+  .opt-scroll {
+    margin-top: 22px;
+    overflow-x: auto;
+  }
+  .opts {
+    display: grid;
+    grid-template-columns: minmax(140px, max-content) 1fr;
+    gap: 0;
+    margin: 0;
+  }
+  .opts dt {
+    padding: 12px 20px 12px 0;
+    border-top: 1px solid var(--line);
+  }
+  .opts dd {
+    margin: 0;
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+    color: var(--ink-dim);
+    font-size: 14.5px;
+    line-height: 1.65;
+  }
+  .opts dt:first-of-type,
+  .opts dd:first-of-type {
+    border-top: none;
+  }
+  .opts .def {
+    display: inline-block;
+    margin-right: 8px;
+    padding: 1px 7px;
+    border: 1px solid var(--line-2);
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .opt-more {
+    margin: 22px 0 0;
+    color: var(--ink-faint);
+    font-size: 14.5px;
+  }
+
   @media (max-width: 760px) {
     .hero {
       flex-direction: column-reverse;
@@ -255,6 +371,19 @@ plugins: [shaker(&#123; entries: [<span class="s">'src'</span>] &#125;), svelte(
     }
     .hero-logo {
       width: 128px;
+    }
+    .opts {
+      grid-template-columns: 1fr;
+    }
+    .opts dt {
+      padding: 12px 0 4px;
+    }
+    .opts dd {
+      padding: 0 0 12px;
+      border-top: none;
+    }
+    .opts dt:first-of-type {
+      border-top: none;
     }
   }
 </style>

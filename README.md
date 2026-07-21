@@ -54,10 +54,10 @@ binary). `parser: 'svelte'` falls back to svelte/compiler if you ever need it
 
 ## Usage (Vite)
 
-Add the plugin **before** `svelte()`. It runs only in `vite build` — dev/HMR is
-a pass-through by design. Out of the box it runs the native **Rust (WASM)
-engine** and parses with **rsvelte**; both fall back cleanly (see
-[Options](#options)).
+Add the plugin **before** `svelte()`. By default it runs only in `vite build` —
+dev/HMR is a pass-through (opt into dev shaking with the `dev` option, see
+[Options](#options)). Out of the box it runs the native **Rust (WASM) engine**
+and parses with **rsvelte**; both fall back cleanly (see [Options](#options)).
 
 ```ts
 // vite.config.ts
@@ -91,6 +91,10 @@ module); the engine takes an optional `parse` argument if you want to swap it.
 shaker({
   entries: ['src'], // dirs (relative to root) the crawl starts from; they must
   // hold every .svelte call site in the app. Not a glob, not a filter.
+  preserve: [], // components whose props must never be folded (see below)
+  devOnly: [...], // glob patterns of files that never ship (tests, stories); they
+  // stop counting as call sites. Defaults to tests/mocks/stories; replaces, spread
+  // to extend.
   monomorphize: true, // default on; `false` disables it for faster builds,
   // or { maxVariants: 16, minSavings: 0.05 } to tune
   verbose: false, // true = per-file size breakdown after the build
@@ -99,8 +103,15 @@ shaker({
   // out (e.g. if you ever hit a bug in it).
   engine: 'auto', // 'auto' (default: Rust/WASM, else JS) | 'js' | 'rust'
   parser: 'rsvelte', // 'rsvelte' (default) | 'svelte' (fallback)
+
+  dev: false, // default off: dev is a pass-through. 'incremental' (re-parse only
+  // changed files) | 'coarse' (re-analyze everything) opts in; never monomorphizes
 });
 ```
+
+That list is exhaustive: any other key **fails the build**, naming the key and the
+options that do exist. A typo would otherwise be ignored — and a misspelled
+`preserve` ships the component you meant to protect, over-shaken.
 
 - **The defaults are the Rust path.** Out of the box svelte-shaker runs the
   native **Rust (WASM) engine** and parses with **rsvelte**, loaded from
@@ -142,6 +153,64 @@ shaker({
   can't (a broken install), the plugin **throws** rather than silently falling
   back — so the same source always shakes the same on every machine. Reinstall
   dependencies, or set `parser: 'svelte'`.
+- **`dev`** — whether to shake in `vite dev` too. **Off** by default: dev is a
+  pass-through, which is always correct and keeps HMR simple. Opt in with
+  `dev: 'incremental'` — re-parses only the changed files and re-runs the
+  whole-program fixpoint over a long-lived incremental engine (the intended mode)
+  — or `dev: 'coarse'`, which re-analyzes the whole program on every change (the
+  slow but trivially-correct safety valve). Monomorphization is **never** applied
+  in dev; only the always-on passes (unused-prop fold / constant fold / value-set
+  narrowing) run.
+- **`preserve`** — keep a component's **prop interface** exactly as written, because
+  something the shake can't see passes props to it. What is preserved is the props,
+  **not** the file's presence in the bundle: this is unrelated to Rollup/Vite's
+  `external`, and it never keeps a file out of the bundle or out of the analysis.
+
+  You need it when the consumer lives outside the `.svelte` graph and the shaker
+  can't observe the call site — a `mount()` behind a **non-literal** dynamic
+  `import(expr)`, or a module outside the `entries` roots. Consumers reached by a
+  static import, `export … from`, or a **literal** `import('./X.svelte')` are found
+  by the plugin's own scan of your non-`.svelte` modules, so a plain
+  `mount(Component, { props })` is already handled for you.
+
+  Each entry is a root-relative or absolute path naming a component file (with its
+  `.svelte` extension) or a directory of them (same path-prefix basis as `entries`).
+  The file stays fully analyzed and its own call sites still count toward its
+  children — only that component's own prop folding is turned off. It is not a
+  scan-exclusion filter.
+
+  **When in doubt, list it.** Unlike `entries`, over-listing errs safe: a component
+  preserved without needing it is just shaken less, never wrongly.
+
+  The build **warns** (with the file path) about any module the scan couldn't
+  parse — so a mounted component isn't silently left unprotected — and about
+  `preserve` entries that matched no component.
+- **`devOnly`** — glob patterns (matched with
+  [`picomatch`](https://github.com/micromatch/picomatch) against each file's path
+  relative to the Vite root) naming files that **never ship in the production
+  bundle** — colocated tests, mocks, Storybook stories. A matched file **stops
+  counting as a component consumer** in **both directory scans** (the `.svelte` seed
+  scan and the non-`.svelte` escape scan), so a `Foo.test.svelte` or a
+  `Button.test.ts` can no longer pessimize the shake. It defaults to:
+
+  ```ts
+  // the built-in default (import DEFAULT_DEV_ONLY to extend it)
+  devOnly: ['**/*.test.*', '**/*.spec.*', '**/__tests__/**', '**/__mocks__/**', '**/*.stories.*'];
+  ```
+
+  Passing `devOnly` **replaces** this list (predictable semantics) — spread it to
+  extend: `devOnly: [...DEFAULT_DEV_ONLY, 'src/dev/**']` (import `DEFAULT_DEV_ONLY`
+  from `svelte-shaker/vite`). Pass `devOnly: []` to count every file (the pre-`devOnly`
+  behavior).
+
+  **List only files that never ship.** A matched file isn't excluded from the shake —
+  one the app actually imports is still crawled and shaken; it just stops _counting_
+  as a call site. So a file that really ships but matches a pattern (a `+page.svelte`
+  under a route dir named `__tests__`) has its distinct prop values stop blocking
+  folds, the same failure mode as leaving it out of `entries` — which is why the
+  defaults are narrow. See
+  [`docs/ARCHITECTURE.md` §8.1.1](./docs/ARCHITECTURE.md)
+  for the full argument.
 
 ## What it removes
 
@@ -178,13 +247,20 @@ The whole point is to **never change observable behavior**.
   scope.
 - **Needs `.svelte` source** — libraries shipping compiled JS pass through
   unshaken; distribute via `svelte-package`.
-- **Build only** — whole-program analysis is incompatible with dev/HMR locality,
-  so dev is always a pass-through.
+- **Build-first** — whole-program analysis is incompatible with dev/HMR locality,
+  so dev is a pass-through by default; opt into incremental dev shaking with the
+  `dev` option.
 - **`entries` must cover the whole app** — the crawl starts there, and every
   `.svelte` file it finds is a call-site source. A call site outside those roots
   is invisible, so narrowing `entries` does not shake less, it shakes _wrongly_.
-  (Components reached _from_ the roots — including library ones in
-  `node_modules` — are crawled and shaken without being listed.)
+  (Components reached _from_ the roots — including library ones in `node_modules`
+  — are crawled and shaken without being listed.) Call sites in `.ts`/`.js`
+  modules under the roots (e.g. `mount(Component, { props })`) are scanned and the
+  component's props are kept automatically; a **non-literal** dynamic `import(expr)`
+  can't be followed, so reach for `preserve` there. That scan covers modules
+  **under the `entries` roots only** — a library that mounts its own component
+  from its own bundled `.js`/`.ts` inside `node_modules` is not scanned, so list
+  it in `preserve` (with its resolved path) if you hit that.
 
 See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design and
 implementation status.
