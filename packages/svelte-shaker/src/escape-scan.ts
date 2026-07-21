@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import { parseSvelte, walk, type AnyNode } from './parse.js';
 import type { ComponentId } from './ir.js';
 import type { Resolve, ReadFile } from './analyze.js';
+import { compileDevOnly, type DevOnlyFilter } from './dev-only.js';
 
 /**
  * The non-`.svelte` module extensions we scan for `.svelte` call sites (docs
@@ -35,23 +36,23 @@ export function isScannableModule(file: string): boolean {
  * Recursively collect every non-`.svelte` module under `dir` (skipping
  * `node_modules` and dot-directories, mirroring `collectSvelteFiles`).  Same
  * include scope as the seed scan — `.ts` inside `node_modules` is deliberately NOT
- * scanned (docs §4.2).
+ * scanned (docs §4.2).  `devOnly` drops modules that never ship (a `Button.test.ts`)
+ * so a colocated test does not mark the component it imports escaped (docs §8.1.1);
+ * it is the SAME predicate the seed scan uses, so both scans discount the same files.
  */
-function collectNonSvelteModules(dir: string): string[] {
-  const out: string[] = [];
+function collectNonSvelteModules(dir: string, devOnly: DevOnlyFilter, out: string[]): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
-    return out;
+    return;
   }
   for (const entry of entries) {
     if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...collectNonSvelteModules(full));
-    else if (entry.isFile() && isScannableModule(entry.name)) out.push(full);
+    if (entry.isDirectory()) collectNonSvelteModules(full, devOnly, out);
+    else if (entry.isFile() && isScannableModule(entry.name) && !devOnly(full)) out.push(full);
   }
-  return out;
 }
 
 /**
@@ -217,14 +218,20 @@ export async function computeEscapedComponents(opts: {
   preserve?: string[] | undefined;
   /** The crawled `.svelte` component ids, for matching `preserve` prefixes. */
   components: Iterable<ComponentId>;
+  /**
+   * Dev-only files to discount in the escape scan (docs §8.1.1) — the SAME predicate
+   * the seed scan (`collectSvelteFiles`) applies, so a `Button.test.ts` neither seeds
+   * a component nor escapes one.  Omitted, it defaults to {@link DEFAULT_DEV_ONLY}
+   * matched relative to `root`.  Pass `compileDevOnly(root, [])` to scan everything.
+   */
+  devOnly?: DevOnlyFilter | undefined;
   resolve: Resolve;
   readFile: ReadFile;
 }): Promise<EscapeScanResult> {
-  const { escaped, unscannable } = await collectModuleEscapes(
-    opts.entryDirs.flatMap(collectNonSvelteModules),
-    opts.resolve,
-    opts.readFile,
-  );
+  const devOnly = opts.devOnly ?? compileDevOnly(opts.root);
+  const modules: string[] = [];
+  for (const dir of opts.entryDirs) collectNonSvelteModules(dir, devOnly, modules);
+  const { escaped, unscannable } = await collectModuleEscapes(modules, opts.resolve, opts.readFile);
   const { matched, unmatched } = partitionPreserve(opts.preserve, opts.root, opts.components);
   for (const id of matched) escaped.add(id);
   return {

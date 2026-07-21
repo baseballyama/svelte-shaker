@@ -10,6 +10,10 @@ import {
   isScannableModule,
   type EscapeScanResult,
 } from './escape-scan.js';
+import { compileDevOnly } from './dev-only.js';
+
+// Re-export so a user can extend the default dev-only list: `devOnly: [...DEFAULT_DEV_ONLY, '…']`.
+export { DEFAULT_DEV_ONLY } from './dev-only.js';
 import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono.js';
 import { tryLoadRsvelteParser } from './rsvelte-parse.js';
 import { svelteShakerWasm, svelteShakerWasmWithMono, tryLoadWasmEngine } from './wasm-engine.js';
@@ -66,6 +70,35 @@ export interface ShakerOptions {
    * without needing it is merely shaken less, never wrongly.
    */
   preserve?: string[];
+  /**
+   * Glob patterns naming files that are DEV-ONLY — they never ship in the production
+   * bundle (colocated tests, mocks, Storybook stories), so their call sites must not
+   * count toward the shake.  A matched file stops counting as a component consumer in
+   * BOTH directory scans (the `.svelte` seed scan and the non-`.svelte` escape scan);
+   * patterns are matched with `picomatch` against the posix-normalized path relative
+   * to the Vite root.  Defaults to {@link DEFAULT_DEV_ONLY}.
+   *
+   * List ONLY files that never ship: the option declares a property of the files,
+   * which is exactly the soundness contract that makes discounting them safe.  A
+   * matched file is NOT excluded from the shake — a dev-only `.svelte` file the app
+   * actually imports is still crawled and shaken through the normal import graph, so
+   * its genuine app call sites still count.  This only removes it as a SEED / ESCAPE
+   * source; it cannot un-cover reachable app code.
+   *
+   * The failure mode to avoid: a matched file's call sites simply STOP COUNTING.  So
+   * if a file that really ships matches a pattern — a `+page.svelte` under a route
+   * dir named `__tests__`, a `foo.test.utils.ts` that mounts a component — the
+   * distinct prop values it passes no longer block a fold, exactly as if you had left
+   * it out of {@link entries}.  That is why the defaults are narrow, convention-based
+   * patterns rather than an open glob (see docs/ARCHITECTURE.md §8.1.1).  It is
+   * unrelated to {@link preserve}: that keeps a shipping component's props as written;
+   * this declares that a file is not part of the production graph at all.
+   *
+   * Passing `devOnly` REPLACES the default rather than adding to it (predictable
+   * semantics); extend it with `[...DEFAULT_DEV_ONLY, '…']`, and pass `devOnly: []` to
+   * count every file (the pre-`devOnly` behavior).
+   */
+  devOnly?: string[];
   /**
    * Per-call-site monomorphization tuning (docs §13.2).  Monomorphization is ON
    * by default because it is bail-safe and never bloats (the measured net-win
@@ -268,6 +301,7 @@ const RENAMED_OPTIONS: Record<string, string> = {
 const KNOWN_OPTIONS = {
   entries: true,
   preserve: true,
+  devOnly: true,
   monomorphize: true,
   engine: true,
   dev: true,
@@ -421,9 +455,13 @@ export function shaker(options: ShakerOptions = {}): Plugin {
     async configureServer(server) {
       if (!devMode) return;
       const dirs = (options.entries ?? ['.']).map((p) => path.resolve(root, p));
+      // One dev-only predicate for the whole dev session, compiled against the Vite
+      // root so custom patterns are root-relative regardless of which entry dir a
+      // file sits under.  Fed to both scans and the watch guards below (docs §8.1.1).
+      const isDevOnly = compileDevOnly(root, options.devOnly);
       // The engine's entry components, collected from the entry DIRS: `entries`
       // names the roots to crawl from, these are the `.svelte` files under them.
-      const entryComponents = dirs.flatMap(collectSvelteFiles);
+      const entryComponents = dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly));
       const read = (id: ComponentId) => fs.readFileSync(id, 'utf-8');
       const underDirs = (file: string): boolean =>
         dirs.some((d) => file === d || file.startsWith(d + path.sep));
@@ -440,6 +478,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
           root,
           preserve: options.preserve,
           components: entryComponents,
+          devOnly: isDevOnly,
           resolve: fsResolve,
           readFile: read,
         });
@@ -472,7 +511,11 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       // un-shake a child; a removed one can re-shake it — docs §4).  Re-shake and
       // full-reload: over-invalidation is always sound, and add/remove is rare
       // enough that fine-grained HMR for it is not worth the complexity here.
-      const isOurs = (file: string): boolean => file.endsWith('.svelte') && underDirs(file);
+      // Dev-only files are discounted by both scans, so an edit to one never moves
+      // the shake — skip them here too, or a `Foo.test.svelte` save would retrigger a
+      // full re-shake for no effect.
+      const isOurs = (file: string): boolean =>
+        file.endsWith('.svelte') && underDirs(file) && !isDevOnly(file);
       const onGraphChange = async (file: string, kind: 'added' | 'removed'): Promise<void> => {
         if (!devShaker || !isOurs(file)) return;
         applyDelta(await devShaker.update({ [kind]: [file] }));
@@ -486,7 +529,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       // we re-shake and full-reload (over-invalidation is sound, but pointless
       // reloads on unrelated `.ts` edits are avoided).
       const onModuleChange = async (file: string): Promise<void> => {
-        if (!devShaker || !isScannableModule(file) || !underDirs(file)) return;
+        if (!devShaker || !isScannableModule(file) || !underDirs(file) || isDevOnly(file)) return;
         const before = escapedKey;
         devShaker.setEscaped(await currentEscaped());
         if (escapedKey === before) return;
@@ -530,9 +573,12 @@ export function shaker(options: ShakerOptions = {}): Plugin {
     async buildStart() {
       if (devShaker) return;
       const dirs = (options.entries ?? ['.']).map((p) => path.resolve(root, p));
+      // One dev-only predicate for both scans, compiled against the Vite root so
+      // custom patterns are root-relative regardless of the entry dir (docs §8.1.1).
+      const isDevOnly = compileDevOnly(root, options.devOnly);
       // The engine's entry components, collected from the entry DIRS: `entries`
       // names the roots to crawl from, these are the `.svelte` files under them.
-      const entryComponents = dirs.flatMap(collectSvelteFiles);
+      const entryComponents = dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly));
       if (entryComponents.length === 0) {
         shaken = {};
         variantSources = new Map();
@@ -570,6 +616,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         root,
         preserve: options.preserve,
         components: entryComponents,
+        devOnly: isDevOnly,
         resolve,
         readFile: read,
       });
