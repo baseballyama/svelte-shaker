@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Parse, Root } from './parse.js';
+import { remapRsvelteOffsets } from './rsvelte-utf16.js';
 
 // NODE-ONLY: loads rsvelte's parser from `@rsvelte/compiler` — rsvelte's
 // parser/compiler shipped as a `wasm-pack --target web` WASM module. It is a
@@ -41,9 +42,10 @@ function loadCompiler(): RsvelteCompiler {
  * rsvelte is the default parser, the caller THROWS on `null` rather than silently
  * using svelte/compiler; `parser: 'svelte'` is the explicit opt-out.
  *
- * The AST carries per-node `loc` (there is no option to drop it), but the engine
- * reads only UTF-16 `start`/`end`, never `loc`, so the parser choice can never
- * change the shaken output — only which parser produced the identical tree.
+ * rsvelte reports positions as UTF-8 *byte* offsets, but the engine expects
+ * svelte/compiler's UTF-16 *code-unit* offsets, so {@link remapRsvelteOffsets}
+ * rewrites them before the AST leaves this function — without it, a multibyte
+ * character ahead of an edit desyncs the transform (see `rsvelte-utf16.ts`).
  * A genuine parse error on a specific file is a real failure and PROPAGATES; only
  * a load/init failure returns `null`.
  */
@@ -57,6 +59,6 @@ export function tryLoadRsvelteParser(): Parse | null {
   return (code) => {
     const result = compiler.parse_svelte(code);
     if (!result.success) throw new Error(`rsvelte parse failed: ${result.error ?? 'unknown'}`);
-    return JSON.parse(result.ast) as Root;
+    return remapRsvelteOffsets(JSON.parse(result.ast) as Root, code);
   };
 }
