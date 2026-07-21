@@ -120,8 +120,8 @@ importers:
   packages/svelte-shaker:
     dependencies:
       '@rsvelte/compiler':
-        specifier: 0.6.1
-        version: 0.6.1
+        specifier: 0.8.1
+        version: 0.8.1
       magic-string:
         specifier: 1.0.0
         version: 1.0.0
@@ -900,8 +900,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@rsvelte/compiler@0.6.1':
-    resolution: {integrity: sha512-pQWa3Z4d9AeS/Jdi0UIpDIwyXXs+feSDzFvLdx71pOMuFY81xxdNNNAgk4yMb4CNyhSOB7udTCzEinx544lzpQ==}
+  '@rsvelte/compiler@0.8.1':
+    resolution: {integrity: sha512-0ZwVPEttTfwU2cjiDPQsdHDnvEqxsIDVJ4pst42l/0mrIr8KE8Knw+gUICPR7o77WFfajpsO2Ry39QBV91cAzw==}
 
   '@rsvelte/svelte-check-darwin-arm64@0.3.10':
     resolution: {integrity: sha512-3arx5sb+Iazwlcj55Sk8pRq8eG09+oGckbv9ko99edQWa9ZF2xyjU56mcP7ar5TDhprSF2xGdn3XhRNM1JaNnQ==}
@@ -1317,15 +1317,6 @@ packages:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
 
-  debug@4.4.3:
-    resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
-    engines: {node: '>=6.0'}
-    peerDependencies:
-      supports-color: '*'
-    peerDependenciesMeta:
-      supports-color:
-        optional: true
-
   deepmerge@4.3.1:
     resolution: {integrity: sha512-3sUqbMEc77XqpdNO7FRyRog+eW3ph+GYCbj+rK+uYyRMuwsVy0rMiVtPn+QJlKFvWP/1PYpapqYn0Me2knFn+A==}
     engines: {node: '>=0.10.0'}
@@ -1631,9 +1622,6 @@ packages:
   mrmime@2.0.1:
     resolution: {integrity: sha512-Y3wQdFg2Va6etvQ5I82yUhGdsKrcYox6p7FfL1LbK2J4V01F9TGlepTIhnK24t7koZibmg82KGglhA1XK5IsLQ==}
     engines: {node: '>=10'}
-
-  ms@2.1.3:
-    resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
   nanoid@3.3.16:
     resolution: {integrity: sha512-bzlKTyNJ7+LdGIIwy8ijFpIqEQIvafahV7eYykJ8Cvh42EdJeODoJ6gUJXpQJvej1BddH8OqTXZNE/KfbWAu8Q==}
@@ -2620,7 +2608,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@rsvelte/compiler@0.6.1': {}
+  '@rsvelte/compiler@0.8.1': {}
 
   '@rsvelte/svelte-check-darwin-arm64@0.3.10':
     optional: true
@@ -2962,10 +2950,6 @@ snapshots:
       shebang-command: 2.0.0
       which: 2.0.2
 
-  debug@4.4.3:
-    dependencies:
-      ms: 2.1.3
-
   deepmerge@4.3.1: {}
 
   dequal@2.0.3: {}
@@ -3266,8 +3250,6 @@ snapshots:
   mri@1.2.0: {}
 
   mrmime@2.0.1: {}
-
-  ms@2.1.3: {}
 
   nanoid@3.3.16: {}
 

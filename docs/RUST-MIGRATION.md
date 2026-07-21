@@ -353,8 +353,9 @@ parse 速度優位がフルでは消える**ことが分かった（`tests/_benc
   さらに WASM の AST は全ノードに `loc` を含み、それを落とすオプションが無い（native の `skipExpressionLoc` 相当なし）ため、
   エンジンの walk 肥大でフルは parse 以上に沈む見込み。**「速度が必要なら現状 `parser: 'svelte'`（svelte/compiler）が最速」**。
 - **健全性は中立で不変**。engine は UTF-16 `start`/`end` のみ参照（`loc` 不使用）なので、どのパーサでも出力は変わらない。
-  `tests/rsvelte-diff.test.ts` が WASM `@rsvelte/compiler` 駆動で全 fixture の shake 出力が svelte/compiler と byte 一致
-  （既知の TS 型ノード差を除き SSR 等価）を差分検証済み。
+  `tests/rsvelte-diff.test.ts` が WASM `@rsvelte/compiler`（0.7 以降、現行 0.8.1）駆動で全 fixture の shake 出力が svelte/compiler と
+  byte 一致を差分検証済み（0.6 に残っていた inline TS 型ノード差は 0.7 で解消。同じく 0.6 の UTF-8 byte offset も 0.7 で
+  UTF-16 化され、ローダーの remap は不要になり撤去）。
 - **ローダー**: `src/rsvelte-parse.ts` が `@rsvelte/compiler` を `initSync`（wasm bytes）→ `parse_svelte` で読む。node 専用
   （vite entry 同梱）という境界は不変。ロード失敗時の throw + `parser:'svelte'` 誘導は防衛として維持（dependency 化で失敗は稀）。
 - **envelope / native 系の高速路（1.46x）は将来の再検討余地**として上の記録に残すが、現行の既定は WASM。速度を取り戻すには
