@@ -148,15 +148,18 @@ describe('values `JSON.stringify` cannot faithfully represent', () => {
     expect(shaken['/App.svelte']).toContain('n={-0}');
   });
 
-  it('a numeric literal too large for JSON transport stays unfolded', async () => {
-    // `1e999` IS `Infinity`, but an AST that crossed a JSON boundary (rsvelte)
-    // reports it as `value: null` — indistinguishable from a real `null` except
-    // by `raw`. Unprovable beats guessing wrong, so it is simply not folded.
+  it('folds a numeric literal that overflows to Infinity, and never to `null`', async () => {
+    // `1e999` IS `Infinity`, so under the default parser it folds — to the
+    // faithful `(1/0)`, not the `null` that `JSON.stringify(Infinity)` yields.
+    // (Under rsvelte the AST crosses a JSON boundary and the literal arrives as
+    // `value: null`, where it must stay UNFOLDED instead — covered at the
+    // `evaluate` level in eval.test.ts.)
     const files = {
       '/App.svelte': `<script>\n  import Child from './Child.svelte';\n</script>\n<Child n={1e999} />`,
       '/Child.svelte': `<script>\n  let { n } = $props();\n</script>\n<p>{n}</p>`,
     };
     const shaken = await shakeAndCompare(files);
+    expect(shaken['/Child.svelte']).toContain('(1/0)');
     expect(shaken['/Child.svelte']).not.toContain('null');
   });
 
