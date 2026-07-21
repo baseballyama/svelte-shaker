@@ -250,26 +250,26 @@ function fixpointIterationBound(componentCount: number): number {
 const ESCAPE_REASON = 'escapes as value (e.g. <svelte:component this={X}>)';
 
 /** Bail reason stamped on a component with a consumer OUTSIDE the analyzed
- * `.svelte` graph — a `.ts`/`.js` call site the crawl cannot parse, or a
- * user-declared `preserve` (docs §4.2, {@link AnalyzeInput.escaped}).  Kept
- * byte-identical to the Rust engine's constant so the two agree. */
-const EXTERNAL_ESCAPE_REASON = 'has a consumer outside the analyzed .svelte graph';
+ * `.svelte` graph — a call site in a non-`.svelte` module the crawl cannot
+ * parse, or a user-declared `preserve` (docs §4.2, {@link AnalyzeInput.escaped}).
+ * Kept byte-identical to the Rust engine's constant so the two agree. */
+const MODULE_ESCAPE_REASON = 'has a consumer outside the analyzed .svelte graph';
 
 /**
- * Stamp {@link EXTERNAL_ESCAPE_REASON} on every model in `escaped` that exists in
+ * Stamp {@link MODULE_ESCAPE_REASON} on every model in `escaped` that exists in
  * the program — the single injection point both the whole-program shake and
  * {@link findNeverPassedProps} share (docs §4.2).  Ids not in the program are
- * ignored (a stale `preserve` entry or a scanned `.ts` import to a component
- * outside the crawl is simply a no-op, never an error).
+ * ignored (a stale `preserve` entry or a scanned import to a component outside
+ * the crawl is simply a no-op, never an error).
  */
-function stampExternalEscapes(
+function stampModuleEscapes(
   models: Map<ComponentId, FileModel>,
   escaped: ComponentId[] | undefined,
 ): void {
   for (const id of escaped ?? []) {
     const model = models.get(id);
-    if (model && !model.bailReasons.includes(EXTERNAL_ESCAPE_REASON))
-      model.bailReasons.push(EXTERNAL_ESCAPE_REASON);
+    if (model && !model.bailReasons.includes(MODULE_ESCAPE_REASON))
+      model.bailReasons.push(MODULE_ESCAPE_REASON);
   }
 }
 
@@ -318,9 +318,10 @@ export function analyzeInput(input: AnalyzeInput, parseCache?: ParseCache): Anal
     const model = models.get(id);
     if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
   }
-  // Components with consumers outside the `.svelte` graph (a `.ts`/`.js` call site
-  // or a user `preserve`, docs §4.2) join the same whole-component escape bail.
-  stampExternalEscapes(models, input.escaped);
+  // Components with consumers outside the `.svelte` graph (a call site in a
+  // non-`.svelte` module or a user `preserve`, docs §4.2) join the same
+  // whole-component escape bail.
+  stampModuleEscapes(models, input.escaped);
 
   return { models, plans: planFixpoint(models) };
 }
@@ -805,8 +806,9 @@ export interface UnpassedProp {
  *    spread that could set it (`readCallSite` already folds `bind:`, known
  *    spreads, and `children`/snippet body into `explicit`/`hadSpread`);
  *  - a component in `input.escaped` — one the Shell knows has a consumer OUTSIDE
- *    the `.svelte` graph (a `.ts`/`.js` call site, or a user `preserve`, docs
- *    §4.2) — is skipped, because that consumer may pass a prop the crawl cannot see.
+ *    the `.svelte` graph (a call site in a non-`.svelte` module, or a user
+ *    `preserve`, docs §4.2) — is skipped, because that consumer may pass a prop
+ *    the crawl cannot see.
  *
  * Missing a `.svelte` EDGE (e.g. an unfollowed barrel) only DROPS call sites, so it
  * can only make this UNDER-report (the component looks unused and is skipped). The
@@ -824,9 +826,10 @@ export function findNeverPassedProps(input: AnalyzeInput): Map<ComponentId, Unpa
     const model = models.get(id);
     if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
   }
-  // External consumers (`.ts`/`.js` call sites or `preserve`) escape too, so a prop
-  // they pass is never mis-reported as never-passed (docs §4.2).
-  stampExternalEscapes(models, input.escaped);
+  // Consumers outside the `.svelte` graph (non-`.svelte` module call sites or
+  // `preserve`) escape too, so a prop they pass is never mis-reported as
+  // never-passed (docs §4.2).
+  stampModuleEscapes(models, input.escaped);
 
   // Every textual call site counts (no cascade dead-span filtering): a prop passed
   // only at a folded-away site is still author-written, so we do not flag it.

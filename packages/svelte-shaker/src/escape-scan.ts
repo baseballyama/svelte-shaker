@@ -113,7 +113,7 @@ function moduleImportSpecifiers(code: string, id: ComponentId): string[] | null 
  * A module that cannot be read or parsed is collected into `unscannable` (NOT
  * silently dropped): a call site inside it is invisible, so the caller must warn.
  */
-async function collectExternalEscapes(
+async function collectModuleEscapes(
   modules: ComponentId[],
   resolve: Resolve,
   readFile: ReadFile,
@@ -220,7 +220,7 @@ export async function computeEscapedComponents(opts: {
   resolve: Resolve;
   readFile: ReadFile;
 }): Promise<EscapeScanResult> {
-  const { escaped, unscannable } = await collectExternalEscapes(
+  const { escaped, unscannable } = await collectModuleEscapes(
     opts.entryDirs.flatMap(collectNonSvelteModules),
     opts.resolve,
     opts.readFile,

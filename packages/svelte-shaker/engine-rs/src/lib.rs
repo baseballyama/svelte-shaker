@@ -106,7 +106,7 @@ pub fn analyze_program(input_json: &str) -> String {
         }
     }
     // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2).
-    stamp_external_escapes(&mut models, &input);
+    stamp_module_escapes(&mut models, &input);
 
     let plans = run_fixpoint(&models);
     let out: serde_json::Map<String, Value> =
@@ -178,7 +178,7 @@ pub fn shake_program(input_json: &str) -> String {
         }
     }
     // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2).
-    stamp_external_escapes(&mut models, &input);
+    stamp_module_escapes(&mut models, &input);
 
     let plans = run_fixpoint(&models);
 
@@ -327,7 +327,7 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         }
     }
     // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2).
-    stamp_external_escapes(&mut models, &input);
+    stamp_module_escapes(&mut models, &input);
 
     let plans = run_fixpoint(&models);
 

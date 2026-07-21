@@ -65,8 +65,9 @@ export interface AnalyzeInput {
    * this set (its FS scan cannot parse `.ts` call sites); the engine unions it
    * into the same whole-component escape bail auto-detected escapes use, so these
    * components are never folded and never reported as never-passed — while their
-   * OWN call sites still count toward their children.  Omitted/`[]` means "no
-   * external consumers", keeping the output byte-for-byte unchanged.
+   * OWN call sites still count toward their children.  Omitted/`[]` means every
+   * consumer is inside the crawled `.svelte` graph, keeping the output
+   * byte-for-byte unchanged.
    */
   escaped?: ComponentId[];
 }

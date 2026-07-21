@@ -215,12 +215,12 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
 
 pub(crate) type Plans = HashMap<String, ComponentPlan>;
 
-/// Stamp {@link EXTERNAL_ESCAPE_REASON} on every model listed in the input's
-/// `escaped` array (analyze.ts §4.2 `stampExternalEscapes`): components with a
+/// Stamp {@link MODULE_ESCAPE_REASON} on every model listed in the input's
+/// `escaped` array (analyze.ts §4.2 `stampModuleEscapes`): components with a
 /// consumer outside the `.svelte` graph.  Ids not in the program are ignored.  The
 /// single injection point `shake_program`, `shake_program_with_mono`,
 /// `analyze_program`, and `find_never_passed_props` all share.
-pub(crate) fn stamp_external_escapes(models: &mut [Model], input: &Value) {
+pub(crate) fn stamp_module_escapes(models: &mut [Model], input: &Value) {
     let escaped: HashSet<&str> = input
         .get("escaped")
         .and_then(Value::as_array)
@@ -231,9 +231,9 @@ pub(crate) fn stamp_external_escapes(models: &mut [Model], input: &Value) {
     }
     for m in models.iter_mut() {
         if escaped.contains(m.id.as_str())
-            && !m.bail_reasons.iter().any(|r| r == EXTERNAL_ESCAPE_REASON)
+            && !m.bail_reasons.iter().any(|r| r == MODULE_ESCAPE_REASON)
         {
-            m.bail_reasons.push(EXTERNAL_ESCAPE_REASON.to_string());
+            m.bail_reasons.push(MODULE_ESCAPE_REASON.to_string());
         }
     }
 }
@@ -456,7 +456,7 @@ pub fn find_never_passed_props(input: &Value) -> Value {
     }
     // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2), so a prop
     // they pass is never mis-reported as never-passed.
-    stamp_external_escapes(&mut models, input);
+    stamp_module_escapes(&mut models, input);
 
     // Every textual call site counts (no dead-span filtering): a prop passed only
     // at a folded-away site is still author-written, so we do not flag it.

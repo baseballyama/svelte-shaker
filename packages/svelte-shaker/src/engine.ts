@@ -75,7 +75,7 @@ export class DevShaker {
     this.escaped = escaped;
   }
 
-  /** Replace the external-escape set (docs §4.2).  The Shell calls this before
+  /** Replace the module-escape set (docs §4.2).  The Shell calls this before
    * {@link update} when a non-`.svelte` module changed the set of components
    * reached from `.ts`/`.js`, so the next shake bails them. */
   setEscaped(escaped: ComponentId[]): void {
