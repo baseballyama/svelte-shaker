@@ -244,13 +244,19 @@ pub(crate) fn literal_attr_value(value: &Value) -> Option<Literal> {
     };
     if parts.len() == 1 {
         let part = &parts[0];
-        return match type_of(part) {
-            Some("Text") => Some(Literal::Str(text_data(part))),
-            Some("ExpressionTag") if str_eq(get(part, "expression"), "type", "Literal") => {
-                Literal::from_node_value(get(part, "expression").get("value")?)
+        if type_of(part) == Some("Text") {
+            return Some(Literal::Str(text_data(part)));
+        }
+        if type_of(part) == Some("ExpressionTag") {
+            // Recognize `prop={'x' as const}` as the literal it wraps, so the write
+            // is classified NON-dynamic identically to a parser that strips the
+            // assertion — mono's `specializable_shape` reads the `dynamic` flag.
+            let expr = unwrap_ts_assertions(get(part, "expression"));
+            if str_eq(expr, "type", "Literal") {
+                return Literal::from_node_value(expr.get("value")?);
             }
-            _ => None,
-        };
+        }
+        return None;
     }
     // Multiple parts: fold only when every part is static text.
     let mut text = String::new();
@@ -457,6 +463,9 @@ pub(crate) struct PropValueSet {
 }
 
 pub(crate) fn literal_default(expr: &Value) -> Option<Literal> {
+    // A default like `= 500 as const` arrives as a `TSAsExpression`; the assertion
+    // erases at runtime, so read through it to the bare default value.
+    let expr = unwrap_ts_assertions(expr);
     if expr.is_null() {
         return Some(Literal::Undefined); // omitted default -> undefined
     }

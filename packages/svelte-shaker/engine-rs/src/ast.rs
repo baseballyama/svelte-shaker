@@ -18,6 +18,24 @@ pub(crate) fn get<'a>(node: &'a Value, key: &str) -> &'a Value {
     node.get(key).unwrap_or(&NULL)
 }
 
+/// Strip TypeScript assertion wrappers — `x as T` (`TSAsExpression`), `x!`
+/// (`TSNonNullExpression`), `x satisfies T` (`TSSatisfiesExpression`) — to the
+/// runtime expression they wrap, recursing so `('a' as const)!` becomes `'a'`.
+/// These type operators erase before any code runs, so the wrapped operand's
+/// value IS the whole expression's; reading through them folds a `lang="ts"` AST
+/// (which carries these nodes) identically to a parser that strips them. Mirrors
+/// `unwrapTsAssertions` in eval.ts.
+pub(crate) fn unwrap_ts_assertions(node: &Value) -> &Value {
+    let mut current = node;
+    while matches!(
+        type_of(current),
+        Some("TSAsExpression") | Some("TSNonNullExpression") | Some("TSSatisfiesExpression")
+    ) {
+        current = get(current, "expression");
+    }
+    current
+}
+
 pub(crate) fn arr<'a>(node: &'a Value, key: &str) -> &'a [Value] {
     node.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
 }
@@ -51,6 +69,11 @@ pub(crate) fn walk(root: &Value, f: &mut impl FnMut(&Value)) {
 /// identifiers, object/array destructuring, defaults and rest. Mirrors
 /// `addPatternNames` in analyze.ts.
 pub(crate) fn add_pattern_names(pat: &Value, out: &mut Vec<String>) {
+    // A non-null-asserted assignment target keeps its `TSNonNullExpression` wrapper
+    // in every position but a bare `x = …` LHS — `x! += 1`, `[x!] = a`, `({k: x!} =
+    // o)` — so peel it at this single choke point every pattern position recurses
+    // through, to count the write against the bare name.
+    let pat = unwrap_ts_assertions(pat);
     match type_of(pat) {
         Some("Identifier") => {
             if let Some(n) = pat.get("name").and_then(Value::as_str) {

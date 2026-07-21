@@ -142,6 +142,92 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     expect(viaRust['/Child.svelte']).not.toContain('36?: number');
   });
 
+  it('TS assertions fold in the Rust engine identically to TS (issue #150)', async () => {
+    // svelte/compiler keeps `'chips' as const` / `8 as const` as TS assertion nodes,
+    // so the Rust engine sees them too. Its evaluator (call-site value) and its
+    // `literal_default` (never-passed default) must both read through the erased
+    // assertion exactly like the TS engine, or the two byte-diverge on `lang="ts"`
+    // apps. `pattern` folds from the call site; `size` folds from its `as const`
+    // default (never passed).
+    const files: Record<string, string> = {
+      '/App.svelte': `<script lang="ts">\n  import Child from './Child.svelte';\n</script>\n<Child pattern={'chips' as const} />`,
+      '/Child.svelte':
+        `<script lang="ts">\n  let { pattern, size = 8 as const } = $props();\n</script>\n` +
+        `{#if pattern === 'text'}<em>t</em>{/if}\n{#if pattern === 'chips'}<b>c</b>{/if}\n` +
+        `{#if size === 8}<i>eight</i>{/if}`,
+    };
+    const resolve = (source: string, importer: string): string | null => {
+      if (!source.startsWith('.')) return null;
+      const base = importer.slice(0, importer.lastIndexOf('/'));
+      const parts: string[] = [];
+      for (const seg of `${base}/${source}`.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return `/${parts.join('/')}`;
+    };
+    const readFile = (id: string): string => files[id]!;
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const programInput = {
+      files: input.files.map((f) => ({ id: f.id, ast: parseSvelte(f.code, f.id), code: f.code })),
+      edges: input.edges,
+      entries: input.entries,
+    };
+    const viaRust = JSON.parse(wasm.shake_program(JSON.stringify(programInput))) as Record<
+      string,
+      string
+    >;
+    const viaTs = await svelteShaker('/App.svelte', resolve, readFile);
+    expect(viaRust).toEqual(viaTs);
+    for (const [id, code] of Object.entries(viaRust)) assertCompiles(code, id);
+    const child = viaRust['/Child.svelte']!;
+    expect(child).toContain('<b>c</b>'); // pattern folded from the call site
+    expect(child).toContain('<i>eight</i>'); // size folded from its `as const` default
+    expect(child).not.toContain('<em>'); // dead `pattern === 'text'` arm removed
+    expect(child).not.toContain('pattern'); // both props dropped from the signature
+  });
+
+  it('a write through `x!++` is counted in the Rust engine too (issue #150 review)', async () => {
+    // `count!++` keeps the `!` as a `TSNonNullExpression` around the target, so the
+    // Rust write-collection must read through it or it admits `count` as a constant
+    // and folds a stale `0` into `<C n={count}/>` — diverging from the (fixed) TS
+    // engine. Written -> nothing folds, so both engines emit the input unchanged.
+    const files: Record<string, string> = {
+      '/App.svelte': `<script lang="ts">\n  import C from './C.svelte';\n  let count = $state(0);\n  function inc() { count!++; }\n</script>\n<C n={count} />\n<button onclick={inc}>+</button>`,
+      '/C.svelte': `<script lang="ts">\n  let { n } = $props();\n</script>\n{#if n === 0}<b>zero</b>{:else}<i>{n}</i>{/if}`,
+    };
+    const resolve = (source: string, importer: string): string | null => {
+      if (!source.startsWith('.')) return null;
+      const base = importer.slice(0, importer.lastIndexOf('/'));
+      const parts: string[] = [];
+      for (const seg of `${base}/${source}`.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return `/${parts.join('/')}`;
+    };
+    const readFile = (id: string): string => files[id]!;
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const programInput = {
+      files: input.files.map((f) => ({ id: f.id, ast: parseSvelte(f.code, f.id), code: f.code })),
+      edges: input.edges,
+      entries: input.entries,
+    };
+    const viaRust = JSON.parse(wasm.shake_program(JSON.stringify(programInput))) as Record<
+      string,
+      string
+    >;
+    const viaTs = await svelteShaker('/App.svelte', resolve, readFile);
+    expect(viaRust).toEqual(viaTs);
+    // `count` is written, so `n` never folds: both `{#if}` arms survive.
+    expect(viaRust['/C.svelte']).toContain('zero');
+    expect(viaRust['/C.svelte']).toContain('{n}');
+  });
+
   it('interprocedural pass-through: a forwarded folded prop matches the TS engine', async () => {
     // App -> Mid -> Child: `variant` folds in Mid, so the forwarded
     // `<Child variant={variant}/>` must fold in Child too and its attribute be

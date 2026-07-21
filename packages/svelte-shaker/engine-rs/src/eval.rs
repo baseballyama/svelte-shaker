@@ -4,6 +4,7 @@
 //! returns a known value only when it holds for every value in every set var's
 //! reachable set (docs/ARCHITECTURE.md §3, §13).
 
+use crate::ast::unwrap_ts_assertions;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::mem::discriminant;
@@ -172,6 +173,7 @@ fn type_of(node: &Value) -> &str {
 /// Evaluate an ESTree expression against `env`, returning the proven literal or
 /// `None`. Mirrors `evaluate` in eval.ts.
 pub fn evaluate(node: &Value, env: &Env) -> Option<Literal> {
+    let node = unwrap_ts_assertions(node);
     if !node.is_object() {
         return None;
     }
@@ -296,6 +298,7 @@ pub fn evaluate_with_sets(node: &Value, const_env: &Env, set_env: &SetEnv) -> Op
 }
 
 fn eval_tri(node: &Value, const_env: &Env, set_env: &SetEnv) -> Option<bool> {
+    let node = unwrap_ts_assertions(node);
     if !node.is_object() {
         return None;
     }
@@ -359,8 +362,12 @@ fn equality_tri(left: &Value, right: &Value, const_env: &Env, set_env: &SetEnv, 
 /// `None`.  Shared with the interprocedural set pass-through (props.rs) so both
 /// decide "bare owner-prop reference" identically.  Mirrors `setVar` in eval.ts.
 pub(crate) fn set_var<'a>(node: &Value, set_env: &'a SetEnv) -> Option<&'a Vec<Literal>> {
-    if type_of(node) == "Identifier" {
-        if let Some(name) = node.get("name").and_then(Value::as_str) {
+    // A `variant as const` / `variant!` reference is still a bare read of
+    // `variant` (the assertion erases at runtime), so it narrows like the
+    // identifier it wraps.
+    let bare = unwrap_ts_assertions(node);
+    if type_of(bare) == "Identifier" {
+        if let Some(name) = bare.get("name").and_then(Value::as_str) {
             return set_env.get(name);
         }
     }
@@ -522,6 +529,38 @@ mod tests {
             json!({"type":"Literal","value":2}),
         );
         assert_eq!(evaluate_with_sets(&arith, &Env::new(), &nums), None);
+    }
+
+    fn ts_as(inner: Value) -> Value {
+        json!({ "type": "TSAsExpression", "expression": inner })
+    }
+    fn ts_non_null(inner: Value) -> Value {
+        json!({ "type": "TSNonNullExpression", "expression": inner })
+    }
+
+    #[test]
+    fn evaluate_reads_through_ts_assertions() {
+        // `'chips' as const` folds to the literal (issue #150).
+        assert_eq!(evaluate(&ts_as(lit_str("chips")), &Env::new()), Some(Literal::Str("chips".into())));
+        // `x!` folds through the env.
+        let mut env = Env::new();
+        env.insert("x".into(), Literal::Num(7.0));
+        assert_eq!(evaluate(&ts_non_null(ident("x")), &env), Some(Literal::Num(7.0)));
+        // Nested `('a' as const)!` peels both layers.
+        assert_eq!(
+            evaluate(&ts_non_null(ts_as(lit_str("a"))), &Env::new()),
+            Some(Literal::Str("a".into()))
+        );
+        // A non-constant identifier under an assertion stays unknown.
+        assert_eq!(evaluate(&ts_as(ident("dynamic")), &Env::new()), None);
+    }
+
+    #[test]
+    fn set_var_reads_through_ts_assertions() {
+        let variant = sets(&[("variant", &["primary", "secondary"])]);
+        // `(variant as const) === 'danger'` narrows like the bare `variant`.
+        let e = bin("===", ts_as(ident("variant")), lit_str("danger"));
+        assert_eq!(bool_of(evaluate_with_sets(&e, &Env::new(), &variant)), Some(false));
     }
 
     #[test]
