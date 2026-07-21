@@ -119,7 +119,8 @@ export function collectUnread(
   // (b): a prop is droppable when it survived every site's veto (and had the
   // structural gates).  A child with NO call sites keeps every `true` here — safe,
   // since the child does not read the prop, so its own render is unchanged whether
-  // it is declared or not (and external consumers, if any, bail the child).
+  // it is declared or not (and a consumer outside the `.svelte` graph, if any,
+  // bails the child).
   for (const [id, perProp] of dropEligible) {
     const set = new Set<string>();
     for (const [name, ok] of perProp) if (ok) set.add(name);

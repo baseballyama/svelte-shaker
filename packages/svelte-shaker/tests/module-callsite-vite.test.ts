@@ -10,7 +10,7 @@ import { shaker } from '../src/vite';
 // `.ts` module WITH `p: true`.  The `.svelte`-only crawl cannot see `main.ts`, so
 // unless the non-`.svelte` scan escapes Widget, the shaker folds `p` to its default
 // and deletes the branch — breaking `mount(Widget, { props: { p: true } })`.
-const BASE = join(dirname(fileURLToPath(import.meta.url)), '.shaker-tmp-external');
+const BASE = join(dirname(fileURLToPath(import.meta.url)), '.shaker-tmp-module');
 
 const WIDGET = [
   '<script lang="ts">',
@@ -76,7 +76,7 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(BASE, { recursive: true, force: true }));
 
-describe('vite-plugin-svelte-shaker — external (.ts) call-site scan', () => {
+describe('vite-plugin-svelte-shaker — non-.svelte module (.ts) call-site scan', () => {
   it('folds `p` away when NO .ts consumer passes it (baseline)', async () => {
     const code = await bundle(join(BASE, 'nomount'), [shaker({ entries: ['.'] })]);
     // App renders <Widget/> with no `p`, and nothing else passes it → `p` folds to

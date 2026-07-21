@@ -5,7 +5,7 @@ import { renderHtml } from './diff';
 
 // A component consumed BOTH from a `.svelte` template (which omits `p`) AND from a
 // `.ts` module (`mount(Widget, { props: { p: true } })`).  The shaker's crawl only
-// parses `.svelte`, so the `.ts` call site is invisible: without the external-escape
+// parses `.svelte`, so the `.ts` call site is invisible: without the module-escape
 // mechanism it (unsoundly) concludes `p` is never passed and folds it to its default.
 const WIDGET = [
   '<script lang="ts">',
@@ -44,11 +44,11 @@ afterAll(() => {
   /* no temp dirs of our own */
 });
 
-describe('external (.ts/.js) call sites — soundness', () => {
+describe('non-.svelte module (.ts/.js) call sites — soundness', () => {
   // Documents the hole: crawling only `.svelte`, the shaker over-folds `p`.  This
   // is the exact unsoundness Phase 1b closes by scanning `main.ts`.
-  it('marking the component as externally escaped keeps `p` (matches the `.ts` consumer)', async () => {
-    // The 5th argument is the external-escape set (Phase 1b): the ids of components
+  it('marking the component as module-escaped keeps `p` (matches the `.ts` consumer)', async () => {
+    // The 5th argument is the module-escape set (Phase 1b): the ids of components
     // with consumers the `.svelte` crawl cannot see (`main.ts` here).  Without it
     // the shaker folds `p` to its default and drops the branch — unsound.
     const shaken = await svelteShaker(
@@ -71,8 +71,8 @@ describe('external (.ts/.js) call sites — soundness', () => {
 
   it('findNeverPassedProps does not over-report a prop passed only from a `.ts` module', async () => {
     const input = await buildAnalyzeInput(['/App.svelte', '/Widget.svelte'], resolve, readFile);
-    const withExternal = { ...input, escaped: ['/Widget.svelte'] };
-    const map = findNeverPassedProps(withExternal);
+    const withModuleEscape = { ...input, escaped: ['/Widget.svelte'] };
+    const map = findNeverPassedProps(withModuleEscape);
     // `p` IS passed — by `main.ts` — so it must not be flagged as never-passed.
     expect(map.get('/Widget.svelte')).toBeUndefined();
   });
