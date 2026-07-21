@@ -1231,7 +1231,25 @@ function isSpace(ch: string): boolean {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
 }
 
+/** Source text for a folded value, faithful for every member of {@link Literal}
+ * (the union {@link evaluate} admits).  Always an expression, so it drops into
+ * both substitution positions unchanged. */
 function literalSource(value: Literal): string {
   if (value === undefined) return 'undefined';
+  if (typeof value === 'number') return numberSource(value);
+  return JSON.stringify(value);
+}
+
+/**
+ * `JSON.stringify` flattens `Infinity`/`-Infinity`/`NaN` to `null`, so those get
+ * an explicit form.  Written as arithmetic rather than the `Infinity`/`NaN`
+ * globals because the substituted text lands in the CALLEE's scope, where a
+ * local of either name would silently capture it; `(0/0)` cannot be shadowed.
+ * (`-0`, the fourth lossy case, never reaches here — see `isFoldableValue`.)
+ */
+function numberSource(value: number): string {
+  if (Number.isNaN(value)) return '(0/0)';
+  if (value === Infinity) return '(1/0)';
+  if (value === -Infinity) return '(-1/0)';
   return JSON.stringify(value);
 }

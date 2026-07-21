@@ -67,7 +67,7 @@ import {
   type PropDecl,
 } from './analyze.js';
 import { parseSvelte, walk, type AnyNode } from './parse.js';
-import type { ComponentId, ComponentPlan, Literal } from './ir.js';
+import { isFoldableValue, type ComponentId, type ComponentPlan, type Literal } from './ir.js';
 
 /** Tuning knobs for monomorphization (docs §8.1, §13.2).  All have sound defaults. */
 export interface MonomorphizeOptions {
@@ -524,6 +524,7 @@ function specializableShape(
     // The value must be a literal this site genuinely passes and no spread can
     // override — exactly the analysis's "safely explicit" condition.
     if (explicit.dynamic || !explicit.afterLastSpread) continue;
+    if (!isFoldableValue(explicit.value)) continue; // no safe source form — exactly as constant fold
     shape.set(name, explicit.value);
   }
   return shape;

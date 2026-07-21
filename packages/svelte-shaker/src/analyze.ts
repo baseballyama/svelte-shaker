@@ -9,6 +9,7 @@ import {
 } from './parse.js';
 import {
   emptyPlan,
+  isFoldableValue,
   type AnalyzeInput,
   type ComponentId,
   type ComponentPlan,
@@ -18,7 +19,7 @@ import {
   type ResolvedEdge,
 } from './ir.js';
 import { computeDeadSpans, inSpans, type Span } from './dead.js';
-import { evaluate, setVar, type EvalResult } from './eval.js';
+import { evaluate, literalValue, setVar, type EvalResult } from './eval.js';
 
 export type Resolve = (
   source: string,
@@ -1848,9 +1849,8 @@ function literalAttrValue(value: unknown): { known: true; value: Literal } | { k
     const part = parts[0]!;
     if (part.type === 'Text')
       return { known: true, value: (part.data ?? part.raw ?? '') as string };
-    if (part.type === 'ExpressionTag' && part.expression?.type === 'Literal') {
-      return { known: true, value: part.expression.value as Literal };
-    }
+    if (part.type === 'ExpressionTag' && part.expression?.type === 'Literal')
+      return literalValue(part.expression);
     return { known: false };
   }
   // Multiple parts: only fold when every part is static text.
@@ -1914,7 +1914,8 @@ function buildPlan(model: FileModel, u: Usage | undefined, ownerEnv: OwnerEnv): 
 
     // constant fold: a clean singleton value set is the foldable case.
     if (set.values.length === 1) {
-      plan.constFold.set(decl.name, set.values[0]!);
+      const only = set.values[0]!;
+      if (isFoldableValue(only)) plan.constFold.set(decl.name, only);
       continue;
     }
     // value-set narrowing: >= 2 distinct literals with no dynamic/⊤ contribution is a fully

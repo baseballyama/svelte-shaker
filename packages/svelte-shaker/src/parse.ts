@@ -89,6 +89,11 @@ export interface AnyNode {
   /** ObjectExpression `Property` shorthand-method flag (`{ m() {} }`). */
   method?: boolean | undefined;
 
+  /** ESTree `Literal` discriminators, present only on a RegExp (`/x/g`) or
+   * BigInt (`1n`) literal — neither of which carries a foldable `value`. */
+  regex?: { pattern: string; flags: string } | undefined;
+  bigint?: string | undefined;
+
   value?: unknown;
 }
 

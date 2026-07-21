@@ -21,7 +21,7 @@ export function evaluate(
   if (!node) return UNKNOWN;
   switch (node.type) {
     case 'Literal':
-      return { known: true, value: node.value as Literal };
+      return literalValue(node);
 
     case 'Identifier': {
       const name = node.name ?? '';
@@ -115,6 +115,29 @@ export function evaluate(
     default:
       return UNKNOWN;
   }
+}
+
+/**
+ * The `Literal` value of an ESTree `Literal` node, or unknown when the node
+ * carries a value outside that union.  This is the ONLY door through which a
+ * parsed value enters the engine, so it is where the union is enforced:
+ *
+ *  - **RegExp / BigInt literals** (`/x/g`, `1n`) hold a `RegExp` / `bigint` in
+ *    `value` — no faithful literal source form, and `JSON.stringify` throws on
+ *    the latter and flattens the former to `{}`.  Both carry a discriminator.
+ *  - **`value: null`** is ambiguous: an AST that reached us as JSON (the rsvelte
+ *    parser crosses a WASM boundary that way) cannot represent `Infinity`, so
+ *    `1e999` arrives indistinguishable from a genuine `null` except by `raw`.
+ *
+ * Anything unproven stays unknown, which costs one fold — never a wrong one.
+ */
+export function literalValue(node: AnyNode): EvalResult {
+  if (node.regex !== undefined || node.bigint !== undefined) return UNKNOWN;
+  const v = node.value;
+  if (v === null) return node.raw === 'null' ? { known: true, value: null } : UNKNOWN;
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')
+    return { known: true, value: v };
+  return UNKNOWN;
 }
 
 // ----------------------------------------------------------------------

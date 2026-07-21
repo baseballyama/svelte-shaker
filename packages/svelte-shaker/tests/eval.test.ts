@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateWithSets } from '../src/eval';
+import { evaluate, evaluateWithSets } from '../src/eval';
+import { tryLoadRsvelteParser } from '../src/rsvelte-parse';
 import { parseSvelte, type AnyNode } from '../src/parse';
 import type { Literal } from '../src/ir';
 
@@ -98,5 +99,51 @@ describe('evaluateWithSets (value-set narrowing set-aware predicate)', () => {
     const nums = sets({ n: [1, 2] });
     expect(evaluateWithSets(expr('n > 0'), empty, nums).known).toBe(false);
     expect(evaluateWithSets(expr('n + 1 === 2'), empty, nums).known).toBe(false);
+  });
+});
+
+/**
+ * `evaluate` is the only door through which a parsed value enters the engine, so
+ * it is where the {@link Literal} union is enforced.  A value it
+ * admits gets substituted into source verbatim; one it cannot represent
+ * faithfully must stay unknown, costing a fold instead of changing a render.
+ */
+describe('evaluate (literal value domain)', () => {
+  const rsvelte = tryLoadRsvelteParser();
+
+  /** Parse a bare JS expression with the rsvelte parser (JSON AST transport). */
+  function rsExpr(src: string): AnyNode {
+    const ast = rsvelte!(`{${src}}`, 'expr.svelte');
+    const tag = ast.fragment.nodes?.find((n) => n.type === 'ExpressionTag');
+    if (!tag?.expression) throw new Error(`no expression in {${src}}`);
+    return tag.expression;
+  }
+
+  const empty = consts({});
+
+  // A regex is parenthesized because a bare `{/` opens a block CLOSING tag.
+  it('rejects BigInt and RegExp literals', () => {
+    // `JSON.stringify` throws on the first and yields `{}` for the second.
+    expect(evaluate(expr('1n'), empty).known).toBe(false);
+    expect(evaluate(expr('(/ab+c/g)'), empty).known).toBe(false);
+  });
+
+  it.skipIf(!rsvelte)('rejects them under the rsvelte parser too', () => {
+    expect(evaluate(rsExpr('(/ab+c/g)'), empty).known).toBe(false);
+    expect(evaluate(rsExpr('1n'), empty).known).toBe(false);
+  });
+
+  it('rejects a number literal that cannot survive JSON transport', () => {
+    // rsvelte's AST crosses a WASM boundary as JSON, where `1e999` (Infinity)
+    // arrives as `value: null` — a genuine `null` except for `raw`.
+    if (rsvelte) expect(evaluate(rsExpr('1e999'), empty).known).toBe(false);
+    expect(evaluate(expr('1e999'), empty)).toEqual({ known: true, value: Infinity });
+  });
+
+  it('still folds a genuine `null` and computed non-finite numbers', () => {
+    expect(evaluate(expr('null'), empty)).toEqual({ known: true, value: null });
+    if (rsvelte) expect(evaluate(rsExpr('null'), empty)).toEqual({ known: true, value: null });
+    expect(evaluate(expr('1 / 0'), empty)).toEqual({ known: true, value: Infinity });
+    expect(evaluate(expr('0 / 0'), empty)).toEqual({ known: true, value: NaN });
   });
 });
