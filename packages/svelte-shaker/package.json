@@ -57,7 +57,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@rsvelte/compiler": "0.6.1",
+    "@rsvelte/compiler": "0.8.1",
     "magic-string": "1.0.0",
     "zimmerframe": "1.1.4"
   },

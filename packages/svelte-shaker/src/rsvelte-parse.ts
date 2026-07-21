@@ -12,6 +12,12 @@ import type { Parse, Root } from './parse.js';
 
 const require = createRequire(import.meta.url);
 
+/** The wasm-pack `--target web` bytes shipped in `@rsvelte/compiler`, reached via
+ * the package's stable `./wasm` subpath export (added upstream in 0.8.1). Using
+ * the public subpath keeps the loader independent of the internal crate name that
+ * determines the actual artifact basename. */
+const WASM_FILE = '@rsvelte/compiler/wasm';
+
 interface RsvelteCompiler {
   initSync: (module: { module: BufferSource }) => unknown;
   parse_svelte: (source: string) => { success: boolean; ast: string; error?: string | undefined };
@@ -27,7 +33,7 @@ function loadCompiler(): RsvelteCompiler {
   if (!ready) {
     // A `wasm-pack --target web` module: init once with the wasm bytes (Node has
     // no fetch for file URLs), after which `parse_svelte` is callable.
-    const wasmPath = require.resolve('@rsvelte/compiler/rsvelte_core_bg.wasm');
+    const wasmPath = require.resolve(WASM_FILE);
     compiler.initSync({ module: readFileSync(wasmPath) });
     ready = true;
   }
@@ -41,9 +47,9 @@ function loadCompiler(): RsvelteCompiler {
  * rsvelte is the default parser, the caller THROWS on `null` rather than silently
  * using svelte/compiler; `parser: 'svelte'` is the explicit opt-out.
  *
- * The AST carries per-node `loc` (there is no option to drop it), but the engine
- * reads only UTF-16 `start`/`end`, never `loc`, so the parser choice can never
- * change the shaken output — only which parser produced the identical tree.
+ * rsvelte's AST positions match svelte/compiler's — UTF-16 code-unit offsets — so
+ * the AST feeds the engine directly (`@rsvelte/compiler` <= 0.6 reported UTF-8
+ * *byte* offsets and needed a remap; 0.7 emits UTF-16, so the remap is gone).
  * A genuine parse error on a specific file is a real failure and PROPAGATES; only
  * a load/init failure returns `null`.
  */
