@@ -169,7 +169,10 @@ fn collect_written(node: &Value, out: &mut Vec<String>) {
     match type_of(node) {
         Some("AssignmentExpression") => add_pattern_names(get(node, "left"), out),
         Some("UpdateExpression") => {
-            let arg = get(node, "argument");
+            // `x!++` keeps the `!` as a `TSNonNullExpression` around the target
+            // (only a bare `x = …` LHS is normalized away), so read through it or
+            // the write goes uncounted and the name is wrongly admitted as a const.
+            let arg = unwrap_ts_assertions(get(node, "argument"));
             if str_eq(arg, "type", "Identifier") {
                 if let Some(n) = arg.get("name").and_then(Value::as_str) {
                     push_unique(out, n);
@@ -257,6 +260,10 @@ pub(crate) fn compute_script_const_env(
 /// Any other initializer — including every other rune call — is evaluated verbatim,
 /// so a non-value rune simply falls to `None`. Mirrors `evalDeclaratorValue`.
 fn eval_declarator_value(init: &Value, env: &Env) -> Option<Literal> {
+    // `const x = $state(0) as T` wraps the rune in a `TSAsExpression`; erase the
+    // runtime-transparent assertion so the `$state`/`$state.raw` unwrap below and
+    // `evaluate` both see the real initializer, as a stripping parser would.
+    let init = unwrap_ts_assertions(init);
     if is_state_rune_call(init) {
         return match arr(init, "arguments").first() {
             None => Some(Literal::Undefined), // bare `$state()` / `$state.raw()`
