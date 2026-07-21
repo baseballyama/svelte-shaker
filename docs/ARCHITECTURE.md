@@ -590,6 +590,27 @@ typo は旧キーと同じ壊れ方をする（設定したはずのものが効
 見えない消費者への逃げ道は `preserve` 一本に集約する（§4.2）。こちらも glob ではなく
 「ディレクトリ or ファイルのプレフィックス一致」で、`entries` と同じ基準である。
 
+**ただし `devOnly`（glob）だけは別物として持つ。** 上の 2 つの理由が却下しているのは「アプリの
+**覆いを狭める** glob（`exclude` 的な用途）」であって、`devOnly` はそれとは向きが違う。`devOnly` が
+宣言するのは**そもそも production バンドルに出荷されない dev 専用ファイル** — colocated なテスト・
+Storybook のストーリー — であり、「出荷されない＝消費者として数えてはいけない」というのが
+discount を健全にする契約そのものである。これらは数え続けても shake を**悪化させるだけ**である
+（`Foo.test.svelte` が起点として数えられ、`Button.test.ts` が import した component を丸ごと
+preserve 扱いにする）。理由 2 への答えも構造的で、`devOnly` は `.svelte` 向けだけの glob ではなく
+**両方の走査に同一の述語として渡る** — `collectSvelteFiles` の起点収集からも `collectNonSvelteModules`
+のエスケープスキャンからも同じファイルが外れるので、「`.svelte` 向け glob が escape スキャンを
+取りこぼす」不整合は起きない。既定パターンは `**/*.test.*` / `**/*.spec.*` / `**/__tests__/**` /
+`**/__mocks__/**` / `**/*.stories.*` の**規約ベースの狭いもの**に限り、`devOnly` 指定はこの既定を
+**置換**する（`[...DEFAULT_DEV_ONLY, …]` で拡張、`devOnly: []` で全ファイルを数える）。`devOnly` が
+外すのは seed / escape 源としての登場だけで**ファイルを shake から外すわけではない** — アプリが実際に
+import する `.svelte` は通常のクロールが依然到達し shake もされるため、到達可能なコールサイトを
+取りこぼすことはない（§4.2）。唯一の危険は「`.svelte` グラフの**外からのみ**消費される component」を
+誤ってパターンに含めるケースで、これは `entries` の覆い漏れと同じ失敗モード — だからこそ既定を規約
+ベースの狭いパターンに留める。`preserve` とは別物である：`preserve` は出荷される component の prop を
+そのまま保つ指定、`devOnly` は「そのファイルは production グラフの一部ではない」という宣言。マッチ
+判定は Vite root（standalone node API では走査 dir）相対の posix 正規化パスに対して `picomatch` で行う
+（Shell 側 `src/dev-only.ts`。Engine は環境非依存のまま）。
+
 **現状の実装サーフェス**（Vite `src/vite.ts`）：
 
 ```ts

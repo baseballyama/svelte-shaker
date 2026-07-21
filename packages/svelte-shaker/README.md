@@ -92,6 +92,9 @@ shaker({
   entries: ['src'], // dirs (relative to root) the crawl starts from; they must
   // hold every .svelte call site in the app. Not a glob, not a filter.
   preserve: [], // components whose props must never be folded (see below)
+  devOnly: [...], // glob patterns of files that never ship (tests, stories); they
+  // stop counting as call sites. Defaults to tests/mocks/stories; replaces, spread
+  // to extend.
   monomorphize: true, // default on; `false` disables it for faster builds,
   // or { maxVariants: 16, minSavings: 0.05 } to tune
   verbose: false, // true = per-file size breakdown after the build
@@ -171,6 +174,32 @@ options that do exist. A typo would otherwise be ignored — and a misspelled
   The build **warns** (with the file path) about any module the scan couldn't
   parse — so a mounted component isn't silently left unprotected — and about
   `preserve` entries that matched no component.
+- **`devOnly`** — glob patterns (matched with
+  [`picomatch`](https://github.com/micromatch/picomatch) against each file's path
+  relative to the Vite root) naming files that **never ship in the production
+  bundle** — colocated tests, mocks, Storybook stories. A matched file **stops
+  counting as a component consumer** in **both directory scans** (the `.svelte` seed
+  scan and the non-`.svelte` escape scan), so a `Foo.test.svelte` or a
+  `Button.test.ts` can no longer pessimize the shake. It defaults to:
+
+  ```ts
+  // the built-in default (import DEFAULT_DEV_ONLY to extend it)
+  devOnly: ['**/*.test.*', '**/*.spec.*', '**/__tests__/**', '**/__mocks__/**', '**/*.stories.*'];
+  ```
+
+  Passing `devOnly` **replaces** this list (predictable semantics) — spread it to
+  extend: `devOnly: [...DEFAULT_DEV_ONLY, 'src/dev/**']` (import `DEFAULT_DEV_ONLY`
+  from `svelte-shaker/vite`). Pass `devOnly: []` to count every file (the pre-`devOnly`
+  behavior).
+
+  **List only files that never ship.** A matched file isn't excluded from the shake —
+  one the app actually imports is still crawled and shaken; it just stops _counting_
+  as a call site. So a file that really ships but matches a pattern (a `+page.svelte`
+  under a route dir named `__tests__`) has its distinct prop values stop blocking
+  folds, the same failure mode as leaving it out of `entries` — which is why the
+  defaults are narrow. See
+  [`docs/ARCHITECTURE.md` §8.1.1](https://github.com/baseballyama/svelte-shaker/blob/main/docs/ARCHITECTURE.md)
+  for the full argument.
 
 ## What it removes
 
