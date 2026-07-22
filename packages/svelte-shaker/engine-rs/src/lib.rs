@@ -16,6 +16,10 @@ mod ast;
 mod css;
 mod dead_code;
 mod eval;
+// docs/RUST-MIGRATION.md M4 — the engine's internal template IR (WIP: the Value→IR
+// converter and the phase ports land in subsequent slices; types defined first).
+#[allow(dead_code)]
+mod ir;
 mod mono;
 mod plan;
 mod props;
