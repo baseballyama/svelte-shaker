@@ -9,6 +9,7 @@ import {
 } from './parse.js';
 import {
   emptyPlan,
+  isFoldableValue,
   type AnalyzeInput,
   type ComponentId,
   type ComponentPlan,
@@ -18,7 +19,7 @@ import {
   type ResolvedEdge,
 } from './ir.js';
 import { computeDeadSpans, inSpans, type Span } from './dead.js';
-import { evaluate, setVar, unwrapTsAssertions, type EvalResult } from './eval.js';
+import { evaluate, literalValue, setVar, unwrapTsAssertions, type EvalResult } from './eval.js';
 
 export type Resolve = (
   source: string,
@@ -1868,7 +1869,7 @@ function literalAttrValue(value: unknown): { known: true; value: Literal } | { k
       // Both paths already fold the value (via the expr fallback), but the
       // `dynamic` flag itself must match — mono's `specializableShape` reads it.
       const expr = unwrapTsAssertions(part.expression);
-      if (expr?.type === 'Literal') return { known: true, value: expr.value as Literal };
+      if (expr?.type === 'Literal') return literalValue(expr);
     }
     return { known: false };
   }
@@ -1933,7 +1934,8 @@ function buildPlan(model: FileModel, u: Usage | undefined, ownerEnv: OwnerEnv): 
 
     // constant fold: a clean singleton value set is the foldable case.
     if (set.values.length === 1) {
-      plan.constFold.set(decl.name, set.values[0]!);
+      const only = set.values[0]!;
+      if (isFoldableValue(only)) plan.constFold.set(decl.name, only);
       continue;
     }
     // value-set narrowing: >= 2 distinct literals with no dynamic/⊤ contribution is a fully
@@ -2016,7 +2018,12 @@ function literalDefault(
   // assertion erases at runtime, so read through it to the bare default value.
   expr = unwrapTsAssertions(expr) ?? undefined;
   if (!expr) return { known: true, value: undefined }; // omitted default -> undefined
-  if (expr.type === 'Literal') return { known: true, value: expr.value as Literal };
+  // `literalValue` is the same gate `literalAttrValue` and `evaluate` use: a
+  // BigInt/RegExp default (no faithful source form) or a `null` that is really
+  // `1e999` surviving JSON transport must stay UNKNOWN here too, or a call site
+  // that merely omits the prop reintroduces the crash/misfold this default path
+  // exists to prevent.
+  if (expr.type === 'Literal') return literalValue(expr);
   if (expr.type === 'Identifier' && expr.name === 'undefined')
     return { known: true, value: undefined };
   return { known: false };

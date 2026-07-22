@@ -150,6 +150,23 @@ export interface ComponentPlan {
   valueSets: Map<string, PropValueSet>;
 }
 
+/**
+ * Whether a proven value may be SUBSTITUTED into the residual as a constant.
+ *
+ * Every member of {@link Literal} has a faithful source form except `-0`: the
+ * Svelte compiler constant-folds the expression it is spliced into and loses the
+ * sign of zero there (`{1 / n}` renders `-Infinity` with `n = -0` at runtime,
+ * but the folded `{1 / (-0)}` compiles to a literal `Infinity`).  Emitting it
+ * would therefore change what renders even though the value we proved is right,
+ * so a `-0`-valued prop is simply left alone — one missed fold, no risk.
+ *
+ * Narrowing is unaffected: a narrowed prop stays dynamic and is never
+ * substituted, and the comparisons it feeds use real JS semantics.
+ */
+export function isFoldableValue(value: Literal): boolean {
+  return !Object.is(value, -0);
+}
+
 export function emptyPlan(id: ComponentId): ComponentPlan {
   return {
     id,
