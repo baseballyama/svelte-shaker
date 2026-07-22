@@ -38,6 +38,14 @@ export declare function scanProfile(inputJson: string): string;
 export declare function parseFiles(inputJson: string): string;
 
 /**
+ * M4 slice (a) parity pin (TEMPORARY): `[{ name, start, end }]` for every
+ * `<Component>` the internal template IR walk finds in `astJson` (svelte JSON) — so a
+ * test can assert it equals the engine's current Value walk. Removed once build_model
+ * consumes the IR.
+ */
+export declare function irComponentTags(astJson: string): string;
+
+/**
  * Chatty-protocol Round 2: the native full-shake session. `parse` parses + retains
  * every file's AST (returning the Round-1 {@link parseFiles} facts); `shake` runs
  * the whole-program fold + monomorphization over the retained ASTs and returns only

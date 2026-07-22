@@ -120,6 +120,23 @@ pub fn parse_files(input_json: String) -> napi::Result<String> {
         .map_err(|e| napi::Error::from_reason(format!("parse_files: serialize: {e}")))
 }
 
+/// M4 slice (a) parity pin (temporary): return every `<Component>` the IR walk finds
+/// in `ast_json` (svelte JSON) as `[{ name, start, end }]`, so a JS test can assert it
+/// equals the engine's current Value-walk over the same AST across the fixture corpus.
+/// Removed once `build_model` consumes the IR and the wasm-shake corpus is the pin.
+#[napi]
+pub fn ir_component_tags(ast_json: String) -> napi::Result<String> {
+    let ast: Value = serde_json::from_str(&ast_json)
+        .map_err(|e| napi::Error::from_reason(format!("ir_component_tags: parse: {e}")))?;
+    let root = svelte_shaker_engine::ir::from_value(&ast);
+    let tags: Vec<Value> = svelte_shaker_engine::ir::component_tags(&root)
+        .into_iter()
+        .map(|(name, span)| json!({ "name": name, "start": span.start, "end": span.end }))
+        .collect();
+    serde_json::to_string(&tags)
+        .map_err(|e| napi::Error::from_reason(format!("ir_component_tags: serialize: {e}")))
+}
+
 /// Parse one component's source into the rsvelte JSON AST with UTF-16 offsets — the
 /// exact shape (and encoding) `svelte/compiler`'s modern parse produces, so the
 /// Value engine reads it unchanged. `Value::Null` on a parse error (the engine then

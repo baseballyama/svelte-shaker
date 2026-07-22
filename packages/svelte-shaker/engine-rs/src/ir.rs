@@ -410,6 +410,75 @@ fn attr_from(attr: &Value) -> Attribute {
     }
 }
 
+// =============================================================================
+// The typed half of the walk decomposition: visit every template node, depth-first
+// (a node, then its child fragments in source order). Callers that also need the
+// embedded JS (escape / reads) delegate each node's expression Value to the Value
+// walk — see the fallback invariant in the module docs.
+// =============================================================================
+
+/// Visit every node in `fragment` and its descendants.
+pub fn walk<F: FnMut(&Node)>(fragment: &Fragment, f: &mut F) {
+    for node in &fragment.nodes {
+        visit(node, f);
+    }
+}
+
+/// Exhaustive over `Node` so a new fragment-bearing variant is a compile error here,
+/// never a silently-unvisited subtree (which could drop a `<Component>` call site).
+fn visit<F: FnMut(&Node)>(node: &Node, f: &mut F) {
+    f(node);
+    match node {
+        Node::Component(e)
+        | Node::RegularElement(e)
+        | Node::SpecialElement(e)
+        | Node::SvelteOptions(e) => walk(&e.fragment, f),
+        Node::SvelteComponent(d) | Node::SvelteElement(d) => walk(&d.fragment, f),
+        Node::IfBlock(b) => {
+            walk(&b.consequent, f);
+            if let Some(alt) = &b.alternate {
+                walk(alt, f);
+            }
+        }
+        Node::EachBlock(b) => {
+            walk(&b.body, f);
+            if let Some(fb) = &b.fallback {
+                walk(fb, f);
+            }
+        }
+        Node::AwaitBlock(b) => {
+            for fr in [&b.pending, &b.then, &b.catch].into_iter().flatten() {
+                walk(fr, f);
+            }
+        }
+        Node::KeyBlock(b) => walk(&b.fragment, f),
+        Node::SnippetBlock(b) => walk(&b.body, f),
+        // Leaves: no child fragment can hold a nested node.
+        Node::Text(_)
+        | Node::Comment(_)
+        | Node::ExpressionTag(_)
+        | Node::HtmlTag(_)
+        | Node::ConstTag(_)
+        | Node::DebugTag(_)
+        | Node::RenderTag(_)
+        | Node::AttachTag(_)
+        | Node::OtherTag(_) => {}
+    }
+}
+
+/// Every rendered `<Component>` in source order, as `(tag name, span)` — the IR-walk
+/// equivalent of the engine's current `walk(fragment)` `Component` collection that
+/// backs `child_calls`. Used by the slice-(a) parity pin against the Value walk.
+pub fn component_tags(root: &Root) -> Vec<(String, Span)> {
+    let mut out = Vec::new();
+    walk(&root.fragment, &mut |node| {
+        if let Node::Component(e) = node {
+            out.push((e.name.clone(), e.span));
+        }
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
