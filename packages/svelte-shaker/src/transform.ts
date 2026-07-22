@@ -434,9 +434,8 @@ export function shakeBody(
   // are removed), so a constFold prop used inside a surviving arm is handled.
   const refs = collectPropRefs(model, localEnv, dead);
   for (const [name, value] of localEnv) {
-    const lit = literalSource(value);
     for (const ref of refs.get(name) ?? [])
-      s.overwrite(ref.start, ref.end, ref.head + lit + ref.tail);
+      s.overwrite(ref.start, ref.end, foldReplacement(ref, value));
   }
 
   // (3) Drop the folded (constFold) props from the `$props()` signature, together
@@ -886,7 +885,7 @@ function substitutedSlice(
   let cursor = from;
   for (const ref of refs) {
     out += code.slice(cursor, ref.start);
-    out += ref.head + literalSource(env.get(ref.name)!) + ref.tail;
+    out += foldReplacement(ref, env.get(ref.name)!);
     cursor = ref.end;
   }
   out += code.slice(cursor, to);
@@ -904,6 +903,24 @@ interface FoldRef {
   end: number;
   head: string;
   tail: string;
+  /** The identifier is the OBJECT of a non-computed member access (`NAME.foo`).
+   * A number folded here must be parenthesized ({@link foldReplacement}). */
+  memberObject?: boolean;
+}
+
+/**
+ * The replacement text for a folded reference: `head + <literal> + tail`, but a
+ * NUMBER used as the object of a member access is parenthesized.  `5000.toFixed()`
+ * would otherwise emit `5000.toFixed()`, where the parser reads `5000.` as a float
+ * literal and then hits `toFixed` — "Identifier directly after number".  `(5000)`
+ * disambiguates.  Only decimal numbers need this (a string/boolean/`null` member
+ * object parses fine), so other literal kinds are never wrapped, keeping output
+ * minimal.
+ */
+function foldReplacement(ref: FoldRef, value: Literal): string {
+  const lit = literalSource(value);
+  const body = ref.memberObject === true && typeof value === 'number' ? `(${lit})` : lit;
+  return ref.head + body + ref.tail;
 }
 
 /** Find every folded-prop reference in `model`, outside dead spans, by name. */
@@ -1028,7 +1045,12 @@ function foldRefFor(
     const name = code.slice(node.start, node.end);
     return { start: node.start, end: node.end, head: `${name}: `, tail: '' };
   }
-  return { start: node.start, end: node.end, head: '', tail: '' };
+  // Plain expression read.  Flag a member-access object (`NAME.foo`) so a folded
+  // number is parenthesized ({@link foldReplacement}); a computed access
+  // (`NAME[i]`) needs no wrapping (`5000[i]` parses), so it stays unflagged.
+  const memberObject =
+    parent?.type === 'MemberExpression' && parent.object === node && parent.computed !== true;
+  return { start: node.start, end: node.end, head: '', tail: '', memberObject };
 }
 
 /** True when an Identifier is a property key / member name, not a value read. */
