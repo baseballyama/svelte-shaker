@@ -9,9 +9,13 @@ description = "Native (napi) prop-scanner for svelte-shaker: parses with rsvelte
 crate-type = ["cdylib"]
 
 [dependencies]
-# napi 2.16: the native function `scan` is synchronous and returns a JSON string.
-napi = { version = "3.10.5", default-features = false, features = ["napi8"] }
-napi-derive = "2.16.13"
+# The `#[napi]` functions are synchronous and return JSON strings. `napi-derive`
+# must track `napi`'s major: #127 bumped `napi` to v3 but left `napi-derive` at
+# 2.16, whose macro emits v2 codegen (`bindgen_prelude::ctor`, the 4-arg
+# `register_class`) that v3 no longer provides — a fresh `cargo build` fails. v3
+# on both restores a matching pairing.
+napi = { version = "3.11.0", default-features = false, features = ["napi8"] }
+napi-derive = "3.6.0"
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
 rayon = "1.12.0"
 
