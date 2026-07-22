@@ -194,4 +194,11 @@ describe('evaluate: TypeScript assertion unwrapping (issue #150)', () => {
     expect(evaluate(tsExpr('dynamic as string'), new Map()).known).toBe(false);
     expect(unwrapTsAssertions(tsExpr('dynamic as string'))?.type).toBe('Identifier');
   });
+
+  it('a TS assertion wrapping a BigInt or RegExp literal still stays UNKNOWN', () => {
+    // Unwrapping must not bypass the `literalValue` gate: `1n as any` erases to
+    // `1n` at runtime, not to a foldable value.
+    expect(evaluate(tsExpr('1n as any'), new Map()).known).toBe(false);
+    expect(evaluate(tsExpr('(/ab+c/g) as any'), new Map()).known).toBe(false);
+  });
 });

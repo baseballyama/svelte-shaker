@@ -2018,7 +2018,12 @@ function literalDefault(
   // assertion erases at runtime, so read through it to the bare default value.
   expr = unwrapTsAssertions(expr) ?? undefined;
   if (!expr) return { known: true, value: undefined }; // omitted default -> undefined
-  if (expr.type === 'Literal') return { known: true, value: expr.value as Literal };
+  // `literalValue` is the same gate `literalAttrValue` and `evaluate` use: a
+  // BigInt/RegExp default (no faithful source form) or a `null` that is really
+  // `1e999` surviving JSON transport must stay UNKNOWN here too, or a call site
+  // that merely omits the prop reintroduces the crash/misfold this default path
+  // exists to prevent.
+  if (expr.type === 'Literal') return literalValue(expr);
   if (expr.type === 'Identifier' && expr.name === 'undefined')
     return { known: true, value: undefined };
   return { known: false };

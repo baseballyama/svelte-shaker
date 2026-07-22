@@ -172,3 +172,44 @@ describe('values `JSON.stringify` cannot faithfully represent', () => {
     expect(shaken['/Child.svelte']).not.toContain('$props()');
   });
 });
+
+describe('the same values, reached through a prop DEFAULT instead of an explicit call-site value', () => {
+  // `literalDefault` (analyze.ts) reads `= <default>` the same way `evaluate`
+  // reads a passed value, and must reject the same non-`Literal` values — a
+  // call site that simply omits the prop falls back to the default, so an
+  // unguarded default is just as reachable as an unguarded explicit value.
+
+  it('a BigInt default does not abort the shake when the caller omits the prop', async () => {
+    const files = {
+      '/App.svelte': `<script>\n  import Child from './Child.svelte';\n</script>\n<Child />`,
+      '/Child.svelte': `<script>\n  let { count = 1n } = $props();\n</script>\n<p>{count}</p>`,
+    };
+    const shaken = await shakeAndCompare(files);
+    // Unprovable, so the prop stays: a missed optimization, never a wrong value.
+    expect(shaken['/Child.svelte']).toContain('$props()');
+    expect(shaken['/Child.svelte']).toContain('{count}');
+  });
+
+  it('a RegExp default is left unfolded instead of folding to `{}`', async () => {
+    const files = {
+      '/App.svelte': `<script>\n  import Child from './Child.svelte';\n</script>\n<Child />`,
+      '/Child.svelte': `<script>\n  let { re = /ab+c/g } = $props();\n</script>\n<p>{re}</p>`,
+    };
+    const shaken = await shakeAndCompare(files);
+    expect(shaken['/Child.svelte']).toContain('{re}');
+    expect(shaken['/Child.svelte']).not.toContain('{}');
+  });
+
+  it.skipIf(!rsvelte)(
+    'an Infinity default surviving via `1e999` is not folded to `null` under the rsvelte parser',
+    async () => {
+      const files = {
+        '/App.svelte': `<script>\n  import Child from './Child.svelte';\n</script>\n<Child />`,
+        '/Child.svelte': `<script>\n  let { n = 1e999 } = $props();\n</script>\n<p>{n}</p>`,
+      };
+      const { resolve, readFile } = memGraph(files);
+      const shaken = await svelteShaker('/App.svelte', resolve, readFile, rsvelte!);
+      expect(shaken['/Child.svelte']).toContain('{n}');
+    },
+  );
+});
