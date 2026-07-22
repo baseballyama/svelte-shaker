@@ -257,3 +257,203 @@ pub struct Root {
     /// still read it and the differential pin can compare. Removed in the final slice.
     pub ast: Value,
 }
+
+// =============================================================================
+// Value → IR converter — the wasm frontend (the input JSON is already parsed on
+// the JS side) and, in slice (a), the source `build_model` reads through. Maps the
+// svelte/compiler JSON shape faithfully (verified against the real parser output);
+// the native `rsvelte Root → IR` converter (a later slice) produces the same IR.
+// =============================================================================
+
+fn ntype(node: &Value) -> &str {
+    node.get("type").and_then(Value::as_str).unwrap_or("")
+}
+fn u32_at(node: &Value, key: &str) -> u32 {
+    node.get(key).and_then(Value::as_u64).unwrap_or(0) as u32
+}
+fn span_of(node: &Value) -> Span {
+    Span { start: u32_at(node, "start"), end: u32_at(node, "end") }
+}
+fn name_of(node: &Value) -> String {
+    node.get("name").and_then(Value::as_str).unwrap_or("").to_string()
+}
+fn cloned(node: &Value, key: &str) -> Value {
+    node.get(key).cloned().unwrap_or(Value::Null)
+}
+fn opt_val(node: &Value, key: &str) -> Option<Value> {
+    node.get(key).filter(|v| !v.is_null()).cloned()
+}
+
+fn fragment_from(frag: Option<&Value>) -> Fragment {
+    let nodes = frag
+        .and_then(|f| f.get("nodes"))
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().map(node_from).collect())
+        .unwrap_or_default();
+    Fragment { nodes }
+}
+fn frag_field(node: &Value, key: &str) -> Fragment {
+    fragment_from(node.get(key))
+}
+fn opt_frag(node: &Value, key: &str) -> Option<Fragment> {
+    node.get(key).filter(|v| !v.is_null()).map(|f| fragment_from(Some(f)))
+}
+
+fn element_from(node: &Value) -> Element {
+    Element { span: span_of(node), name: name_of(node), attributes: attrs_from(node), fragment: frag_field(node, "fragment") }
+}
+fn dynamic_from(node: &Value, expr_key: &str) -> DynamicElement {
+    DynamicElement { span: span_of(node), expr: cloned(node, expr_key), attributes: attrs_from(node), fragment: frag_field(node, "fragment") }
+}
+fn expr_from(node: &Value, key: &str) -> Expr {
+    Expr { span: span_of(node), expr: cloned(node, key) }
+}
+
+/// Convert a whole component AST (svelte/compiler JSON) into the IR.
+pub fn from_value(ast: &Value) -> Root {
+    Root {
+        fragment: fragment_from(ast.get("fragment")),
+        instance: ast.get("instance").cloned().unwrap_or(Value::Null),
+        module: ast.get("module").cloned().unwrap_or(Value::Null),
+        ast: ast.clone(),
+    }
+}
+
+fn node_from(node: &Value) -> Node {
+    match ntype(node) {
+        "Text" => Node::Text(Text {
+            span: span_of(node),
+            data: node.get("data").and_then(Value::as_str).unwrap_or("").to_string(),
+        }),
+        "Comment" => Node::Comment(span_of(node)),
+        "Component" => Node::Component(element_from(node)),
+        "RegularElement" => Node::RegularElement(element_from(node)),
+        "TitleElement" | "SlotElement" | "SvelteBody" | "SvelteDocument" | "SvelteFragment"
+        | "SvelteBoundary" | "SvelteHead" | "SvelteSelf" | "SvelteWindow" => Node::SpecialElement(element_from(node)),
+        "SvelteOptions" => Node::SvelteOptions(element_from(node)),
+        "SvelteComponent" => Node::SvelteComponent(dynamic_from(node, "expression")),
+        "SvelteElement" => Node::SvelteElement(dynamic_from(node, "tag")),
+        "ExpressionTag" => Node::ExpressionTag(expr_from(node, "expression")),
+        "HtmlTag" => Node::HtmlTag(expr_from(node, "expression")),
+        "ConstTag" => Node::ConstTag(expr_from(node, "declaration")),
+        "RenderTag" => Node::RenderTag(expr_from(node, "expression")),
+        "AttachTag" => Node::AttachTag(expr_from(node, "expression")),
+        "DebugTag" => Node::DebugTag(node.get("identifiers").and_then(Value::as_array).cloned().unwrap_or_default()),
+        "IfBlock" => Node::IfBlock(Box::new(IfBlock {
+            span: span_of(node),
+            elseif: node.get("elseif") == Some(&Value::Bool(true)),
+            test: cloned(node, "test"),
+            consequent: frag_field(node, "consequent"),
+            alternate: opt_frag(node, "alternate"),
+        })),
+        "EachBlock" => Node::EachBlock(Box::new(EachBlock {
+            span: span_of(node),
+            expression: cloned(node, "expression"),
+            context: opt_val(node, "context"),
+            index: node.get("index").and_then(Value::as_str).map(str::to_string),
+            key: opt_val(node, "key"),
+            body: frag_field(node, "body"),
+            fallback: opt_frag(node, "fallback"),
+        })),
+        "AwaitBlock" => Node::AwaitBlock(Box::new(AwaitBlock {
+            span: span_of(node),
+            expression: cloned(node, "expression"),
+            value: opt_val(node, "value"),
+            error: opt_val(node, "error"),
+            pending: opt_frag(node, "pending"),
+            then: opt_frag(node, "then"),
+            catch: opt_frag(node, "catch"),
+        })),
+        "KeyBlock" => Node::KeyBlock(Box::new(KeyBlock {
+            span: span_of(node),
+            expression: cloned(node, "expression"),
+            fragment: frag_field(node, "fragment"),
+        })),
+        "SnippetBlock" => Node::SnippetBlock(Box::new(SnippetBlock {
+            span: span_of(node),
+            expression: cloned(node, "expression"),
+            parameters: node.get("parameters").and_then(Value::as_array).cloned().unwrap_or_default(),
+            body: frag_field(node, "body"),
+        })),
+        // Known JS-carrying tag the engine only generic-walks; its expression is
+        // reached through the Value-walk delegation (see the fallback invariant).
+        "DeclarationTag" => Node::OtherTag(OtherTag { span: span_of(node), node: node.clone() }),
+        other => {
+            debug_assert!(false, "ir: unknown template node type {other:?}");
+            Node::OtherTag(OtherTag { span: span_of(node), node: node.clone() })
+        }
+    }
+}
+
+fn attrs_from(node: &Value) -> Vec<Attribute> {
+    node.get("attributes")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().map(attr_from).collect())
+        .unwrap_or_default()
+}
+fn named_attr(node: &Value, value_key: &str) -> NamedAttr {
+    NamedAttr { span: span_of(node), name: name_of(node), value: cloned(node, value_key) }
+}
+fn attr_from(attr: &Value) -> Attribute {
+    match ntype(attr) {
+        "Attribute" => Attribute::Attribute(named_attr(attr, "value")),
+        "SpreadAttribute" => Attribute::Spread(expr_from(attr, "expression")),
+        "BindDirective" => Attribute::Bind(named_attr(attr, "expression")),
+        "ClassDirective" => Attribute::Class(named_attr(attr, "expression")),
+        "StyleDirective" => Attribute::Style(named_attr(attr, "value")),
+        "OnDirective" | "UseDirective" | "TransitionDirective" | "AnimateDirective" | "LetDirective"
+        | "AttachTag" => Attribute::Other(OtherTag { span: span_of(attr), node: attr.clone() }),
+        other => {
+            debug_assert!(false, "ir: unknown attribute type {other:?}");
+            Attribute::Other(OtherTag { span: span_of(attr), node: attr.clone() })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn converts_core_template_nodes() {
+        let ast = json!({
+            "type": "Root",
+            "fragment": { "type": "Fragment", "nodes": [
+                { "type": "Component", "name": "Child", "start": 0, "end": 9,
+                  "attributes": [ { "type": "Attribute", "name": "x", "start": 8, "end": 11, "value": [] } ],
+                  "fragment": { "nodes": [] } },
+                { "type": "IfBlock", "start": 10, "end": 20, "elseif": false,
+                  "test": { "type": "Identifier", "name": "a" },
+                  "consequent": { "nodes": [ { "type": "Text", "data": "x", "start": 15, "end": 16 } ] },
+                  "alternate": null },
+                { "type": "SvelteComponent", "name": "svelte:component", "start": 21, "end": 30,
+                  "expression": { "type": "Identifier", "name": "X" }, "attributes": [], "fragment": { "nodes": [] } }
+            ] },
+            "instance": Value::Null, "module": Value::Null
+        });
+        let root = from_value(&ast);
+        assert_eq!(root.fragment.nodes.len(), 3);
+        match &root.fragment.nodes[0] {
+            Node::Component(e) => {
+                assert_eq!(e.name, "Child");
+                assert_eq!(e.span, Span { start: 0, end: 9 });
+                assert_eq!(e.attributes.len(), 1);
+            }
+            _ => panic!("expected Component"),
+        }
+        match &root.fragment.nodes[1] {
+            Node::IfBlock(b) => {
+                assert!(!b.elseif);
+                assert_eq!(b.consequent.nodes.len(), 1);
+                assert!(b.alternate.is_none());
+                assert_eq!(b.test["name"], "a");
+            }
+            _ => panic!("expected IfBlock"),
+        }
+        match &root.fragment.nodes[2] {
+            Node::SvelteComponent(d) => assert_eq!(d.expr["name"], "X"),
+            _ => panic!("expected SvelteComponent"),
+        }
+    }
+}
