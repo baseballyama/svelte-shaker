@@ -750,3 +750,74 @@ pub(crate) fn escaped_components(
     });
     sorted(out)
 }
+
+/// Escapes from ONE embedded template expression Value. The engine's fragment walk
+/// gives a top-level expression Identifier a value-position parent (`ExpressionTag`,
+/// attribute value, `{#if}` test, `this={…}`, …), so a delegated expression's ROOT
+/// counts as a value-use; deeper nodes use the real parent. Mirrors typed_scan's
+/// `expression_escapes` (itself corpus-pinned to this Value walk).
+fn expression_escapes(
+    expr: &Value,
+    imported: &HashSet<String>,
+    imports: &HashMap<String, String>,
+    namespace_locals: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    let not_type = |n: &Value| !is_type_only_node(n);
+    let mut first = true;
+    walk_parented_pruned(expr, None, &not_type, &mut |node, parent| {
+        let value_use =
+            if first { str_eq(node, "type", "Identifier") } else { is_value_use(node, parent) };
+        first = false;
+        if str_eq(node, "type", "Identifier") {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                if imported.contains(name) && value_use {
+                    flag_escape(name, imports, namespace_locals, out);
+                }
+            }
+        }
+    });
+}
+
+/// IR-consuming `escaped_components` (M4 slice a). The TEMPLATE half walks the typed
+/// IR and runs `expression_escapes` on every embedded expression Value (block/tag
+/// expressions + attribute values), so the escaping Identifiers — which only ever
+/// live in embedded JS — are found through the Value delegation (the fallback
+/// invariant). The instance-script half stays the identical Value walk. Pinned
+/// byte-for-byte to `escaped_components` by the shake corpus.
+pub(crate) fn escaped_components_ir(
+    root: &crate::ir::Root,
+    imports: &HashMap<String, String>,
+    imported: &HashSet<String>,
+    namespace_locals: &HashSet<String>,
+) -> Vec<String> {
+    use crate::ir;
+    let mut out = Vec::new();
+
+    ir::walk(&root.fragment, &mut |node| {
+        for expr in node.embedded_exprs() {
+            expression_escapes(expr, imported, imports, namespace_locals, &mut out);
+        }
+        for attr in node.attributes() {
+            if let Some(v) = attr.value() {
+                expression_escapes(v, imported, imports, namespace_locals, &mut out);
+            }
+        }
+    });
+
+    // Instance script: identical to `escaped_components`.
+    let not_type = |n: &Value| !is_type_only_node(n);
+    walk_parented_pruned(get(&root.ast, "instance"), None, &not_type, &mut |node, parent| {
+        if str_eq(node, "type", "Identifier") {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                if (imports.contains_key(name) || namespace_locals.contains(name))
+                    && is_value_use(node, parent)
+                {
+                    flag_escape(name, imports, namespace_locals, &mut out);
+                }
+            }
+        }
+    });
+
+    sorted(out)
+}

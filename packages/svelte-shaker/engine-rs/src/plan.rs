@@ -200,7 +200,7 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
         }
     });
     let imported = imported_locals(&ast);
-    let escaped = escaped_components(&ast, &imports, &imported, &namespace_locals(&ast));
+    let escaped = escaped_components_ir(&ir_root, &imports, &imported, &namespace_locals(&ast));
     Model {
         id: id.to_string(),
         ast,

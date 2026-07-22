@@ -636,4 +636,44 @@ mod tests {
         assert_eq!(sorted(id_), sorted(vd), "debug");
         assert_eq!(sorted(iw), sorted(vw), "written");
     }
+
+    /// `escaped_components_ir` must equal the Value `escaped_components` on an AST that
+    /// reads an imported component as a value from every position: `<svelte:component
+    /// this={C}>`, a `{#if}` test, an `{expr}`, an attribute `x={C}`, a `bind:this`,
+    /// a member access `C.foo` (only the object escapes), and the instance script.
+    #[test]
+    fn escaped_components_ir_matches_value() {
+        use std::collections::{HashMap, HashSet};
+        let id = |n: &str| json!({ "type": "Identifier", "name": n });
+        let etag = |n: &str| json!({ "type": "ExpressionTag", "start": 0, "end": 1, "expression": id(n) });
+        let ast = json!({
+            "type": "Root",
+            "instance": { "content": { "body": [
+                { "type": "ExpressionStatement", "expression": {
+                    "type": "AssignmentExpression", "operator": "=", "left": id("local"), "right": id("C") } },
+                { "type": "ExpressionStatement", "expression": {
+                    "type": "CallExpression", "callee": id("use"), "arguments": [ id("D") ] } }
+            ] } },
+            "fragment": { "type": "Fragment", "nodes": [
+                { "type": "SvelteComponent", "name": "svelte:component", "start": 0, "end": 1,
+                  "expression": id("C"), "attributes": [], "fragment": { "nodes": [] } },
+                { "type": "IfBlock", "start": 2, "end": 3, "elseif": false, "test": id("C"),
+                  "consequent": { "nodes": [ etag("D") ] }, "alternate": json!(null) },
+                { "type": "RegularElement", "name": "div", "start": 4, "end": 5, "attributes": [
+                    { "type": "Attribute", "name": "x", "start": 6, "end": 7, "value": etag("C") },
+                    { "type": "BindDirective", "name": "this", "start": 8, "end": 9, "expression": id("D") }
+                ], "fragment": { "nodes": [
+                    { "type": "ExpressionTag", "start": 10, "end": 11, "expression": {
+                        "type": "MemberExpression", "object": id("C"), "property": id("prop"), "computed": false } }
+                ] } }
+            ] }
+        });
+        let imports: HashMap<String, String> =
+            [("C".to_string(), "/C.svelte".to_string()), ("D".to_string(), "/D.svelte".to_string())].into();
+        let imported: HashSet<String> = ["C".to_string(), "D".to_string()].into();
+        let ns: HashSet<String> = HashSet::new();
+        let via_value = crate::analyze::escaped_components(&ast, &imports, &imported, &ns);
+        let via_ir = crate::analyze::escaped_components_ir(&from_value(&ast), &imports, &imported, &ns);
+        assert_eq!(via_ir, via_value);
+    }
 }
