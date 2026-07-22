@@ -1657,7 +1657,7 @@ function collectChildCalls(ast: Root, imports: Map<string, ComponentId>): ChildC
  * nothing. Skipping it only ever drops a non-call-site, so attribution (and the
  * resulting models) are unchanged.
  */
-function renderedComponentTagNames(ast: Root): Set<string> {
+export function renderedComponentTagNames(ast: Root): Set<string> {
   const names = new Set<string>();
   walk<null>(ast.fragment, null, {
     Component(node, { next }) {
@@ -1675,7 +1675,7 @@ function renderedComponentTagNames(ast: Root): Set<string> {
  * Shell resolves each through its namespace import's barrel; bare `<Child/>` tags
  * have no dot and are bound by the plain import maps instead.
  */
-function memberComponentTags(ast: Root): Set<string> {
+export function memberComponentTags(ast: Root): Set<string> {
   const tags = new Set<string>();
   walk<null>(ast.fragment, null, {
     Component(node, { next }) {
@@ -2065,7 +2065,7 @@ interface ImportInfo {
   imported: string;
 }
 
-function* importSources(instance: AnyNode): Generator<ImportInfo> {
+export function* importSources(instance: AnyNode): Generator<ImportInfo> {
   const program = instance.content;
   for (const stmt of program?.body ?? []) {
     if (stmt.type !== 'ImportDeclaration') continue;

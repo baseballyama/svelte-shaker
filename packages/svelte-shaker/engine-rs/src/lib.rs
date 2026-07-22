@@ -21,8 +21,6 @@ mod plan;
 mod props;
 mod reverse;
 mod shake;
-// Chatty-protocol M0 spike (docs/CHATTY-PROTOCOL.md) — temporary, removed in M1.
-mod spike_parse;
 mod transform;
 mod unread;
 
@@ -38,10 +36,6 @@ use crate::unread::collect_unread;
 // Preserve the crate-root path the native (napi) scanner links against
 // (`svelte_shaker_engine::find_never_passed_props`).
 pub use crate::plan::find_never_passed_props;
-
-// Chatty-protocol M0 spike: the napi prototype reuses this in-process parse helper
-// so the wasm bench and the native scan measure the identical extraction.
-pub use crate::spike_parse::{file_import_specifiers, ImportSpec};
 
 /// Analyze one component AST (JSON) given its resolved outgoing edges (JSON), and
 /// return the per-file model fields ported so far: declared props, `...rest`

@@ -23,16 +23,19 @@ export declare function scanViaValue(inputJson: string): string;
 export declare function scanProfile(inputJson: string): string;
 
 /**
- * Chatty-protocol M0 spike (docs/CHATTY-PROTOCOL.md) — TEMPORARY, replaced by the
- * real Session API in M1. Parses every file in parallel (rayon) and returns each
- * file's import specifiers: `{ files: { id: string; imports: { source: string;
- * names: string[] }[] }[]; parseErrors: number; importEdges: number }`. `inputJson`
- * is `{ files: { id: string; code: string }[] }`.
+ * Chatty-protocol Round 1: parse every file with rsvelte (in parallel) and return
+ * the small per-file facts the JS crawl needs to resolve module edges — without
+ * shipping an AST across the boundary.
+ *
+ * `inputJson` is `{ files: { id: string; code: string }[] }`. Returns the JSON of
+ * `{ files: { id: string; imports: { local: string; imported: string; source:
+ * string }[]; renderedTags: string[]; memberTags: string[]; parseError: boolean }[] }`,
+ * one entry per input file in input order. `imported` is `"default"`, `"*"`, or the
+ * source's exported name; `renderedTags` are bare `<Local>` tags and `memberTags`
+ * are dotted `<ns.X>` tags. Mirrors the JS `importSources` /
+ * `renderedComponentTagNames` / `memberComponentTags`.
  */
-export declare function parseImports(inputJson: string): string;
-
-/** Single-threaded counterpart of {@link parseImports}, for the parallel/single A/B. */
-export declare function parseImportsSeq(inputJson: string): string;
+export declare function parseFiles(inputJson: string): string;
 
 /**
  * In-memory scan state for incremental re-scans (editor / LSP). Construct once,

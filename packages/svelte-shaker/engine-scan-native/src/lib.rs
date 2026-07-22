@@ -27,6 +27,7 @@ use rsvelte_core::ast::arena::with_serialize_arena;
 use rsvelte_core::{parse, ParseOptions};
 use serde_json::{json, Value};
 
+mod parse_files;
 mod typed_scan;
 mod utf16;
 use utf16::{convert_positions_to_utf16, Utf8ToUtf16};
@@ -92,65 +93,30 @@ pub fn scan(input_json: String) -> napi::Result<String> {
         .map_err(|e| napi::Error::from_reason(format!("scan: serialize output: {e}")))
 }
 
-// ===========================================================================
-// Chatty-protocol M0 spike (docs/CHATTY-PROTOCOL.md) — TEMPORARY, replaced by the
-// real Session API in M1. Measures the native "parse every file -> return import
-// specifiers" round (the `parseFiles` step), so we can confirm the parse cost and
-// the parallel/single-thread split on a real app. Reuses engine-rs's in-process
-// `file_import_specifiers`, so the wasm bench and this measure the same extraction.
-// ===========================================================================
-
-/// Shared body of the two bench exports: extract each file's import specifiers,
-/// `run_parallel` selecting rayon vs a sequential fold. Returns `{ files: [{ id,
-/// imports }], parseErrors, importEdges }`.
-fn parse_imports_impl(input_json: &str, run_parallel: bool) -> napi::Result<String> {
-    let (files, _edges) = parse_input(input_json)?;
-
-    let per_file = |f: &Value| -> (Value, bool, u32) {
-        let id = f.get("id").and_then(Value::as_str).unwrap_or_default();
-        let code = f.get("code").and_then(Value::as_str).unwrap_or_default();
-        match svelte_shaker_engine::file_import_specifiers(code) {
-            Some(specs) => {
-                let imports: Vec<Value> = specs
-                    .iter()
-                    .map(|s| json!({ "source": s.source, "names": s.names }))
-                    .collect();
-                (json!({ "id": id, "imports": imports }), false, specs.len() as u32)
-            }
-            None => (json!({ "id": id, "imports": [] }), true, 0),
-        }
-    };
-
-    let rows: Vec<(Value, bool, u32)> =
-        if run_parallel { files.par_iter().map(per_file).collect() } else { files.iter().map(per_file).collect() };
-
-    let mut out_files = Vec::with_capacity(rows.len());
-    let mut parse_errors: u32 = 0;
-    let mut import_edges: u32 = 0;
-    for (row, errored, edges) in rows {
-        if errored {
-            parse_errors += 1;
-        }
-        import_edges += edges;
-        out_files.push(row);
-    }
-
-    serde_json::to_string(&json!({
-        "files": out_files, "parseErrors": parse_errors, "importEdges": import_edges
-    }))
-    .map_err(|e| napi::Error::from_reason(format!("parse_imports: serialize: {e}")))
-}
-
-/// Parse every file in parallel (rayon) and return its import specifiers.
+/// Chatty-protocol Round 1: parse every file with rsvelte (in parallel) and return
+/// the small per-file facts the JS crawl needs to resolve module edges — nothing
+/// crosses the boundary but import specifiers and rendered component tag names.
+///
+/// `input_json` is `{ "files": [{ "id", "code" }] }`. Output is `{ "files": [{ id,
+/// imports: [{ local, imported, source }], renderedTags: [string], memberTags:
+/// [string], parseError: bool }] }`, one entry per input file in input order. The
+/// extraction mirrors the JS `importSources` / `renderedComponentTagNames` /
+/// `memberComponentTags` byte-for-byte (pinned by `tests/native-parse-files.test.ts`).
 #[napi]
-pub fn parse_imports(input_json: String) -> napi::Result<String> {
-    parse_imports_impl(&input_json, true)
-}
+pub fn parse_files(input_json: String) -> napi::Result<String> {
+    let (files, _edges) = parse_input(&input_json)?;
 
-/// Single-threaded counterpart of [`parse_imports`], for the parallel/single A/B.
-#[napi]
-pub fn parse_imports_seq(input_json: String) -> napi::Result<String> {
-    parse_imports_impl(&input_json, false)
+    let rows: Vec<Value> = files
+        .par_iter()
+        .map(|f| {
+            let id = f.get("id").and_then(Value::as_str).unwrap_or_default();
+            let code = f.get("code").and_then(Value::as_str).unwrap_or_default();
+            parse_files::parse_one(id, code).into_json()
+        })
+        .collect();
+
+    serde_json::to_string(&json!({ "files": rows }))
+        .map_err(|e| napi::Error::from_reason(format!("parse_files: serialize: {e}")))
 }
 
 /// Parse one component's source into the rsvelte JSON AST with UTF-16 offsets — the
