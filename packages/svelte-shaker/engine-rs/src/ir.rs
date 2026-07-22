@@ -165,6 +165,14 @@ pub struct IfBlock {
     pub test: Value,
     pub consequent: Fragment,
     pub alternate: Option<Fragment>,
+    /// TEMPORARY BRIDGE (removed in slice c): the raw `{#if}` node Value. slice (b)
+    /// makes the fixpoint FIND if-blocks via the fast typed walk, but the dead-branch
+    /// decision (`decide_chain`) is still the Value implementation — it collects the
+    /// `{:else if}` chain, reads arm spans, and returns the KEPT fragment Value that
+    /// `shake_body`'s `fold_if_blocks` re-emits. `decide_chain` and `fold_if_blocks`
+    /// share that Value output, so both are typed together in slice (c), at which point
+    /// this field (and `Root.ast`) go away.
+    pub raw: Value,
 }
 
 /// `{#each expression as context, index (key)}…{:else}…{/each}`.
@@ -345,6 +353,7 @@ fn node_from(node: &Value) -> Node {
             test: cloned(node, "test"),
             consequent: frag_field(node, "consequent"),
             alternate: opt_frag(node, "alternate"),
+            raw: node.clone(),
         })),
         "EachBlock" => Node::EachBlock(Box::new(EachBlock {
             span: span_of(node),
@@ -522,6 +531,32 @@ impl Node {
             | Node::SpecialElement(_) | Node::SvelteOptions(_) => vec![],
         }
     }
+
+    /// The node's child fragments (element bodies, block arms). Used to descend the
+    /// template without the generic `walk` (e.g. the dead-branch scan, which needs
+    /// custom recursion control at `{#if}` nodes).
+    pub fn child_fragments(&self) -> Vec<&Fragment> {
+        match self {
+            Node::Component(e) | Node::RegularElement(e) | Node::SpecialElement(e) | Node::SvelteOptions(e) => vec![&e.fragment],
+            Node::SvelteComponent(d) | Node::SvelteElement(d) => vec![&d.fragment],
+            Node::IfBlock(b) => {
+                let mut v = vec![&b.consequent];
+                v.extend(b.alternate.iter());
+                v
+            }
+            Node::EachBlock(b) => {
+                let mut v = vec![&b.body];
+                v.extend(b.fallback.iter());
+                v
+            }
+            Node::AwaitBlock(b) => [&b.pending, &b.then, &b.catch].into_iter().flatten().collect(),
+            Node::KeyBlock(b) => vec![&b.fragment],
+            Node::SnippetBlock(b) => vec![&b.body],
+            Node::Text(_) | Node::Comment(_) | Node::ExpressionTag(_) | Node::HtmlTag(_)
+            | Node::ConstTag(_) | Node::DebugTag(_) | Node::RenderTag(_) | Node::AttachTag(_)
+            | Node::OtherTag(_) => vec![],
+        }
+    }
 }
 
 impl Attribute {
@@ -675,5 +710,40 @@ mod tests {
         let via_value = crate::analyze::escaped_components(&ast, &imports, &imported, &ns);
         let via_ir = crate::analyze::escaped_components_ir(&from_value(&ast), &imports, &imported, &ns);
         assert_eq!(via_ir, via_value);
+    }
+
+    /// `compute_dead_spans_ir` (IR walk + Value `decide_chain` via the raw bridge) must
+    /// find the same dead spans as the Value `compute_dead_spans`, including the nested
+    /// `{#if}` inside a kept arm and the recursion control at elseif/removed nodes.
+    #[test]
+    fn compute_dead_spans_ir_matches_value() {
+        use crate::eval::Literal;
+        use std::collections::HashMap;
+        let id = |n: &str| json!({ "type": "Identifier", "name": n });
+        let lit = |s: &str| json!({ "type": "Literal", "value": s });
+        let eq = |l: serde_json::Value, r: serde_json::Value| {
+            json!({ "type": "BinaryExpression", "operator": "===", "left": l, "right": r })
+        };
+        let text = |s: u32, e: u32| json!({ "type": "Text", "data": "x", "start": s, "end": e });
+        let ast = json!({
+            "type": "Root", "instance": Value::Null, "module": Value::Null,
+            "fragment": { "type": "Fragment", "nodes": [
+                { "type": "IfBlock", "start": 0, "end": 100, "elseif": false,
+                  "test": eq(id("v"), lit("a")),
+                  "consequent": { "start": 10, "end": 50, "nodes": [
+                      { "type": "IfBlock", "start": 20, "end": 40, "elseif": false,
+                        "test": eq(id("v"), lit("b")),
+                        "consequent": { "start": 25, "end": 35, "nodes": [ text(26, 34) ] },
+                        "alternate": json!(null) }
+                  ] },
+                  "alternate": { "start": 60, "end": 90, "nodes": [ text(70, 80) ] } }
+            ] }
+        });
+        let env: HashMap<String, Literal> = [("v".to_string(), Literal::Str("a".to_string()))].into();
+        let set_env = HashMap::new();
+        let via_value = crate::dead_code::compute_dead_spans(&ast["fragment"], &env, &set_env);
+        let via_ir = crate::dead_code::compute_dead_spans_ir(&from_value(&ast).fragment, &env, &set_env);
+        assert_eq!(via_ir, via_value);
+        assert!(!via_value.is_empty(), "the fixture should have dead spans");
     }
 }

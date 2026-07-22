@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::dead_code::compute_dead_spans;
+use crate::dead_code::compute_dead_spans_ir;
 use crate::eval::{Env, Literal, SetEnv};
 use crate::plan::{dead_spans_for_plans, is_fold_blocked, remap_to_local_names, ComponentPlan, Model, Plans};
 use crate::props::{read_call_site, PropDecl};
@@ -108,7 +108,7 @@ pub(crate) fn render_residual(child: &Model, plan: &ComponentPlan, code: &str, e
 pub(crate) fn live_children_for_env(model: &Model, env: &Env, set_env: &SetEnv) -> Vec<String> {
     let local_env = remap_to_local_names(env, model);
     let local_set = remap_to_local_names(set_env, model);
-    let dead = compute_dead_spans(get(&model.ast, "fragment"), &local_env, &local_set);
+    let dead = compute_dead_spans_ir(&model.ir.fragment, &local_env, &local_set);
     let mut out = Vec::new();
     for (cid, node) in &model.child_calls {
         if !dead.is_empty() && in_spans(node, &dead) {

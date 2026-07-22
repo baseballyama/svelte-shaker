@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::analyze::*;
 use crate::ast::*;
-use crate::dead_code::compute_dead_spans;
+use crate::dead_code::compute_dead_spans_ir;
 use crate::eval::{Env, Literal, SetEnv};
 use crate::props::*;
 
@@ -149,6 +149,10 @@ pub(crate) fn build_plan(
 pub(crate) struct Model {
     pub(crate) id: String,
     pub(crate) ast: Value,
+    /// The typed template IR (M4). The fixpoint's dead-branch scan reads it instead
+    /// of re-walking `ast` each round. During the migration it coexists with `ast`;
+    /// both `ast` and this become just the IR once slices b/c finish (slice c).
+    pub(crate) ir: crate::ir::Root,
     pub(crate) imports: HashMap<String, String>, // tag name -> childId (all edge kinds), for call-site edits
     pub(crate) props_info: Option<PropsInfo>,
     /// The inputs this component can observe (docs §PR4) — drives the reverse pass.
@@ -204,6 +208,7 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
     Model {
         id: id.to_string(),
         ast,
+        ir: ir_root,
         imports,
         props_info,
         reachable_inputs,
@@ -326,7 +331,7 @@ pub(crate) fn dead_spans_for_plans(models: &[Model], plans: &Plans) -> HashMap<S
         // or the fixpoint and the edit could disagree on what folds (unsound).
         let env = remap_to_local_names(&plan.const_env(), model);
         let set_env = remap_to_local_names(&plan.set_env(), model);
-        let spans = compute_dead_spans(get(&model.ast, "fragment"), &env, &set_env);
+        let spans = compute_dead_spans_ir(&model.ir.fragment, &env, &set_env);
         if !spans.is_empty() {
             out.insert(model.id.clone(), spans);
         }
