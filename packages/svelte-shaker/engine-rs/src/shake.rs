@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::*;
 use crate::css::shake_css;
 use crate::dead_code::{decide_chain, is_full_removal, ChainDecision};
-use crate::eval::{evaluate, Env, SetEnv};
+use crate::eval::{evaluate, Env, Literal, SetEnv};
 use crate::plan::{remap_to_local_names, Model};
 use crate::transform::MagicEdit;
 
@@ -41,7 +41,7 @@ pub(crate) fn substituted_slice(edits: &MagicEdit, from: i64, to: i64, roots: &[
     for r in refs {
         out.push_str(&edits.slice(cursor as usize, r.start as usize));
         out.push_str(&r.head);
-        out.push_str(&env[&r.name].to_source());
+        out.push_str(&fold_source(&env[&r.name], r.member_object));
         out.push_str(&r.tail);
         cursor = r.end;
     }
@@ -345,6 +345,25 @@ pub(crate) struct FoldRef {
     pub(crate) head: String,
     pub(crate) tail: String,
     pub(crate) name: String,
+    /// The identifier is the OBJECT of a non-computed member access (`NAME.foo`), so
+    /// a folded NUMBER here must be parenthesized (see [`fold_source`]). Only the
+    /// plain-read case can be one; every shorthand expansion wraps the literal in
+    /// `name={…}` / `name: …`, where a number is never a bare member object.
+    pub(crate) member_object: bool,
+}
+
+/// The literal text a folded ref emits: the source form, but a NUMBER used as a
+/// member-access object is parenthesized so `count.toFixed()` (with `count` folded
+/// to `5000`) emits `(5000).toFixed()`, not the invalid `5000.toFixed()` (the
+/// parser reads `5000.` as a float then hits the method name). Only decimal numbers
+/// need it. Mirrors transform.ts `foldReplacement`.
+fn fold_source(value: &Literal, member_object: bool) -> String {
+    let lit = value.to_source();
+    if member_object && matches!(value, Literal::Num(_)) {
+        format!("({lit})")
+    } else {
+        lit
+    }
 }
 
 /// `collectFoldRefs`: visit every folded-prop reference in `root` — plain reads,
@@ -367,7 +386,7 @@ pub(crate) fn collect_fold_refs<F: FnMut(FoldRef, &Value)>(root: &Value, env: &E
                     }
                     let src = edits.slice(start as usize, end as usize); // `style:NAME`
                     emit(
-                        FoldRef { start, end, head: format!("{src}={{"), tail: "}".to_string(), name: name.to_string() },
+                        FoldRef { start, end, head: format!("{src}={{"), tail: "}".to_string(), name: name.to_string(), member_object: false },
                         node,
                     );
                 }
@@ -397,7 +416,7 @@ pub(crate) fn fold_ref_for(node: &Value, parent: Option<&Value>, grandparent: Op
             && start > 0
             && edits.unit_at((start - 1) as usize) == Some(b':' as u16)
         {
-            return FoldRef { start, end, head: format!("{name}={{"), tail: "}".to_string(), name: name.to_string() };
+            return FoldRef { start, end, head: format!("{name}={{"), tail: "}".to_string(), name: name.to_string(), member_object: false };
         }
     }
     // `{NAME}` attribute shorthand: the braces belong to the Attribute, not the
@@ -414,6 +433,7 @@ pub(crate) fn fold_ref_for(node: &Value, parent: Option<&Value>, grandparent: Op
                     head: format!("{attr_name}={{"),
                     tail: "}".to_string(),
                     name: name.to_string(),
+                    member_object: false,
                 };
             }
         }
@@ -432,10 +452,19 @@ pub(crate) fn fold_ref_for(node: &Value, parent: Option<&Value>, grandparent: Op
                 head: format!("{name}: "),
                 tail: String::new(),
                 name: name.to_string(),
+                member_object: false,
             };
         }
     }
-    FoldRef { start, end, head: String::new(), tail: String::new(), name: name.to_string() }
+    // Plain expression read: flag a member-access object (`NAME.foo`) so a folded
+    // number is parenthesized. A computed access (`NAME[i]`) needs no wrapping
+    // (`5000[i]` parses), so it stays unflagged. Mirrors transform.ts `foldRefFor`.
+    let member_object = parent.is_some_and(|p| {
+        str_eq(p, "type", "MemberExpression")
+            && same_node(get(p, "object"), node)
+            && p.get("computed") != Some(&Value::Bool(true))
+    });
+    FoldRef { start, end, head: String::new(), tail: String::new(), name: name.to_string(), member_object }
 }
 
 pub(crate) fn collect_prop_refs(model: &Model, env: &Env, dead: &[Span], edits: &MagicEdit) -> Vec<FoldRef> {
@@ -708,7 +737,7 @@ pub(crate) fn shake_body(
         fold_ternaries(fragment, &local_env, edits, &mut dead);
     }
     for r in collect_prop_refs(model, &local_env, &dead, edits) {
-        let text = format!("{}{}{}", r.head, local_env[&r.name].to_source(), r.tail);
+        let text = format!("{}{}{}", r.head, fold_source(&local_env[&r.name], r.member_object), r.tail);
         edits.overwrite(r.start as usize, r.end as usize, &text);
     }
     // The drop matches the destructure KEYS, so it keeps the EXTERNAL names (which
