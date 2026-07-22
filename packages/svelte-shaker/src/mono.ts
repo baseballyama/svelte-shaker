@@ -219,6 +219,17 @@ export function monomorphize(
     }
   }
 
+  // No child folds a non-base residual at EVERY live site -> nothing is
+  // specializable, so skip the whole-program base-size setup entirely (the step-3
+  // loop would emit nothing anyway).  Byte-identical to running it, just cheaper.
+  let anyCandidate = false;
+  for (const childId of liveSitesByChild.keys())
+    if (!ineligible.has(childId)) {
+      anyCandidate = true;
+      break;
+    }
+  if (!anyCandidate) return { variants, bindings };
+
   // (2) Build the whole-program base render graph + the base module sizes, and
   // the set of components reachable from the shake entries.  `ownSize` is
   // memoized (compile is the hot cost) and a compile error makes a component
