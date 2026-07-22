@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { createRequire } from 'node:module';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -36,33 +37,14 @@ async function rustShake(entry: string): Promise<Record<string, string>> {
 const FIXTURES = resolvePath(__dirname, 'fixtures');
 
 describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () => {
-  for (const name of [
-    'basic1',
-    'cascade',
-    'css-dead-branch',
-    'css-reverse-only',
-    'css-variant',
-    'drop-trailing-run',
-    'else-empty-consequent',
-    'else-exhaustive',
-    'fold-alias',
-    'fold-local-state',
-    'fold-nested',
-    'fold-shorthand',
-    'fold-ternary',
-    'if-true',
-    'narrow-variant',
-    'narrow-passthrough',
-    'rest-prop',
-    'spread-after',
-    'spread-const-object',
-    'unread-declared',
-    'unread-guard',
-    'unread-input',
-    'ws-compensate',
-    'ws-kept-arm',
-    'ws-pre',
-  ]) {
+  // Sweep EVERY golden fixture (not a hand-maintained list): a fixture the wasm
+  // engine was never run against is how #154's fold-number-member paren fix went
+  // un-ported to Rust — the list silently missed it. `readdirSync` closes that gap
+  // so any new fixture is byte-checked against the wasm engine automatically.
+  const dirs = readdirSync(FIXTURES, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+  for (const name of dirs) {
     it(`${name}: full shaken output matches the TS engine`, async () => {
       const entry = join(FIXTURES, name, 'input', 'App.svelte');
       const viaRust = await rustShake(entry);
