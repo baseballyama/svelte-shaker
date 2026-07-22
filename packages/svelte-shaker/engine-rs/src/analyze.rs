@@ -159,6 +159,122 @@ pub(crate) fn template_bindings(ast: &Value) -> (Vec<String>, Vec<String>, Vec<S
     (shadowed, debug, written)
 }
 
+/// IR-consuming `template_bindings` (M4 slice a). The instance-script pass stays a
+/// Value walk (JS analysis is out of the IR's scope). The TEMPLATE pass walks the
+/// typed IR for the template binders / `{@debug}`, and delegates every embedded
+/// expression Value to the same `collect_written` / `add_pattern_names`, so writes
+/// and binders inside embedded JS (event handlers, `{expr}`, tests) are still found
+/// (the fallback invariant). `bind:` and `let:` are reproduced explicitly since the
+/// IR carries them as typed attributes, not as walked nodes. Pinned byte-for-byte to
+/// `template_bindings` by the shake corpus.
+pub(crate) fn template_bindings_ir(root: &crate::ir::Root) -> (Vec<String>, Vec<String>, Vec<String>) {
+    use crate::ir;
+    let mut shadowed = Vec::new();
+    let mut debug = Vec::new();
+    let mut written = Vec::new();
+
+    // Instance script — identical to `template_bindings`.
+    walk(get(&root.ast, "instance"), &mut |node| {
+        if matches!(type_of(node), Some("VariableDeclarator") | Some("FunctionDeclaration")) {
+            let id = get(node, "id");
+            if str_eq(id, "type", "Identifier") {
+                if let Some(n) = id.get("name").and_then(Value::as_str) {
+                    push_unique(&mut shadowed, n);
+                }
+            }
+        }
+        if matches!(
+            type_of(node),
+            Some("FunctionDeclaration") | Some("FunctionExpression") | Some("ArrowFunctionExpression")
+        ) {
+            for param in arr(node, "params") {
+                add_pattern_names(param, &mut shadowed);
+            }
+        }
+        collect_written(node, &mut written);
+    });
+
+    // Template — typed IR walk + Value delegation for embedded JS.
+    ir::walk(&root.fragment, &mut |node| {
+        match node {
+            ir::Node::EachBlock(b) => {
+                if let Some(ctx) = &b.context {
+                    add_pattern_names(ctx, &mut shadowed);
+                }
+                if let Some(i) = &b.index {
+                    push_unique(&mut shadowed, i);
+                }
+            }
+            ir::Node::SnippetBlock(b) => {
+                if str_eq(&b.expression, "type", "Identifier") {
+                    if let Some(n) = b.expression.get("name").and_then(Value::as_str) {
+                        push_unique(&mut shadowed, n);
+                    }
+                }
+                for p in &b.parameters {
+                    add_pattern_names(p, &mut shadowed);
+                }
+            }
+            ir::Node::AwaitBlock(b) => {
+                if let Some(v) = &b.value {
+                    add_pattern_names(v, &mut shadowed);
+                }
+                if let Some(e) = &b.error {
+                    add_pattern_names(e, &mut shadowed);
+                }
+            }
+            ir::Node::ConstTag(e) => {
+                for d in arr(&e.expr, "declarations") {
+                    add_pattern_names(get(d, "id"), &mut shadowed);
+                }
+            }
+            ir::Node::DebugTag(idents) => {
+                for ident in idents {
+                    if str_eq(ident, "type", "Identifier") {
+                        if let Some(n) = ident.get("name").and_then(Value::as_str) {
+                            push_unique(&mut debug, n);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for attr in node.attributes() {
+            match attr {
+                // `bind:name={ident}` two-way binds a write (collect_written's
+                // BindDirective case); the IR carries it as a typed attribute.
+                ir::Attribute::Bind(a) => {
+                    if str_eq(&a.value, "type", "Identifier") {
+                        if let Some(n) = a.value.get("name").and_then(Value::as_str) {
+                            push_unique(&mut written, n);
+                        }
+                    }
+                    walk(&a.value, &mut |x| collect_written(x, &mut written));
+                }
+                // `let:name` binds a template-scope name; also delegate for handler writes.
+                ir::Attribute::Other(o) => {
+                    if str_eq(&o.node, "type", "LetDirective") {
+                        if let Some(n) = o.node.get("name").and_then(Value::as_str) {
+                            push_unique(&mut shadowed, n);
+                        }
+                    }
+                    walk(&o.node, &mut |x| collect_written(x, &mut written));
+                }
+                _ => {
+                    if let Some(v) = attr.value() {
+                        walk(v, &mut |x| collect_written(x, &mut written));
+                    }
+                }
+            }
+        }
+        for expr in node.embedded_exprs() {
+            walk(expr, &mut |x| collect_written(x, &mut written));
+        }
+    });
+
+    (shadowed, debug, written)
+}
+
 /// Add the names an assignment / update expression or `bind:` directive WRITES to
 /// `out`: a bare-identifier target (`p = …`, `p++`), a destructuring assignment
 /// (`({ p } = obj)`), or a two-way `bind:value={p}` / `bind:this={p}`. A

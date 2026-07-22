@@ -175,7 +175,12 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
     let imports = edge_imports(&Value::Array(edges.to_vec()));
     let props_info = declared_props_full(&ast);
     let reachable_inputs = compute_reachable_inputs(&ast, &props_info);
-    let (shadowed_vec, debug_vec, written_vec) = template_bindings(&ast);
+    // M4 slice (a): the template binder scan runs over the typed IR (the Value→IR
+    // build is the temporary double representation until the remaining fragment reads
+    // move over too). The instance-script half of `template_bindings_ir` stays a Value
+    // walk; embedded template JS is delegated to the same Value `collect_written`.
+    let ir_root = crate::ir::from_value(&ast);
+    let (shadowed_vec, debug_vec, written_vec) = template_bindings_ir(&ir_root);
     let shadowed: HashSet<String> = shadowed_vec.into_iter().collect();
     let debug: HashSet<String> = debug_vec.into_iter().collect();
     let written: HashSet<String> = written_vec.into_iter().collect();

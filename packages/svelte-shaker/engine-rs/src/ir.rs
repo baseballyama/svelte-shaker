@@ -479,6 +479,63 @@ pub fn component_tags(root: &Root) -> Vec<(String, Span)> {
     out
 }
 
+impl Node {
+    /// The node's attributes (element-like nodes carry them; others have none).
+    pub fn attributes(&self) -> &[Attribute] {
+        match self {
+            Node::Component(e) | Node::RegularElement(e) | Node::SpecialElement(e) | Node::SvelteOptions(e) => &e.attributes,
+            Node::SvelteComponent(d) | Node::SvelteElement(d) => &d.attributes,
+            _ => &[],
+        }
+    }
+
+    /// Every JS expression Value this node embeds DIRECTLY (not its attributes'
+    /// expressions — [`Attribute::value`] — and not its child fragments). The
+    /// reads/escape passes delegate these to the Value walk (the fallback invariant).
+    pub fn embedded_exprs(&self) -> Vec<&Value> {
+        match self {
+            Node::ExpressionTag(e) | Node::HtmlTag(e) | Node::ConstTag(e) | Node::RenderTag(e)
+            | Node::AttachTag(e) => vec![&e.expr],
+            Node::DebugTag(ids) => ids.iter().collect(),
+            Node::SvelteComponent(d) | Node::SvelteElement(d) => vec![&d.expr],
+            Node::IfBlock(b) => vec![&b.test],
+            Node::EachBlock(b) => {
+                let mut v = vec![&b.expression];
+                v.extend(b.context.iter());
+                v.extend(b.key.iter());
+                v
+            }
+            Node::AwaitBlock(b) => {
+                let mut v = vec![&b.expression];
+                v.extend(b.value.iter());
+                v.extend(b.error.iter());
+                v
+            }
+            Node::KeyBlock(b) => vec![&b.expression],
+            Node::SnippetBlock(b) => {
+                let mut v = vec![&b.expression];
+                v.extend(b.parameters.iter());
+                v
+            }
+            Node::OtherTag(o) => vec![&o.node],
+            Node::Text(_) | Node::Comment(_) | Node::Component(_) | Node::RegularElement(_)
+            | Node::SpecialElement(_) | Node::SvelteOptions(_) => vec![],
+        }
+    }
+}
+
+impl Attribute {
+    /// The attribute's JS Value — its `value` (Attribute/Bind/Class/Style) or
+    /// `expression` (Spread), or the raw directive node (Other). `None` for none.
+    pub fn value(&self) -> Option<&Value> {
+        match self {
+            Attribute::Attribute(a) | Attribute::Bind(a) | Attribute::Class(a) | Attribute::Style(a) => Some(&a.value),
+            Attribute::Spread(e) => Some(&e.expr),
+            Attribute::Other(o) => Some(&o.node),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,5 +581,59 @@ mod tests {
             Node::SvelteComponent(d) => assert_eq!(d.expr["name"], "X"),
             _ => panic!("expected SvelteComponent"),
         }
+    }
+
+    /// The IR-consuming `template_bindings_ir` must produce the same shadowed / debug
+    /// / written sets as the Value `template_bindings` on an AST exercising every
+    /// binder + write kind (each context/index, snippet name/params, await value/error,
+    /// const, debug, `let:`, `bind:`, and an event-handler `x++` write in embedded JS).
+    #[test]
+    fn template_bindings_ir_matches_value() {
+        let id = |n: &str| json!({ "type": "Identifier", "name": n });
+        let ast = json!({
+            "type": "Root",
+            "instance": { "content": { "body": [
+                { "type": "VariableDeclaration", "declarations": [
+                    { "type": "VariableDeclarator", "id": id("local"), "init": json!(null) } ] },
+                { "type": "ExpressionStatement", "expression": {
+                    "type": "AssignmentExpression", "operator": "=", "left": id("assigned"),
+                    "right": { "type": "Literal", "value": 1 } } }
+            ] } },
+            "fragment": { "type": "Fragment", "nodes": [
+                { "type": "EachBlock", "start": 0, "end": 1,
+                  "expression": id("items"),
+                  "context": { "type": "ObjectPattern", "properties": [
+                      { "type": "Property", "key": id("k"), "value": id("item") } ] },
+                  "index": "i", "body": { "nodes": [] } },
+                { "type": "SnippetBlock", "start": 2, "end": 3,
+                  "expression": id("row"), "parameters": [ id("p") ], "body": { "nodes": [] } },
+                { "type": "AwaitBlock", "start": 4, "end": 5, "expression": id("promise"),
+                  "value": id("val"), "error": id("err") },
+                { "type": "ConstTag", "start": 6, "end": 7, "declaration": {
+                    "type": "VariableDeclaration", "declarations": [
+                        { "type": "VariableDeclarator", "id": id("c"), "init": id("x") } ] } },
+                { "type": "DebugTag", "start": 8, "end": 9, "identifiers": [ id("watched") ] },
+                { "type": "RegularElement", "name": "input", "start": 10, "end": 11,
+                  "attributes": [
+                      { "type": "BindDirective", "name": "value", "start": 12, "end": 13, "expression": id("bound") },
+                      { "type": "LetDirective", "name": "slotv", "start": 14, "end": 15 },
+                      { "type": "OnDirective", "name": "click", "start": 16, "end": 17, "expression": {
+                          "type": "ArrowFunctionExpression", "params": [], "body": {
+                              "type": "UpdateExpression", "operator": "++", "argument": id("count") } } }
+                  ],
+                  "fragment": { "nodes": [] } }
+            ] }
+        });
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v.dedup();
+            v
+        };
+        let (vs, vd, vw) = crate::analyze::template_bindings(&ast);
+        let root = from_value(&ast);
+        let (is, id_, iw) = crate::analyze::template_bindings_ir(&root);
+        assert_eq!(sorted(is), sorted(vs), "shadowed");
+        assert_eq!(sorted(id_), sorted(vd), "debug");
+        assert_eq!(sorted(iw), sorted(vw), "written");
     }
 }
