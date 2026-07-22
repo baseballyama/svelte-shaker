@@ -3,7 +3,7 @@ name = "svelte-shaker-engine"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "WASM core for svelte-shaker (docs/RUST-MIGRATION.md M4+). Self-contained: analyzes a Svelte AST passed as JSON; no rsvelte_core build dependency."
+description = "WASM core for svelte-shaker (docs/RUST-MIGRATION.md M4+). Analyzes a Svelte AST passed as JSON; the chatty-protocol M0 spike additionally links rsvelte_core to parse in-process (both wasm and native)."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -18,6 +18,20 @@ serde_json = "1.0.150"
 # pool, so rayon is pulled in only off-wasm and the wasm build is unchanged.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.12.0"
+# Chatty-protocol M0 spike (docs/CHATTY-PROTOCOL.md): pull rsvelte's parser INTO
+# the engine so a Svelte AST never has to cross the JS<->wasm JSON boundary.
+# `default-features = false` drops rsvelte's `native` feature (jemalloc/mimalloc/
+# rayon) so this shares the host allocator — matching engine-scan-native's own
+# rsvelte_core dep, so the two unify to one build on native.
+rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "852f80e27a442ea209a19b9f1e4339b62a5dbde2", default-features = false }
+
+# On wasm the same parser is reused through rsvelte's `wasm-deps` feature, which
+# pulls ONLY the wasm-bindgen toolchain + the wasm `getrandom` backend — not the
+# `native` allocator/rayon stack, and not rsvelte's own `#[wasm_bindgen]` surface
+# (that would collide at link time). This is the exact pattern rsvelte_fmt_wasm
+# uses to reuse the parser on wasm.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "852f80e27a442ea209a19b9f1e4339b62a5dbde2", default-features = false, features = ["wasm-deps"] }
 
 [profile.release]
 opt-level = "s"

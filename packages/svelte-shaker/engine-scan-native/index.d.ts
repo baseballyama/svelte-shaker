@@ -23,6 +23,18 @@ export declare function scanViaValue(inputJson: string): string;
 export declare function scanProfile(inputJson: string): string;
 
 /**
+ * Chatty-protocol M0 spike (docs/CHATTY-PROTOCOL.md) — TEMPORARY, replaced by the
+ * real Session API in M1. Parses every file in parallel (rayon) and returns each
+ * file's import specifiers: `{ files: { id: string; imports: { source: string;
+ * names: string[] }[] }[]; parseErrors: number; importEdges: number }`. `inputJson`
+ * is `{ files: { id: string; code: string }[] }`.
+ */
+export declare function parseImports(inputJson: string): string;
+
+/** Single-threaded counterpart of {@link parseImports}, for the parallel/single A/B. */
+export declare function parseImportsSeq(inputJson: string): string;
+
+/**
  * In-memory scan state for incremental re-scans (editor / LSP). Construct once,
  * `init` with the full program, then `update` per change set — `update` re-parses
  * only the changed files and re-runs the cheap whole-program assembly over the
