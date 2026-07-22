@@ -37,6 +37,11 @@ use crate::unread::collect_unread;
 // (`svelte_shaker_engine::find_never_passed_props`).
 pub use crate::plan::find_never_passed_props;
 
+// The native (napi) engine drives the same whole-program shake through these
+// environment-free cores (`shake_program_value` / `shake_program_with_mono_value`
+// are `pub fn` above); it builds the mono options with this re-exported type.
+pub use crate::mono::MonoOptions;
+
 /// Analyze one component AST (JSON) given its resolved outgoing edges (JSON), and
 /// return the per-file model fields ported so far: declared props, `...rest`
 /// presence, shadowed / `{@debug}` fold-blocking names, the `<svelte:options>`
@@ -129,10 +134,17 @@ pub fn find_never_passed_props_json(input_json: &str) -> String {
 /// byte-for-byte the output of the always-on folds (the `svelteShaker` equivalent).
 #[wasm_bindgen]
 pub fn shake_program(input_json: &str) -> String {
-    let input: Value = match serde_json::from_str(input_json) {
-        Ok(v) => v,
-        Err(e) => return json!({ "error": e.to_string() }).to_string(),
-    };
+    match serde_json::from_str::<Value>(input_json) {
+        Ok(input) => shake_program_value(&input).to_string(),
+        Err(e) => json!({ "error": e.to_string() }).to_string(),
+    }
+}
+
+/// Environment-free core of [`shake_program`]: the program input is already parsed,
+/// so there is no js_sys here and the native (napi) engine can call it directly
+/// (docs/ARCHITECTURE.md §5 — the Engine stays environment-free). Returns the
+/// `{ id: slimmedSource }` object.
+pub fn shake_program_value(input: &Value) -> Value {
     let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
     for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(from) = e.get("from").and_then(Value::as_str) {
@@ -178,7 +190,7 @@ pub fn shake_program(input_json: &str) -> String {
         }
     }
     // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2).
-    stamp_module_escapes(&mut models, &input);
+    stamp_module_escapes(&mut models, input);
 
     let plans = run_fixpoint(&models);
 
@@ -258,7 +270,7 @@ pub fn shake_program(input_json: &str) -> String {
         .iter()
         .map(|m| (m.id.clone(), Value::String(edits_map.get(&m.id).map(|e| e.render()).unwrap_or_default())))
         .collect();
-    Value::Object(out).to_string()
+    Value::Object(out)
 }
 
 /// Whole-program shake WITH monomorphization.  `input` is the same shape as
@@ -273,12 +285,27 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         Err(e) => return json!({ "error": e.to_string() }).to_string(),
     };
     let options: Value = serde_json::from_str(options_json).unwrap_or(Value::Null);
-    let opts = MonoOptions {
-        enabled: options.get("enabled").and_then(Value::as_bool).unwrap_or(false),
-        max_variants: options.get("maxVariants").and_then(Value::as_u64).unwrap_or(8) as usize,
-        min_savings: options.get("minSavings").and_then(Value::as_f64).unwrap_or(0.0),
+    let opts = MonoOptions::from_value(&options);
+    // Adapt the JS `ownSize` function into the environment-free core's raw size
+    // callback (the size memo lives in the core, matching the TS `sizeCache`).
+    let mut js_size = |id: &str, src: &str| -> Option<f64> {
+        own_size
+            .call2(&JsValue::NULL, &JsValue::from_str(id), &JsValue::from_str(src))
+            .ok()
+            .and_then(|v| v.as_f64())
     };
+    shake_program_with_mono_value(&input, &opts, &mut js_size).to_string()
+}
 
+/// Environment-free core of [`shake_program_with_mono`]: the program input is
+/// already parsed and `own_size(id, source)` is a raw per-module size callback (the
+/// wasm boundary adapts the JS function; the native engine passes a napi callback).
+/// No js_sys here, so the Shell boundary holds. Returns `{ files, variants }`.
+pub fn shake_program_with_mono_value(
+    input: &Value,
+    opts: &MonoOptions,
+    own_size: &mut dyn FnMut(&str, &str) -> Option<f64>,
+) -> Value {
     let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
     for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(from) = e.get("from").and_then(Value::as_str) {
@@ -327,7 +354,7 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         }
     }
     // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2).
-    stamp_module_escapes(&mut models, &input);
+    stamp_module_escapes(&mut models, input);
 
     let plans = run_fixpoint(&models);
 
@@ -341,14 +368,11 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
             if let Some(v) = size_memo.get(src) {
                 return *v;
             }
-            let res = own_size
-                .call2(&JsValue::NULL, &JsValue::from_str(id), &JsValue::from_str(src))
-                .ok()
-                .and_then(|v| v.as_f64());
+            let res = own_size(id, src);
             size_memo.insert(src.to_string(), res);
             res
         };
-        monomorphize(&models, &plans, &code_by_id, &entries, &opts, &mut own_size_fn)
+        monomorphize(&models, &plans, &code_by_id, &entries, opts, &mut own_size_fn)
     };
 
     // Base phases (identical to shake_program): reverse-removal collection, fold
@@ -422,7 +446,7 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         .collect();
     let variants_obj: serde_json::Map<String, Value> =
         variants.into_iter().map(|(spec, code)| (spec, Value::String(code))).collect();
-    json!({ "files": Value::Object(files), "variants": Value::Object(variants_obj) }).to_string()
+    json!({ "files": Value::Object(files), "variants": Value::Object(variants_obj) })
 }
 
 #[cfg(test)]

@@ -20,10 +20,24 @@ use crate::props::{read_call_site, PropDecl};
 use crate::shake::{remove_attr_with_space, shake_body};
 use crate::transform::MagicEdit;
 
-pub(crate) struct MonoOptions {
-    pub(crate) enabled: bool,
-    pub(crate) max_variants: usize,
-    pub(crate) min_savings: f64,
+// `pub` (not `pub(crate)`) so the native engine-scan-native crate can build the
+// options for the environment-free `shake_program_with_mono_value` core.
+pub struct MonoOptions {
+    pub enabled: bool,
+    pub max_variants: usize,
+    pub min_savings: f64,
+}
+
+impl MonoOptions {
+    /// Read `{ enabled, maxVariants, minSavings }` (the JS `MonomorphizeOptions`
+    /// shape), defaulting each field exactly as the wasm boundary did.
+    pub fn from_value(options: &Value) -> Self {
+        MonoOptions {
+            enabled: options.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+            max_variants: options.get("maxVariants").and_then(Value::as_u64).unwrap_or(8) as usize,
+            min_savings: options.get("minSavings").and_then(Value::as_f64).unwrap_or(0.0),
+        }
+    }
 }
 
 /// One live `<Child/>` site that folds extra literals (a specialization candidate).
