@@ -11,6 +11,7 @@ import {
   type EscapeScanResult,
 } from './escape-scan.js';
 import { compileDevOnly } from './dev-only.js';
+import { compileExclude, type ExcludeFilter } from './exclude.js';
 
 // Re-export so a user can extend the default dev-only list: `devOnly: [...DEFAULT_DEV_ONLY, '…']`.
 export { DEFAULT_DEV_ONLY } from './dev-only.js';
@@ -99,6 +100,28 @@ export interface ShakerOptions {
    * count every file (the pre-`devOnly` behavior).
    */
   devOnly?: string[];
+  /**
+   * Build-output directories the scans must NOT walk (docs/ARCHITECTURE.md §8.1.1) —
+   * a compiled/generated tree that is not source: a SvelteKit adapter's `build/`,
+   * a `dist/`, any prior build artifact.  Each entry is a Vite-root-relative or
+   * absolute path naming a directory, matched on a plain path-prefix basis — the
+   * same "directory prefix" basis as {@link entries}, no glob.
+   *
+   * The resolved Vite `build.outDir` is ALWAYS excluded automatically (it is the
+   * destination this build overwrites, so it can hold no source the app depends
+   * on); this option is for output dirs the plugin cannot infer — most importantly
+   * a SvelteKit adapter's `build/`, which sits outside `build.outDir`. Excluding it
+   * skips parsing megabytes of minified output the escape scan would otherwise read
+   * (issue: adapter-static `build/` dominated the crawl).
+   *
+   * Distinct from {@link devOnly}: `devOnly` marks non-shipping SOURCE files (tests,
+   * stories) by glob; `exclude` prunes whole generated-OUTPUT directories that are
+   * not source at all. Like {@link entries}, over-listing errs UNSAFE — a pruned
+   * directory's call sites stop counting, exactly as if it were outside the crawl —
+   * so name ONLY generated output, never source. That is why there is no default
+   * beyond the always-safe `build.outDir`.
+   */
+  exclude?: string[];
   /**
    * Per-call-site monomorphization tuning (docs §13.2).  Monomorphization is ON
    * by default because it is bail-safe and never bloats (the measured net-win
@@ -302,6 +325,7 @@ const KNOWN_OPTIONS = {
   entries: true,
   preserve: true,
   devOnly: true,
+  exclude: true,
   monomorphize: true,
   engine: true,
   dev: true,
@@ -361,6 +385,10 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   /** Variant request id (`<childPath>?shaker_variant=<n>`) -> residual source. */
   let variantSources = new Map<string, string>();
   let root = process.cwd();
+  // Build-output dirs pruned from both scans (docs §8.1.1): the resolved
+  // `build.outDir` (when safe) plus the user's `exclude`.  Compiled in
+  // `configResolved`, once `build.outDir` is known.
+  let exclude: ExcludeFilter = compileExclude(root, options.exclude);
   // Vite's logger, captured in `configResolved`; until then fall back to console
   // so the size report still surfaces if `buildStart` somehow runs first.
   let log: (msg: string) => void = (msg) => console.info(`[svelte-shaker] ${msg}`);
@@ -447,6 +475,29 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       root = config.root;
       log = (msg) => config.logger.info(`[svelte-shaker] ${msg}`);
       warn = (msg) => config.logger.warn(`[svelte-shaker] ${msg}`);
+      // Prune the resolved `build.outDir` (the destination this build overwrites —
+      // normally it can hold no source the app depends on) plus any user-declared
+      // `exclude` (an adapter's `build/`, a `dist/`).  docs §8.1.1.
+      //
+      // But a misconfigured `outDir` that is the crawl root itself or an ANCESTOR
+      // of an entry dir (e.g. `outDir: '.'`) would prune real source — a silent
+      // over-shake.  Sound-first: in that case skip the automatic `outDir`
+      // exclusion and warn, keeping only what the user explicitly listed.
+      const outDir = path.resolve(root, config.build.outDir);
+      const entryDirs = (options.entries ?? ['.']).map((p) => path.resolve(root, p));
+      const outDirCoversSource = entryDirs.some(
+        (d) => d === outDir || d.startsWith(outDir + path.sep),
+      );
+      if (outDirCoversSource) {
+        warn(
+          `build.outDir (${path.relative(root, outDir) || '.'}) is the crawl root or ` +
+            `contains an entry directory, so excluding it would prune source; skipping the ` +
+            `automatic build-output exclusion. Set an outDir outside your source, or list the ` +
+            `real output dir in the \`exclude\` option.`,
+        );
+      }
+      const autoExclude = outDirCoversSource ? [] : [outDir];
+      exclude = compileExclude(root, [...autoExclude, ...(options.exclude ?? [])]);
     },
 
     // Dev (serve): drive the long-lived incremental engine instead of the
@@ -461,7 +512,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       const isDevOnly = compileDevOnly(root, options.devOnly);
       // The engine's entry components, collected from the entry DIRS: `entries`
       // names the roots to crawl from, these are the `.svelte` files under them.
-      const entryComponents = dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly));
+      const entryComponents = dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly, exclude));
       const read = (id: ComponentId) => fs.readFileSync(id, 'utf-8');
       const underDirs = (file: string): boolean =>
         dirs.some((d) => file === d || file.startsWith(d + path.sep));
@@ -479,6 +530,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
           preserve: options.preserve,
           components: entryComponents,
           devOnly: isDevOnly,
+          exclude,
           resolve: fsResolve,
           readFile: read,
         });
@@ -578,7 +630,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       const isDevOnly = compileDevOnly(root, options.devOnly);
       // The engine's entry components, collected from the entry DIRS: `entries`
       // names the roots to crawl from, these are the `.svelte` files under them.
-      const entryComponents = dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly));
+      const entryComponents = dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly, exclude));
       if (entryComponents.length === 0) {
         shaken = {};
         variantSources = new Map();
@@ -617,6 +669,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         preserve: options.preserve,
         components: entryComponents,
         devOnly: isDevOnly,
+        exclude,
         resolve,
         readFile: read,
       });

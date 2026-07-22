@@ -95,6 +95,9 @@ shaker({
   devOnly: [...], // glob patterns of files that never ship (tests, stories); they
   // stop counting as call sites. Defaults to tests/mocks/stories; replaces, spread
   // to extend.
+  exclude: [], // build-output dirs to skip walking (a SvelteKit adapter's `build/`,
+  // a `dist/`). The Vite `build.outDir` is always skipped; add other generated
+  // output here. Not source — see below.
   monomorphize: true, // default on; `false` disables it for faster builds,
   // or { maxVariants: 16, minSavings: 0.05 } to tune
   verbose: false, // true = per-file size breakdown after the build
@@ -211,6 +214,28 @@ options that do exist. A typo would otherwise be ignored — and a misspelled
   defaults are narrow. See
   [`docs/ARCHITECTURE.md` §8.1.1](https://github.com/baseballyama/svelte-shaker/blob/main/docs/ARCHITECTURE.md)
   for the full argument.
+
+- **`exclude`** — directories the scans must **not walk at all**: a compiled,
+  generated tree that is **not source**. Each entry is a Vite-root-relative or
+  absolute path naming a directory, matched on a plain path-prefix basis (like
+  `entries`, no glob). The resolved Vite **`build.outDir` is always excluded
+  automatically** — it is the destination the build overwrites, so it holds no
+  source the app depends on. Use this option for output dirs the plugin can't infer,
+  most importantly a **SvelteKit adapter's `build/`** (adapter-static): it sits
+  _outside_ `build.outDir`, and left unpruned the escape scan parses megabytes of
+  minified output looking for call sites it can never contain, which can dominate
+  the crawl.
+
+  ```ts
+  shaker({ entries: ['.'], exclude: ['build'] }); // skip adapter-static output
+  ```
+
+  Distinct from `devOnly`: that marks non-shipping **source** files (tests, stories)
+  by glob; `exclude` prunes whole generated-**output** directories that are not
+  source at all. Like `entries`, **over-listing errs unsafe** — a pruned directory's
+  call sites stop counting, exactly as if it were outside the crawl — so name **only
+  generated output, never source**. That is why there is no default beyond the
+  always-safe `build.outDir`.
 
 ## What it removes
 
