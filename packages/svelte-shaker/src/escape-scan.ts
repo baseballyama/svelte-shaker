@@ -11,6 +11,7 @@ import { parseModuleProgram, walk, type AnyNode } from './parse.js';
 import type { ComponentId } from './ir.js';
 import type { Resolve, ReadFile } from './analyze.js';
 import { compileDevOnly, type DevOnlyFilter } from './dev-only.js';
+import { excludeNothing, type ExcludeFilter } from './exclude.js';
 
 /**
  * The non-`.svelte` module extensions we scan for `.svelte` call sites (docs
@@ -34,13 +35,20 @@ export function isScannableModule(file: string): boolean {
 
 /**
  * Recursively collect every non-`.svelte` module under `dir` (skipping
- * `node_modules` and dot-directories, mirroring `collectSvelteFiles`).  Same
- * include scope as the seed scan — `.ts` inside `node_modules` is deliberately NOT
- * scanned (docs §4.2).  `devOnly` drops modules that never ship (a `Button.test.ts`)
- * so a colocated test does not mark the component it imports escaped (docs §8.1.1);
- * it is the SAME predicate the seed scan uses, so both scans discount the same files.
+ * `node_modules`, dot-directories, and any `exclude`d build-output tree, mirroring
+ * `collectSvelteFiles`).  Same include scope as the seed scan — `.ts` inside
+ * `node_modules` is deliberately NOT scanned (docs §4.2).  `devOnly` drops modules
+ * that never ship (a `Button.test.ts`) so a colocated test does not mark the
+ * component it imports escaped (docs §8.1.1); `exclude` prunes a compiled-output
+ * directory (`build.outDir`, an adapter's `build/`).  Both are the SAME predicates
+ * the seed scan uses, so both scans discount the same files.
  */
-function collectNonSvelteModules(dir: string, devOnly: DevOnlyFilter, out: string[]): void {
+function collectNonSvelteModules(
+  dir: string,
+  devOnly: DevOnlyFilter,
+  exclude: ExcludeFilter,
+  out: string[],
+): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -50,8 +58,10 @@ function collectNonSvelteModules(dir: string, devOnly: DevOnlyFilter, out: strin
   for (const entry of entries) {
     if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) collectNonSvelteModules(full, devOnly, out);
-    else if (entry.isFile() && isScannableModule(entry.name) && !devOnly(full)) out.push(full);
+    if (entry.isDirectory()) {
+      if (exclude(full)) continue; // a build-output tree — pruned from the escape scan
+      collectNonSvelteModules(full, devOnly, exclude, out);
+    } else if (entry.isFile() && isScannableModule(entry.name) && !devOnly(full)) out.push(full);
   }
 }
 
@@ -218,12 +228,20 @@ export async function computeEscapedComponents(opts: {
    * matched relative to `root`.  Pass `compileDevOnly(root, [])` to scan everything.
    */
   devOnly?: DevOnlyFilter | undefined;
+  /**
+   * Build-output directories to prune from the escape scan (docs §8.1.1) — the SAME
+   * {@link ExcludeFilter} the seed scan applies, so a compiled-output tree is
+   * skipped by both.  Omitted, nothing is excluded ({@link excludeNothing}); the
+   * Vite plugin seeds it with `build.outDir` plus the user's `exclude`.
+   */
+  exclude?: ExcludeFilter | undefined;
   resolve: Resolve;
   readFile: ReadFile;
 }): Promise<EscapeScanResult> {
   const devOnly = opts.devOnly ?? compileDevOnly(opts.root);
+  const exclude = opts.exclude ?? excludeNothing;
   const modules: string[] = [];
-  for (const dir of opts.entryDirs) collectNonSvelteModules(dir, devOnly, modules);
+  for (const dir of opts.entryDirs) collectNonSvelteModules(dir, devOnly, exclude, modules);
   const { escaped, unscannable } = await collectModuleEscapes(modules, opts.resolve, opts.readFile);
   const { matched, unmatched } = partitionPreserve(opts.preserve, opts.root, opts.components);
   for (const id of matched) escaped.add(id);

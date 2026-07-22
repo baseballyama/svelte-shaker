@@ -47,17 +47,19 @@ reachable value set of `variant` and removes the `.btn-danger` rule.
 npm i -D svelte-shaker   # requires svelte@^5
 ```
 
-Nothing else to install. By default the plugin parses with rsvelte, loaded from
-`@rsvelte/compiler` (a bundled WASM dependency — no peer, no platform-specific
-binary). `parser: 'svelte'` falls back to svelte/compiler if you ever need it
-(see [Options](#options)).
+Nothing else to install. The plugin picks its engine and parser automatically
+(see [Options](#options)): a small/medium app runs on the native **Rust (WASM)
+engine** and parses with **rsvelte** (loaded from `@rsvelte/compiler`, a bundled
+WASM dependency — no peer, no platform-specific binary); a large app runs on the
+**JS engine** with **svelte/compiler**. `engine` and `parser` let you pin either.
 
 ## Usage (Vite)
 
 Add the plugin **before** `svelte()`. By default it runs only in `vite build` —
 dev/HMR is a pass-through (opt into dev shaking with the `dev` option, see
-[Options](#options)). Out of the box it runs the native **Rust (WASM) engine**
-and parses with **rsvelte**; both fall back cleanly (see [Options](#options)).
+[Options](#options)). The engine and parser are chosen automatically per app size
+(Rust + rsvelte for small/medium, JS + svelte/compiler for large), and both fall
+back cleanly (see [Options](#options)).
 
 ```ts
 // vite.config.ts
@@ -82,8 +84,8 @@ that monomorphization additionally needs the `?shaker_variant` requests routed
 through your plugin's `resolveId`/`load` hooks; the unused-prop fold / constant
 fold / value-set narrowing shake only needs the `transform` swap. The
 environment-free engine and the in-browser playground parse with svelte/compiler
-— the rsvelte default is a Vite-plugin concern (it loads a Node-only WASM
-module); the engine takes an optional `parse` argument if you want to swap it.
+— the Vite plugin's rsvelte selection is a plugin concern (it loads a Node-only
+WASM module); the engine takes an optional `parse` argument if you want to swap it.
 
 ### Options
 
@@ -95,14 +97,17 @@ shaker({
   devOnly: [...], // glob patterns of files that never ship (tests, stories); they
   // stop counting as call sites. Defaults to tests/mocks/stories; replaces, spread
   // to extend.
+  exclude: [], // build-output dirs to skip walking (a SvelteKit adapter's `build/`,
+  // a `dist/`). The Vite `build.outDir` is always skipped; add other generated
+  // output here. Not source — see below.
   monomorphize: true, // default on; `false` disables it for faster builds,
   // or { maxVariants: 16, minSavings: 0.05 } to tune
   verbose: false, // true = per-file size breakdown after the build
 
-  // Escape hatches — the defaults ARE the Rust path; set these only to opt
-  // out (e.g. if you ever hit a bug in it).
-  engine: 'auto', // 'auto' (default: Rust/WASM, else JS) | 'js' | 'rust'
-  parser: 'rsvelte', // 'rsvelte' (default) | 'svelte' (fallback)
+  // Engine + parser are auto-selected by app size; set these only to pin.
+  engine: 'auto', // 'auto' (Rust/WASM if <=~300 components, else JS) | 'js' | 'rust'
+  parser: undefined, // default follows the engine (Rust->rsvelte, JS->svelte);
+  // set 'rsvelte' | 'svelte' to pin one
 
   dev: false, // default off: dev is a pass-through. 'incremental' (re-parse only
   // changed files) | 'coarse' (re-analyze everything) opts in; never monomorphizes
@@ -113,17 +118,27 @@ That list is exhaustive: any other key **fails the build**, naming the key and t
 options that do exist. A typo would otherwise be ignored — and a misspelled
 `preserve` ships the component you meant to protect, over-shaken.
 
-- **The defaults are the Rust path.** Out of the box svelte-shaker runs the
-  native **Rust (WASM) engine** and parses with **rsvelte**, loaded from
+- **`engine`** — which engine runs the shake. **`'auto'`** (default) picks by app
+  size: a small/medium app (up to a few hundred components) uses the native
+  **Rust (WASM) engine**, loaded from
   [`@rsvelte/compiler`](https://github.com/baseballyama/rsvelte) (a bundled WASM
-  dependency — nothing to install). The Rust (WASM) engine is differentially
-  tested to shake **byte-identically** to the JS engine. The parser choice is
-  **soundness-neutral**: the engine reads only UTF-16 `start`/`end`, so
-  svelte/compiler and rsvelte are differentially tested to produce
-  **SSR-equivalent** output — the choice never changes what renders. rsvelte is
-  the default as the Rust parser the pipeline is standardizing on (end-to-end
-  Rust with the WASM engine); `parser: 'svelte'` stays available as the
-  fallback.
+  dependency — nothing to install); a **large** app stays on the **JS engine**,
+  because the native engine's speed-up comes from a fast parse, but it must ship
+  the whole-program AST across the JS↔WASM boundary as JSON, and past a few
+  hundred components that round-trip (tens of MB) costs more than it saves.
+  `'rust'` forces the native engine (throwing if `@rsvelte/compiler` can't load);
+  `'js'` forces the JS engine. The two engines are differentially tested to shake
+  **byte-identically**, so this is **speed-only** — it never changes what ships.
+- **`parser`** — which parser feeds the engine. The default **follows the
+  engine**: **rsvelte** on the native engine (its AST crosses into Rust directly),
+  **svelte/compiler** on the JS engine (where rsvelte's parse is ~2× slower with
+  no downstream benefit). Set `'rsvelte'` or `'svelte'` to pin one regardless of
+  engine. The choice is **soundness-neutral** — the engine reads only UTF-16
+  `start`/`end`, so both parsers are differentially tested to produce
+  **byte-identical** output, never changing what renders. When rsvelte is the
+  resolved parser and `@rsvelte/compiler` can't load, the plugin **throws** rather
+  than silently swapping (so the same source can't shake differently on another
+  machine); `parser: 'svelte'` is the explicit opt-out.
 - **`monomorphize`** — the one shaking knob, **on** by default. A measured
   net-win gate only specializes a component when that strictly shrinks the whole
   program, so monomorphization **never bloats**: whatever the knobs are set to,
@@ -146,13 +161,6 @@ options that do exist. A typo would otherwise be ignored — and a misspelled
   monomorphize: { maxVariants: 16, minSavings: 0.05 } // e.g. a variant-heavy
   // design system, while skipping specializations that save under 5%
   ```
-- **Escape hatches (`engine` / `parser`).** If you ever hit a bug in the Rust
-  path, opt out per axis: `engine: 'js'` forces the JS engine, `parser: 'svelte'`
-  forces svelte/compiler (the previous default). `@rsvelte/compiler` is a bundled
-  dependency, so the default parser normally just loads; in the unlikely event it
-  can't (a broken install), the plugin **throws** rather than silently falling
-  back — so the same source always shakes the same on every machine. Reinstall
-  dependencies, or set `parser: 'svelte'`.
 - **`dev`** — whether to shake in `vite dev` too. **Off** by default: dev is a
   pass-through, which is always correct and keeps HMR simple. Opt in with
   `dev: 'incremental'` — re-parses only the changed files and re-runs the
@@ -211,6 +219,28 @@ options that do exist. A typo would otherwise be ignored — and a misspelled
   defaults are narrow. See
   [`docs/ARCHITECTURE.md` §8.1.1](https://github.com/baseballyama/svelte-shaker/blob/main/docs/ARCHITECTURE.md)
   for the full argument.
+
+- **`exclude`** — directories the scans must **not walk at all**: a compiled,
+  generated tree that is **not source**. Each entry is a Vite-root-relative or
+  absolute path naming a directory, matched on a plain path-prefix basis (like
+  `entries`, no glob). The resolved Vite **`build.outDir` is always excluded
+  automatically** — it is the destination the build overwrites, so it holds no
+  source the app depends on. Use this option for output dirs the plugin can't infer,
+  most importantly a **SvelteKit adapter's `build/`** (adapter-static): it sits
+  _outside_ `build.outDir`, and left unpruned the escape scan parses megabytes of
+  minified output looking for call sites it can never contain, which can dominate
+  the crawl.
+
+  ```ts
+  shaker({ entries: ['.'], exclude: ['build'] }); // skip adapter-static output
+  ```
+
+  Distinct from `devOnly`: that marks non-shipping **source** files (tests, stories)
+  by glob; `exclude` prunes whole generated-**output** directories that are not
+  source at all. Like `entries`, **over-listing errs unsafe** — a pruned directory's
+  call sites stop counting, exactly as if it were outside the crawl — so name **only
+  generated output, never source**. That is why there is no default beyond the
+  always-safe `build.outDir`.
 
 ## What it removes
 

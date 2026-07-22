@@ -66,7 +66,7 @@ import {
   type FileModel,
   type PropDecl,
 } from './analyze.js';
-import { parseSvelte, walk, type AnyNode } from './parse.js';
+import { parseSvelte, walk, type AnyNode, type Root } from './parse.js';
 import { isFoldableValue, type ComponentId, type ComponentPlan, type Literal } from './ir.js';
 
 /** Tuning knobs for monomorphization (docs §8.1, §13.2).  All have sound defaults. */
@@ -219,14 +219,29 @@ export function monomorphize(
     }
   }
 
+  // No child folds a non-base residual at EVERY live site -> nothing is
+  // specializable, so skip the whole-program base-size setup entirely (the step-3
+  // loop would emit nothing anyway).  Byte-identical to running it, just cheaper.
+  let anyCandidate = false;
+  for (const childId of liveSitesByChild.keys())
+    if (!ineligible.has(childId)) {
+      anyCandidate = true;
+      break;
+    }
+  if (!anyCandidate) return { variants, bindings };
+
   // (2) Build the whole-program base render graph + the base module sizes, and
   // the set of components reachable from the shake entries.  `ownSize` is
   // memoized (compile is the hot cost) and a compile error makes a component
   // non-specializable (we treat it as un-sizable -> skip any child involved).
   const baseSource = baseSourceMap(models, plans);
   const baseChildrenOf = new Map<ComponentId, ComponentId[]>();
+  // Parse each DISTINCT residual at most once across the whole gate (base sources
+  // + variant residuals).  An UNCHANGED residual reuses the AST the analysis
+  // already produced ({@link liveChildIds}), so only genuinely-folded files parse.
+  const astCache = new Map<string, Root | null>();
   for (const model of models.values())
-    baseChildrenOf.set(model.id, liveChildIds(baseSource.get(model.id)!, model));
+    baseChildrenOf.set(model.id, liveChildIds(baseSource.get(model.id)!, model, astCache));
 
   // Reachability roots = the shake entries (docs §3 monomorphization, §13.2), narrowed to the
   // TRUE import-graph roots.  The Shell seeds the crawl with EVERY `.svelte` file
@@ -309,6 +324,7 @@ export function monomorphize(
         roots,
         ownSize,
         options.minSavings,
+        astCache,
       )
     )
       continue;
@@ -361,12 +377,14 @@ function netWin(
   roots: ComponentId[],
   ownSize: (id: ComponentId, source: string) => number | null,
   minSavings: number,
+  astCache: Map<string, Root | null>,
 ): boolean {
   // The variants' OWN live children, parsed from each variant residual via the
   // child's import map (variants never add imports — they only fold/remove).
   const childModel = models.get(childId)!;
   const variantChildren = new Map<string, ComponentId[]>();
-  for (const v of variantSources) variantChildren.set(v.id, liveChildIds(v.code, childModel));
+  for (const v of variantSources)
+    variantChildren.set(v.id, liveChildIds(v.code, childModel, astCache));
 
   // --- Reachability is graph-only (NO compile): the costly `ownSize` is deferred
   // until we know which modules actually differ between the two scenarios.
@@ -473,13 +491,34 @@ function netWin(
  * residual that fails to parse would also fail to compile in {@link ownSize},
  * declining the child).
  */
-function liveChildIds(source: string, model: FileModel): ComponentId[] {
-  let ast;
-  try {
-    ast = parseSvelte(source, model.id);
-  } catch {
-    return [];
+function liveChildIds(
+  source: string,
+  model: FileModel,
+  astCache?: Map<string, Root | null>,
+): ComponentId[] {
+  // An unchanged residual (no fold touched this file) is byte-identical to the
+  // source the analysis already parsed, so reuse `model.ast` instead of parsing
+  // again — the common case (most components fold nothing).  A changed residual is
+  // parsed once and memoized by its source, so a variant shared across candidates
+  // never re-parses.  The filename only colors parse-error messages (swallowed), so
+  // a shared source yields the same fragment regardless of which model asks.
+  let ast: Root | null;
+  if (source === model.code) {
+    ast = model.ast;
+  } else {
+    const cached = astCache?.get(source);
+    if (cached !== undefined) {
+      ast = cached;
+    } else {
+      try {
+        ast = parseSvelte(source, model.id);
+      } catch {
+        ast = null;
+      }
+      astCache?.set(source, ast);
+    }
   }
+  if (!ast) return [];
   const ids: ComponentId[] = [];
   walk<null>(ast.fragment, null, {
     Component(node, { next }) {

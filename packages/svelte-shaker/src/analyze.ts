@@ -415,6 +415,9 @@ export async function buildAnalyzeInput(
   const edges: ResolvedEdge[] = [];
   const queue: ComponentId[] = [...entryList];
   const seen = new Set<ComponentId>(queue);
+  // Parse each `.js`/`.ts` barrel at most once across the whole crawl (a shared
+  // design-system `index.ts` is re-imported hundreds of times).
+  const barrelCache: BarrelCache = new Map();
 
   while (queue.length > 0) {
     const id = queue.shift()!;
@@ -454,7 +457,14 @@ export async function buildAnalyzeInput(
       }
       // Not rendered as `<imp.local>` -> not a call site -> skip the costly barrel read.
       if (!renderedTags.has(imp.local)) continue;
-      const childId = await resolveThroughBarrel(imp.value, imp.imported, id, resolve, readFile);
+      const childId = await resolveThroughBarrel(
+        imp.value,
+        imp.imported,
+        id,
+        resolve,
+        readFile,
+        barrelCache,
+      );
       if (childId) {
         edges.push({ from: id, local: imp.local, to: childId, kind: 'barrel' });
         barrelLocals.set(imp.local, childId);
@@ -479,6 +489,7 @@ export async function buildAnalyzeInput(
           id,
           resolve,
           readFile,
+          barrelCache,
         );
         if (childId) {
           edges.push({ from: id, local: tag, to: childId, kind: 'namespace' });
@@ -520,6 +531,7 @@ export function buildAnalyzeInputSync(
   const edges: ResolvedEdge[] = [];
   const queue: ComponentId[] = [...entryList];
   const seen = new Set<ComponentId>(queue);
+  const barrelCache: BarrelCache = new Map();
 
   while (queue.length > 0) {
     const id = queue.shift()!;
@@ -552,7 +564,14 @@ export function buildAnalyzeInputSync(
         continue;
       }
       if (!renderedTags.has(imp.local)) continue;
-      const childId = resolveThroughBarrelSync(imp.value, imp.imported, id, resolve, readFile);
+      const childId = resolveThroughBarrelSync(
+        imp.value,
+        imp.imported,
+        id,
+        resolve,
+        readFile,
+        barrelCache,
+      );
       if (childId) {
         edges.push({ from: id, local: imp.local, to: childId, kind: 'barrel' });
         barrelLocals.set(imp.local, childId);
@@ -565,7 +584,14 @@ export function buildAnalyzeInputSync(
         const dot = tag.indexOf('.');
         const source = namespaceSources.get(tag.slice(0, dot));
         if (source == null) continue;
-        const childId = resolveThroughBarrelSync(source, tag.slice(dot + 1), id, resolve, readFile);
+        const childId = resolveThroughBarrelSync(
+          source,
+          tag.slice(dot + 1),
+          id,
+          resolve,
+          readFile,
+          barrelCache,
+        );
         if (childId) {
           edges.push({ from: id, local: tag, to: childId, kind: 'namespace' });
           nsChildren.push(childId);
@@ -2082,6 +2108,18 @@ function specName(node: AnyNode | undefined): string | undefined {
 const MAX_BARREL_HOPS = 8;
 
 /**
+ * Per-crawl memo of a `.js`/`.ts` barrel's parsed top-level body, keyed by its
+ * resolved id.  A design-system `index.ts` is re-imported by hundreds of
+ * components, and {@link resolveThroughBarrel} runs once per rendered call site,
+ * so without this the SAME barrel is read + full-parsed hundreds of times.  The
+ * body is never mutated (callers only read `export`/`import` statements off it),
+ * so sharing one parse is behavior-preserving.  `null` caches an unreadable or
+ * unparseable barrel so it is not retried.  Lives for one crawl only (a build is
+ * one-shot; dev re-crawls fresh), so it never goes stale.
+ */
+type BarrelCache = Map<ComponentId, AnyNode[] | null>;
+
+/**
  * Follow a NON-direct import (named / namespace, or a default import of a
  * `.js`/`.ts` barrel) to the `.svelte` component it ultimately renders, if any.
  *
@@ -2102,6 +2140,7 @@ async function resolveThroughBarrel(
   importer: ComponentId,
   resolve: Resolve,
   readFile: ReadFile,
+  cache: BarrelCache,
   hops = 0,
 ): Promise<ComponentId | null> {
   if (hops > MAX_BARREL_HOPS) return null;
@@ -2115,14 +2154,19 @@ async function resolveThroughBarrel(
     return imported === 'default' || imported === '*' ? targetId : null;
   }
 
-  // A `.js`/`.ts` barrel: read it and chase the matching re-export.
-  let code: string;
-  try {
-    code = await readFile(targetId);
-  } catch {
-    return null;
+  // A `.js`/`.ts` barrel: read + parse it (once per crawl, memoized) and chase the
+  // matching re-export.
+  let body = cache.get(targetId);
+  if (body === undefined) {
+    let code: string | null;
+    try {
+      code = await readFile(targetId);
+    } catch {
+      code = null;
+    }
+    body = code === null ? null : parseModuleBody(code, targetId);
+    cache.set(targetId, body);
   }
-  const body = parseModuleBody(code, targetId);
   if (!body) return null;
 
   for (const stmt of body) {
@@ -2136,6 +2180,7 @@ async function resolveThroughBarrel(
           targetId,
           resolve,
           readFile,
+          cache,
           hops + 1,
         );
       }
@@ -2155,6 +2200,7 @@ async function resolveThroughBarrel(
           targetId,
           resolve,
           readFile,
+          cache,
           hops + 1,
         );
       }
@@ -2168,6 +2214,7 @@ async function resolveThroughBarrel(
         targetId,
         resolve,
         readFile,
+        cache,
         hops + 1,
       );
       if (via) return via;
@@ -2184,6 +2231,7 @@ function resolveThroughBarrelSync(
   importer: ComponentId,
   resolve: ResolveSync,
   readFile: ReadFileSync,
+  cache: BarrelCache,
   hops = 0,
 ): ComponentId | null {
   if (hops > MAX_BARREL_HOPS) return null;
@@ -2194,13 +2242,17 @@ function resolveThroughBarrelSync(
     return imported === 'default' || imported === '*' ? targetId : null;
   }
 
-  let code: string;
-  try {
-    code = readFile(targetId);
-  } catch {
-    return null;
+  let body = cache.get(targetId);
+  if (body === undefined) {
+    let code: string | null;
+    try {
+      code = readFile(targetId);
+    } catch {
+      code = null;
+    }
+    body = code === null ? null : parseModuleBody(code, targetId);
+    cache.set(targetId, body);
   }
-  const body = parseModuleBody(code, targetId);
   if (!body) return null;
 
   for (const stmt of body) {
@@ -2213,6 +2265,7 @@ function resolveThroughBarrelSync(
           targetId,
           resolve,
           readFile,
+          cache,
           hops + 1,
         );
       }
@@ -2231,6 +2284,7 @@ function resolveThroughBarrelSync(
           targetId,
           resolve,
           readFile,
+          cache,
           hops + 1,
         );
       }
@@ -2243,6 +2297,7 @@ function resolveThroughBarrelSync(
         targetId,
         resolve,
         readFile,
+        cache,
         hops + 1,
       );
       if (via) return via;

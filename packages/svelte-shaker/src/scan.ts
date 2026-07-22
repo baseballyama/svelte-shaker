@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import type { ComponentId } from './ir.js';
 import type { Resolve, ReadFile } from './analyze.js';
 import { compileDevOnly, type DevOnlyFilter } from './dev-only.js';
+import { excludeNothing, type ExcludeFilter } from './exclude.js';
 
 // The escape-scan machinery lives in `./escape-scan.js` (internal); only the single
 // entry helper is part of the public `svelte-shaker/node` surface.
@@ -17,6 +18,11 @@ export { computeEscapedComponents, type EscapeScanResult } from './escape-scan.j
 // `svelte-shaker/node` surface, so a plain-Rollup pipeline can compile the same
 // predicate the Vite plugin does and feed it to both scans.
 export { DEFAULT_DEV_ONLY, compileDevOnly, type DevOnlyFilter } from './dev-only.js';
+
+// Build-output exclusion (docs §8.1.1): the same "compile a predicate, feed both
+// scans" shape as `devOnly`, exposed on `svelte-shaker/node` so a plain-Rollup
+// pipeline can prune a compiled-output tree exactly as the Vite plugin does.
+export { compileExclude, excludeNothing, type ExcludeFilter } from './exclude.js';
 
 /** Default filesystem resolver: resolve `source` relative to its importer. */
 export const fsResolve: Resolve = (source, importer) => {
@@ -44,14 +50,20 @@ export const fsReadFile: ReadFile = (id) => fs.readFileSync(id, 'utf-8');
 export function collectSvelteFiles(
   dir: string,
   devOnly: DevOnlyFilter = compileDevOnly(dir),
+  exclude: ExcludeFilter = excludeNothing,
 ): ComponentId[] {
   const out: ComponentId[] = [];
-  collectSvelteFilesInto(dir, devOnly, out);
+  collectSvelteFilesInto(dir, devOnly, exclude, out);
   return out;
 }
 
-/** Recursive worker: the compiled `devOnly` predicate is threaded, never recompiled. */
-function collectSvelteFilesInto(dir: string, devOnly: DevOnlyFilter, out: ComponentId[]): void {
+/** Recursive worker: the compiled `devOnly` / `exclude` predicates are threaded, never recompiled. */
+function collectSvelteFilesInto(
+  dir: string,
+  devOnly: DevOnlyFilter,
+  exclude: ExcludeFilter,
+  out: ComponentId[],
+): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -61,7 +73,9 @@ function collectSvelteFilesInto(dir: string, devOnly: DevOnlyFilter, out: Compon
   for (const entry of entries) {
     if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) collectSvelteFilesInto(full, devOnly, out);
-    else if (entry.isFile() && entry.name.endsWith('.svelte') && !devOnly(full)) out.push(full);
+    if (entry.isDirectory()) {
+      if (exclude(full)) continue; // a build-output tree — pruned from the scan
+      collectSvelteFilesInto(full, devOnly, exclude, out);
+    } else if (entry.isFile() && entry.name.endsWith('.svelte') && !devOnly(full)) out.push(full);
   }
 }
