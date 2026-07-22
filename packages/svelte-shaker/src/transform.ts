@@ -910,12 +910,17 @@ interface FoldRef {
 
 /**
  * The replacement text for a folded reference: `head + <literal> + tail`, but a
- * NUMBER used as the object of a member access is parenthesized.  `5000.toFixed()`
- * would otherwise emit `5000.toFixed()`, where the parser reads `5000.` as a float
- * literal and then hits `toFixed` — "Identifier directly after number".  `(5000)`
- * disambiguates.  Only decimal numbers need this (a string/boolean/`null` member
- * object parses fine), so other literal kinds are never wrapped, keeping output
- * minimal.
+ * NUMBER used as the object of a member access is parenthesized.  `count.toFixed()`
+ * with `count` = 5000 would otherwise emit `5000.toFixed()`, where the parser reads
+ * `5000.` as a float literal and then hits `toFixed` — "Identifier directly after
+ * number".  `(5000)` disambiguates.
+ *
+ * Strictly, only a decimal INTEGER literal is ambiguous here: `5.5.toFixed()` and
+ * `5e3.toFixed()` already parse (the number token ends before the `.`), and a
+ * `Literal` never carries a BigInt.  We wrap EVERY number uniformly anyway — the
+ * parens are always valid and the rule is simpler than sniffing the numeric form.
+ * Non-number literals (string / boolean / `null`) are never wrapped: they need no
+ * disambiguation, so existing golden output is unchanged.
  */
 function foldReplacement(ref: FoldRef, value: Literal): string {
   const lit = literalSource(value);

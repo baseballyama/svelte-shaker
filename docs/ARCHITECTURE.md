@@ -485,6 +485,24 @@ transform（enforce: 'pre'：vite-plugin-svelte より前）:
 - 我々は他のプリプロセッサ（TS トランスパイル等）より **前**＝著者ソースに最も近い段階で動く。
   prop の型・default を読め、出力も `.svelte`(+TS) のまま保てる。
 
+### 6.4 エンジン / パーサの自動選択（`RUST_ENGINE_MAX_COMPONENTS`）
+
+Rust(WASM)エンジンはパースが速い一方、**ホールプログラムの AST を JS↔WASM 境界へ JSON で
+往復させる**（§5.1 の IR。napi raw-transfer 化は §9 の将来課題）。コンポーネントが数百規模になると
+この AST は数十 MB（実測アプリ：~600 コンポーネントで ~60 MB）に達し、境界の marshaling コストが
+パースの節約を上回る。そこで `engine: 'auto'` は **seed コンポーネント数が
+`RUST_ENGINE_MAX_COMPONENTS`（既定 300、`src/vite.ts`）以下のときだけ Rust を使い、超えたら JS
+エンジンに載せる**。両エンジンは byte 一致（差分テスト済み）なので、この閾値は**速度のみ**に効き、
+境界付近の誤判定はビルド時間の損だけで**出荷物は変わらない**——ゆえに厳密なクロスオーバー点ではなく
+「AST が境界税に見合わないほど大きい」を表す丸め値でよい。`engine: 'rust'` は閾値を無視して常に Rust を
+強制する。
+
+**パーサ既定もエンジンに追従する**：Rust エンジンでは rsvelte（AST がそのまま Rust へ渡る）、JS
+エンジンでは svelte/compiler（rsvelte パースは JS 経路では ~2倍遅いだけで下流の利得がない）。`parser`
+明示は常に優先し、rsvelte が解決先のとき `@rsvelte/compiler` を読めなければ**黙ってフォールバックせず
+throw**する（マシン差で shake 結果が変わらないため。§6 の決定性方針）。`vite build --watch` で規模が
+閾値をまたいでエンジンが切り替わっても追従できるよう、パーサのメモ化は `useRust` 別に持つ。
+
 ---
 
 ## 7. Engine 内部パイプライン（部分評価器の詳細）

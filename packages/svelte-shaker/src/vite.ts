@@ -457,15 +457,19 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   // rather than silently swapping to svelte/compiler — a silent swap would make the
   // same source shake on one machine and not another. `parser: 'svelte'` is the
   // explicit opt-out; `parser: 'rsvelte'` forces rsvelte even on the JS engine.
-  let parseResolved = false;
-  let parse: Parse | undefined;
+  // Memoized PER ENGINE: `vite build --watch` reuses this plugin instance across
+  // rebuilds, and `auto` can flip engine as the app grows/shrinks past the size
+  // threshold — so the parser must be able to follow.  Keyed by `useRust` (a
+  // present key is a resolved slot, whose value may legitimately be `undefined` =
+  // svelte/compiler).
+  const parseByEngine = new Map<boolean, Parse | undefined>();
   const getParse = (useRust: boolean): Parse | undefined => {
-    if (parseResolved) return parse;
-    parseResolved = true;
+    if (parseByEngine.has(useRust)) return parseByEngine.get(useRust);
     const parser = options.parser ?? (useRust ? 'rsvelte' : 'svelte');
+    let resolved: Parse | undefined;
     if (parser === 'rsvelte') {
-      parse = tryLoadRsvelteParser() ?? undefined;
-      if (!parse)
+      resolved = tryLoadRsvelteParser() ?? undefined;
+      if (!resolved)
         throw new Error(
           '[vite-plugin-svelte-shaker] the "rsvelte" parser could not load its ' +
             'bundled dependency `@rsvelte/compiler` (a broken install, or an environment that ' +
@@ -473,7 +477,8 @@ export function shaker(options: ShakerOptions = {}): Plugin {
             'to use svelte/compiler (the fallback parser).',
         );
     }
-    return parse;
+    parseByEngine.set(useRust, resolved);
+    return resolved;
   };
 
   /** The module specifier the rewritten owner imports a given variant from. */
