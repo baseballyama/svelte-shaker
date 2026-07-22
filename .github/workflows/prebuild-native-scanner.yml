@@ -65,12 +65,16 @@ jobs:
       # ourselves WITHOUT submodules at the validated rev and `[patch]` the dep to
       # that local path. rsvelte_core's build needs none of the submodules (the
       # workspace members are all `crates/*`), so the output is byte-identical.
+      # This rev MUST match the crates' Cargo.toml `rsvelte_core` pin (and the CI
+      # `ci-rust.yml` vendoring). The `[patch]` replaces the dep by path, so the
+      # CHECKED-OUT rev here — not the Cargo.toml rev — is what actually builds; a
+      # drift between the two silently builds a different rsvelte than is pinned.
       - name: Vendor rsvelte without submodules + patch the dep
         shell: bash
         run: |
           git clone --no-checkout --no-recurse-submodules --filter=blob:none \
             https://github.com/baseballyama/rsvelte .rsvelte-src
-          git -C .rsvelte-src checkout f5a672b23e98cec1d9505c0b4ac37dc37b1ad051
+          git -C .rsvelte-src checkout 852f80e27a442ea209a19b9f1e4339b62a5dbde2
           mkdir -p .cargo
           printf '[patch."https://github.com/baseballyama/rsvelte"]\nrsvelte_core = { path = ".rsvelte-src/crates/rsvelte_core" }\n' > .cargo/config.toml
           cat .cargo/config.toml
