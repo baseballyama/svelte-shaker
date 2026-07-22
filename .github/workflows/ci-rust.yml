@@ -1,0 +1,77 @@
+# Compile the Rust crates on every change to them.
+#
+# The WASM engine (`engine-rs`) and the native napi scanner (`engine-scan-native`)
+# are built only by the release / prebuild workflows, so the main CI never touched
+# them. That let a napi/napi-derive version skew (#127) silently break a fresh
+# `cargo build` — it shipped unnoticed because the published binaries predated the
+# bump. This job compiles both crates on every Rust change so that can't recur.
+#
+# Path-filtered so it runs only when the crates (or this file) change; it is not a
+# required check for JS-only PRs.
+name: CI (Rust)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/svelte-shaker/engine-rs/**'
+      - 'packages/svelte-shaker/engine-scan-native/**'
+      - '.github/workflows/ci-rust.yml'
+  pull_request:
+    paths:
+      - 'packages/svelte-shaker/engine-rs/**'
+      - 'packages/svelte-shaker/engine-scan-native/**'
+      - '.github/workflows/ci-rust.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-rust-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+
+jobs:
+  rust:
+    name: Cargo build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same submodule-free rsvelte vendoring as prebuild-native-scanner.yml:
+      # rsvelte is a git dep with private ecosystem-test submodules CI can't fetch,
+      # so clone it WITHOUT submodules at the pinned rev and `[patch]` the dep to
+      # that path. Keep this rev in sync with the crates' Cargo.toml `rsvelte_core`
+      # pin (and with the prebuild workflow).
+      - name: Vendor rsvelte without submodules + patch the dep
+        working-directory: packages/svelte-shaker/engine-scan-native
+        run: |
+          git clone --no-checkout --no-recurse-submodules --filter=blob:none \
+            https://github.com/baseballyama/rsvelte .rsvelte-src
+          git -C .rsvelte-src checkout 852f80e27a442ea209a19b9f1e4339b62a5dbde2
+          mkdir -p .cargo
+          printf '[patch."https://github.com/baseballyama/rsvelte"]\nrsvelte_core = { path = ".rsvelte-src/crates/rsvelte_core" }\n' > .cargo/config.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # Building the native scanner compiles the engine-rs rlib AND the napi
+      # cdylib — the exact combination the napi skew broke.
+      - name: Build native scanner
+        working-directory: packages/svelte-shaker/engine-scan-native
+        run: cargo build --release
+
+      # The WASM engine's own unit tests run on the host (no rsvelte dep here).
+      - name: Test WASM engine (host)
+        working-directory: packages/svelte-shaker/engine-rs
+        run: cargo test --release
+
+      # A wasm-target compile catches a wasm-only break without pulling in the
+      # wasm-pack / wasm-opt toolchain.
+      - name: Compile WASM engine (wasm32)
+        working-directory: packages/svelte-shaker/engine-rs
+        run: cargo build --release --target wasm32-unknown-unknown
