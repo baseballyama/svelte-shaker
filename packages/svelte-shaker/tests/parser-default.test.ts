@@ -6,13 +6,14 @@ import { build, type Rollup } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 // ----------------------------------------------------------------------
-// The Vite plugin parses with rsvelte BY DEFAULT: a bare `shaker()` must load
-// the rsvelte parser from `@rsvelte/compiler` (a bundled WASM dependency), and
-// `parser: 'svelte'` is the explicit opt-out to svelte/compiler (the fallback for
-// rsvelte bugs). We wrap the real loader so we can both (a) observe that the
-// default path reaches for it and the opt-out does not, and (b) force a load
-// failure to prove the default THROWS with a message pointing at the dependency /
-// the opt-out.
+// The Vite plugin's default parser FOLLOWS THE ENGINE: rsvelte on the native
+// (Rust) engine, svelte/compiler on the JS engine (where rsvelte's parse is pure
+// overhead).  A tiny app on `auto` selects the native engine, so a bare `shaker()`
+// must load the rsvelte parser from `@rsvelte/compiler`; `engine: 'js'` selects the
+// JS engine and so must NOT load rsvelte; `parser: 'svelte'`/`'rsvelte'` pin one
+// parser regardless.  We wrap the real loader so we can (a) observe which paths
+// reach for rsvelte, and (b) force a load failure to prove the rsvelte-resolved
+// path THROWS with a message pointing at the dependency / the opt-out.
 // ----------------------------------------------------------------------
 
 vi.mock('../src/rsvelte-parse', async (importOriginal) => {
@@ -73,12 +74,25 @@ async function bundle(pre: unknown[]): Promise<string> {
   return result.output.map((c) => ('code' in c ? c.code : '')).join('\n');
 }
 
-describe('vite-plugin-svelte-shaker: rsvelte is the default parser', () => {
-  it('a bare shaker() loads the rsvelte native parser and shakes', async () => {
+describe('vite-plugin-svelte-shaker: default parser follows the engine', () => {
+  it('a bare shaker() on a tiny app (native engine) loads rsvelte and shakes', async () => {
     const code = await bundle([shaker({ entries: ['.'] })]);
-    expect(loadRsvelte).toHaveBeenCalled(); // default reached for rsvelte
+    expect(loadRsvelte).toHaveBeenCalled(); // native engine -> rsvelte default
     expect(code).not.toMatch(IF_MACHINERY); // and shook the dead branch
     expect(code).toContain('This is Sub Component');
+  });
+
+  it("engine: 'js' defaults to svelte/compiler — rsvelte is never loaded", async () => {
+    const code = await bundle([shaker({ entries: ['.'], engine: 'js' })]);
+    expect(loadRsvelte).not.toHaveBeenCalled(); // JS engine -> svelte default, no rsvelte overhead
+    expect(code).not.toMatch(IF_MACHINERY);
+    expect(code).toContain('This is Sub Component');
+  });
+
+  it("engine: 'rust' keeps rsvelte as the default parser", async () => {
+    const code = await bundle([shaker({ entries: ['.'], engine: 'rust' })]);
+    expect(loadRsvelte).toHaveBeenCalled();
+    expect(code).not.toMatch(IF_MACHINERY);
   });
 
   it("parser: 'svelte' opts out — svelte/compiler is used, rsvelte is never loaded", async () => {
@@ -88,11 +102,21 @@ describe('vite-plugin-svelte-shaker: rsvelte is the default parser', () => {
     expect(code).toContain('This is Sub Component');
   });
 
-  it('default throws when @rsvelte/compiler cannot be loaded, pointing at the dependency and the opt-out', async () => {
+  it("parser: 'rsvelte' forces rsvelte even on the JS engine", async () => {
+    const code = await bundle([shaker({ entries: ['.'], engine: 'js', parser: 'rsvelte' })]);
+    expect(loadRsvelte).toHaveBeenCalled(); // explicit parser overrides the engine default
+    expect(code).not.toMatch(IF_MACHINERY);
+  });
+
+  it('a rsvelte-resolved default throws when @rsvelte/compiler cannot be loaded, pointing at the dependency and the opt-out', async () => {
     loadRsvelte.mockReturnValue(null); // simulate a broken install / wasm that won't instantiate
-    await expect(bundle([shaker({ entries: ['.'] })])).rejects.toThrow(/@rsvelte\/compiler/);
+    await expect(bundle([shaker({ entries: ['.'], engine: 'rust' })])).rejects.toThrow(
+      /@rsvelte\/compiler/,
+    );
     loadRsvelte.mockReturnValue(null);
-    await expect(bundle([shaker({ entries: ['.'] })])).rejects.toThrow(/parser: "svelte"/);
+    await expect(bundle([shaker({ entries: ['.'], engine: 'rust' })])).rejects.toThrow(
+      /parser: "svelte"/,
+    );
   });
 
   it("parser: 'svelte' still works when @rsvelte/compiler is unavailable (it is the fallback)", async () => {

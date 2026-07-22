@@ -140,8 +140,11 @@ export interface ShakerOptions {
    * implements every pass — for monomorphization it calls back into JS only for
    * the per-module compiled-size proxy the net-win gate needs — so it is the
    * default fast path:
-   *  - `'auto'` — use the native Rust engine when it can be loaded; otherwise fall
-   *    back to the JS engine.
+   *  - `'auto'` — use the native Rust engine for small/medium apps; a large app
+   *    (more than a few hundred components) stays on the JS engine, because the
+   *    whole-program AST that must cross the JS<->WASM boundary as JSON grows to
+   *    tens of MB and the round-trip then costs more than the faster parse saves.
+   *    Also falls back to JS if the WASM module can't be loaded.
    *  - `'rust'` — force the Rust engine; throws if the WASM module can't be loaded.
    *  - `'js'` — force the JS engine.
    * Both engines are differentially tested to produce byte-identical output, so the
@@ -161,17 +164,20 @@ export interface ShakerOptions {
    */
   dev?: false | DevMode;
   /**
-   * Which parser feeds the engine.  Default `'rsvelte'` — rsvelte's parser,
-   * loaded from `@rsvelte/compiler` (a bundled WASM dependency, so there is
-   * nothing extra to install and no platform-specific binary).  `'svelte'` is
-   * the escape hatch: it uses svelte/compiler (the previous default) and is the
-   * fallback to reach for if you ever hit an rsvelte parser bug.  The engine
-   * reads only UTF-16 `start`/`end`, never `loc`, so the choice can never affect
-   * what renders — it is soundness-neutral, differentially tested to produce
-   * SSR-equivalent output either way.  With the default `'rsvelte'`, if
-   * `@rsvelte/compiler` can't be loaded (a broken install) the plugin THROWS
-   * rather than silently falling back to svelte/compiler, so the output stays
-   * deterministic across machines: set `parser: 'svelte'` to opt out.
+   * Which parser feeds the engine.  Defaults to FOLLOW THE ENGINE: `'rsvelte'` on
+   * the native (Rust) engine — its AST crosses the WASM boundary directly — and
+   * `'svelte'` (svelte/compiler) on the JS engine, where rsvelte's parse is pure
+   * overhead (~2x slower) with no downstream benefit.  Set this to pin one parser
+   * regardless of engine.  rsvelte loads from `@rsvelte/compiler` (a bundled WASM
+   * dependency — nothing extra to install, no platform-specific binary).
+   *
+   * The engine reads only UTF-16 `start`/`end`, never `loc`, so the choice can
+   * never affect what renders — it is soundness-neutral, differentially tested to
+   * produce byte-identical output either way.  When rsvelte IS the resolved parser
+   * (the native engine, or an explicit `parser: 'rsvelte'`) and `@rsvelte/compiler`
+   * can't be loaded, the plugin THROWS rather than silently swapping to
+   * svelte/compiler, so the same source can't shake differently on another machine:
+   * set `parser: 'svelte'` to opt out.
    */
   parser?: 'svelte' | 'rsvelte';
   /**
@@ -281,6 +287,17 @@ function reportSizes(
 
 /** Query flag a specialized-variant `.svelte` request carries (see below). */
 const VARIANT_QUERY = 'shaker_variant';
+
+/**
+ * Above this many seed components, `auto` uses the JS engine instead of the native
+ * one.  The native engine's parse is faster, but it marshals the whole-program AST
+ * across the JS<->WASM boundary as JSON; for a large app (hundreds of components,
+ * tens of MB of AST) that round-trip outweighs the parse saving, so the
+ * boundary-free JS engine wins.  A round proxy for "the AST is big enough that the
+ * boundary tax dominates", not a measured knife-edge — the choice is speed-only
+ * (both engines emit byte-identical output), so being approximate is fine.
+ */
+const RUST_ENGINE_MAX_COMPONENTS = 300;
 
 /**
  * Resolve the {@link MonomorphizeOptions} from the public option surface.
@@ -427,24 +444,30 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   let devShaker: DevShaker | null = null;
 
   // Resolve the parser ONCE (lazily, so the rsvelte wasm is only loaded when a
-  // parser is actually needed). The default is `'rsvelte'`; `undefined` (returned
-  // for the `parser: 'svelte'` opt-out) means svelte/compiler. `@rsvelte/compiler`
-  // is a bundled dependency, so this normally just works; if it somehow can't be
-  // loaded (a broken install, an environment that can't instantiate the wasm) the
-  // default THROWS rather than silently falling back to svelte/compiler — a silent
-  // swap would make the same source shake differently depending on the machine, a
-  // reproducibility footgun. Failing loudly keeps the output deterministic;
-  // `parser: 'svelte'` is the explicit opt-out.
+  // parser is actually needed).  `undefined` means svelte/compiler.
+  //
+  // The default FOLLOWS THE ENGINE: rsvelte feeds the native (Rust) engine — its
+  // AST crosses the WASM boundary directly — but on the JS engine rsvelte's parse
+  // is pure overhead (~2x slower than svelte/compiler here) with no downstream
+  // benefit, so the JS path defaults to svelte/compiler.  The two parsers are
+  // differentially tested to produce byte-identical output, so this is speed-only.
+  //
+  // When rsvelte IS the resolved parser (the native engine, or explicit
+  // `parser: 'rsvelte'`) and `@rsvelte/compiler` can't be loaded, the plugin THROWS
+  // rather than silently swapping to svelte/compiler — a silent swap would make the
+  // same source shake on one machine and not another. `parser: 'svelte'` is the
+  // explicit opt-out; `parser: 'rsvelte'` forces rsvelte even on the JS engine.
   let parseResolved = false;
   let parse: Parse | undefined;
-  const getParse = (): Parse | undefined => {
+  const getParse = (useRust: boolean): Parse | undefined => {
     if (parseResolved) return parse;
     parseResolved = true;
-    if ((options.parser ?? 'rsvelte') === 'rsvelte') {
+    const parser = options.parser ?? (useRust ? 'rsvelte' : 'svelte');
+    if (parser === 'rsvelte') {
       parse = tryLoadRsvelteParser() ?? undefined;
       if (!parse)
         throw new Error(
-          '[vite-plugin-svelte-shaker] the default parser "rsvelte" could not load its ' +
+          '[vite-plugin-svelte-shaker] the "rsvelte" parser could not load its ' +
             'bundled dependency `@rsvelte/compiler` (a broken install, or an environment that ' +
             'can\'t instantiate its wasm). Reinstall dependencies, or set `parser: "svelte"` ' +
             'to use svelte/compiler (the fallback parser).',
@@ -544,7 +567,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         fsResolve,
         read,
         devMode,
-        getParse(),
+        getParse(false),
         await currentEscaped(),
       );
       shaken = await devShaker.init();
@@ -691,7 +714,14 @@ export function shaker(options: ShakerOptions = {}): Plugin {
             '[vite-plugin-svelte-shaker] engine: "rust" was requested but the WASM engine ' +
               'could not be loaded. Remove the option (or use engine: "js") to use the JS engine.',
           );
-      } else if (engineChoice === 'auto') {
+      } else if (engineChoice === 'auto' && entryComponents.length <= RUST_ENGINE_MAX_COMPONENTS) {
+        // The native engine parses fast, but the whole-program AST must cross the
+        // JS<->WASM boundary as JSON, and past a few hundred components that AST is
+        // tens of MB (this app: ~600 components -> ~60 MB) — the round-trip then
+        // costs more than the faster parse saves, so `auto` keeps a large app on the
+        // boundary-free JS engine.  Speed-only: both engines emit byte-identical
+        // output, so a borderline misjudgment only affects build time, never what
+        // ships.  `engine: 'rust'` overrides this to force the native engine.
         wasm = tryLoadWasmEngine();
       }
 
@@ -705,7 +735,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
             resolve,
             read,
             mono,
-            getParse(),
+            getParse(true),
             escaped,
           );
           shaken = result.files;
@@ -716,7 +746,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
             entryComponents,
             resolve,
             read,
-            getParse(),
+            getParse(true),
             escaped,
           );
           variantSources = new Map();
@@ -728,7 +758,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       if (!mono.enabled) {
         // JS engine, monomorphization off: byte-for-byte the unused-prop fold /
         // constant fold / value-set narrowing output.
-        shaken = await svelteShaker(entryComponents, resolve, read, getParse(), escaped);
+        shaken = await svelteShaker(entryComponents, resolve, read, getParse(false), escaped);
         variantSources = new Map();
         reportSizes(shaken, read, root, options.verbose === true, log);
         return;
@@ -740,7 +770,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         read,
         mono,
         variantSpecifier,
-        getParse(),
+        getParse(false),
         escaped,
       );
       shaken = result.files;
