@@ -38,6 +38,34 @@ export declare function scanProfile(inputJson: string): string;
 export declare function parseFiles(inputJson: string): string;
 
 /**
+ * Chatty-protocol Round 2: the native full-shake session. `parse` parses + retains
+ * every file's AST (returning the Round-1 {@link parseFiles} facts); `shake` runs
+ * the whole-program fold + monomorphization over the retained ASTs and returns only
+ * the edits.
+ *
+ * The inner revert cascade (re-parse each emitted file with rsvelte, force-bail the
+ * unparseable ones, re-run) is internal; the caller keeps a FINAL svelte/compiler
+ * validation as the authority and feeds any residual failure back via `forceBail`.
+ */
+export declare class ShakeSession {
+  constructor();
+  /** Parse + retain `{ files: { id, code }[] }`; returns the {@link parseFiles} facts JSON. */
+  parse(inputJson: string): string;
+  /**
+   * `configJson` is `{ edges: ResolvedEdge[]; entries?: string[]; escaped?: string[];
+   * mono?: { enabled: boolean; maxVariants: number; minSavings: number }; forceBail?:
+   * string[] }`. Returns `{ files: { [id]: code }; variants: { [specifier]: code } }` JSON.
+   *
+   * `ownSize` is the compiled-byte proxy the mono net-win gate calls. It receives a
+   * SINGLE JSON string argument — `[id, source]` — and returns that source's compiled
+   * size (svelte compile length) or `null` on failure. The single-arg form is a
+   * deliberate workaround for a napi multi-arg marshaling bug; wrap a normal
+   * `(id, source) => number | null` sizer as `(p) => size(...JSON.parse(p))`.
+   */
+  shake(configJson: string, ownSize: (payload: string) => number | null): string;
+}
+
+/**
  * In-memory scan state for incremental re-scans (editor / LSP). Construct once,
  * `init` with the full program, then `update` per change set — `update` re-parses
  * only the changed files and re-runs the cheap whole-program assembly over the

@@ -28,6 +28,7 @@ use rsvelte_core::{parse, ParseOptions};
 use serde_json::{json, Value};
 
 mod parse_files;
+mod session;
 mod typed_scan;
 mod utf16;
 use utf16::{convert_positions_to_utf16, Utf8ToUtf16};

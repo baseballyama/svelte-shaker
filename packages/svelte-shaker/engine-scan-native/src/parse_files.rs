@@ -188,6 +188,25 @@ fn walk_node(node: &TemplateNode, rendered: &mut Vec<String>, member: &mut Vec<S
     }
 }
 
+/// Extract the `parse_files` facts from an ALREADY-PARSED `Root`. The serialize
+/// arena must be installed by the caller (instance-import extraction resolves
+/// JsNodeIds through it). Split out so the Session can compute facts and the shake
+/// AST from a single parse.
+pub fn facts_from_root(id: &str, root: &Root) -> FileParse {
+    let imports = match root.instance.as_ref() {
+        Some(script) => instance_imports(script.content.as_json()),
+        None => Vec::new(),
+    };
+    let mut rendered = Vec::new();
+    let mut member = Vec::new();
+    collect_tags(&root.fragment, &mut rendered, &mut member);
+    rendered.sort();
+    rendered.dedup();
+    member.sort();
+    member.dedup();
+    FileParse { id: id.to_string(), imports, rendered_tags: rendered, member_tags: member, parse_error: false }
+}
+
 /// Parse one component and extract its `parse_files` facts. A parse error yields an
 /// empty result flagged `parse_error` (the JS crawl simply cannot follow such a
 /// file), never a panic.
@@ -204,20 +223,6 @@ pub fn parse_one(id: &str, code: &str) -> FileParse {
             };
         }
     };
-
     // `as_json()` on the instance program resolves JsNodeIds via the arena.
-    with_serialize_arena(&root.arena, || {
-        let imports = match root.instance.as_ref() {
-            Some(script) => instance_imports(script.content.as_json()),
-            None => Vec::new(),
-        };
-        let mut rendered = Vec::new();
-        let mut member = Vec::new();
-        collect_tags(&root.fragment, &mut rendered, &mut member);
-        rendered.sort();
-        rendered.dedup();
-        member.sort();
-        member.dedup();
-        FileParse { id: id.to_string(), imports, rendered_tags: rendered, member_tags: member, parse_error: false }
-    })
+    with_serialize_arena(&root.arena, || facts_from_root(id, &root))
 }
