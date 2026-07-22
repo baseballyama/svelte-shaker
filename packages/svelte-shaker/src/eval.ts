@@ -6,6 +6,32 @@ export type EvalResult = { known: true; value: Literal } | { known: false };
 const UNKNOWN: EvalResult = { known: false };
 
 /**
+ * Strip TypeScript assertion wrappers — `x as T` (`TSAsExpression`), `x!`
+ * (`TSNonNullExpression`), `x satisfies T` (`TSSatisfiesExpression`) — down to
+ * the runtime expression they wrap, recursing so `('a' as const)!` becomes `'a'`.
+ *
+ * These are compile-time-only type operators: they are erased before any code
+ * runs and do not touch the operand's value, so interpreting the operand IS
+ * interpreting the whole expression (docs/ARCHITECTURE.md §2.2 — the value the
+ * expression abstracts to is exactly the operand's). The engine runs on the
+ * `lang="ts"` source with types preserved (§6.3), so svelte/compiler hands it
+ * these nodes verbatim; a parser that erases them (rsvelte today) yields the bare
+ * operand instead. Unwrapping here folds both ASTs identically — the
+ * parser-neutrality contract every value-interpreting entry point relies on.
+ */
+export function unwrapTsAssertions(node: AnyNode | null | undefined): AnyNode | null | undefined {
+  let current = node;
+  while (
+    current?.type === 'TSAsExpression' ||
+    current?.type === 'TSNonNullExpression' ||
+    current?.type === 'TSSatisfiesExpression'
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+/**
  * A deliberately tiny, total constant evaluator over an ESTree expression,
  * given an environment of statically-known identifiers.  It never throws and
  * never guesses: anything it cannot prove is `{ known: false }`.
@@ -18,6 +44,7 @@ export function evaluate(
   node: AnyNode | null | undefined,
   env: ReadonlyMap<string, Literal>,
 ): EvalResult {
+  node = unwrapTsAssertions(node);
   if (!node) return UNKNOWN;
   switch (node.type) {
     case 'Literal':
@@ -181,6 +208,7 @@ function evalTri(
   constEnv: Map<string, Literal>,
   setEnv: Map<string, Literal[]>,
 ): Tri {
+  node = unwrapTsAssertions(node);
   if (!node) return 'unknown';
   switch (node.type) {
     case 'UnaryExpression':
@@ -258,8 +286,11 @@ export function setVar(
   node: AnyNode | undefined,
   setEnv: ReadonlyMap<string, Literal[]>,
 ): Literal[] | null {
-  if (node?.type === 'Identifier' && node.name && setEnv.has(node.name))
-    return setEnv.get(node.name)!;
+  // A `variant as const` / `variant!` reference is still a bare read of `variant`
+  // (the assertion erases at runtime), so it narrows like the identifier it wraps.
+  const bare = unwrapTsAssertions(node);
+  if (bare?.type === 'Identifier' && bare.name && setEnv.has(bare.name))
+    return setEnv.get(bare.name)!;
   return null;
 }
 

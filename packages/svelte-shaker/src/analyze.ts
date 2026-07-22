@@ -1,6 +1,6 @@
 import {
   parseCached,
-  parseSvelte,
+  parseModuleProgram,
   walk,
   type AnyNode,
   type Parse,
@@ -19,7 +19,7 @@ import {
   type ResolvedEdge,
 } from './ir.js';
 import { computeDeadSpans, inSpans, type Span } from './dead.js';
-import { evaluate, literalValue, setVar, type EvalResult } from './eval.js';
+import { evaluate, literalValue, setVar, unwrapTsAssertions, type EvalResult } from './eval.js';
 
 export type Resolve = (
   source: string,
@@ -1205,6 +1205,11 @@ function evalDeclaratorValue(
   init: AnyNode | undefined,
   env: ReadonlyMap<string, Literal>,
 ): EvalResult {
+  // `const x = $state(0) as T` wraps the rune in a `TSAsExpression`; erase the
+  // (runtime-transparent) assertion first so the `$state`/`$state.raw` unwrap
+  // below and `evaluate` both see the real initializer, same as a parser that
+  // strips the assertion would.
+  init = unwrapTsAssertions(init) ?? undefined;
   if (isStateRuneCall(init)) {
     const arg = init?.arguments?.[0];
     if (arg == null) return { known: true, value: undefined }; // bare `$state()` -> undefined
@@ -1428,8 +1433,12 @@ function collectTemplateBindings(
  */
 function collectWrittenNames(node: AnyNode, out: Set<string>): void {
   if (node.type === 'AssignmentExpression') addPatternNames(node.left, out);
-  else if (node.type === 'UpdateExpression' && node.argument?.type === 'Identifier') {
-    if (node.argument.name) out.add(node.argument.name);
+  else if (node.type === 'UpdateExpression') {
+    // `x!++` keeps the `!` as a `TSNonNullExpression` around the target (only a
+    // bare `x = …` LHS is normalized to the identifier), so read through it or the
+    // write goes uncounted and the name is wrongly admitted as a constant.
+    const arg = unwrapTsAssertions(node.argument);
+    if (arg?.type === 'Identifier' && arg.name) out.add(arg.name);
   }
 }
 
@@ -1438,6 +1447,11 @@ function collectWrittenNames(node: AnyNode, out: Set<string>): void {
  * Handles bare identifiers, object/array destructuring, defaults and rest.
  */
 function addPatternNames(pattern: AnyNode | null | undefined, out: Set<string>): void {
+  // A non-null-asserted assignment target keeps its `TSNonNullExpression` wrapper
+  // in every position but a bare `x = …` LHS — `x! += 1`, `[x!] = a`, `({k: x!} =
+  // o)` — so peel it here (the one choke point every pattern position recurses
+  // through) to count the write against the bare name.
+  pattern = unwrapTsAssertions(pattern) ?? undefined;
   if (!pattern) return;
   switch (pattern.type) {
     case 'Identifier':
@@ -1849,8 +1863,14 @@ function literalAttrValue(value: unknown): { known: true; value: Literal } | { k
     const part = parts[0]!;
     if (part.type === 'Text')
       return { known: true, value: (part.data ?? part.raw ?? '') as string };
-    if (part.type === 'ExpressionTag' && part.expression?.type === 'Literal')
-      return literalValue(part.expression);
+    if (part.type === 'ExpressionTag') {
+      // Recognize `prop={'x' as const}` as the literal it wraps, so the write is
+      // classified NON-dynamic identically to a parser that strips the assertion.
+      // Both paths already fold the value (via the expr fallback), but the
+      // `dynamic` flag itself must match — mono's `specializableShape` reads it.
+      const expr = unwrapTsAssertions(part.expression);
+      if (expr?.type === 'Literal') return literalValue(expr);
+    }
     return { known: false };
   }
   // Multiple parts: only fold when every part is static text.
@@ -1994,6 +2014,9 @@ function valueSetFor(decl: PropDecl, sites: CallSite[], ownerEnv: OwnerEnv): Pro
 function literalDefault(
   expr: AnyNode | undefined,
 ): { known: true; value: Literal } | { known: false } {
+  // A default like `= 500 as const` reaches here as a `TSAsExpression`; the
+  // assertion erases at runtime, so read through it to the bare default value.
+  expr = unwrapTsAssertions(expr) ?? undefined;
   if (!expr) return { known: true, value: undefined }; // omitted default -> undefined
   if (expr.type === 'Literal') return { known: true, value: expr.value as Literal };
   if (expr.type === 'Identifier' && expr.name === 'undefined')
@@ -2244,20 +2267,15 @@ function followLocalImport(
 }
 
 /**
- * Parse a `.js`/`.ts` module's top-level body by reusing the Svelte parser via a
- * `<script module>` wrapper (the engine has no standalone JS parser).  `lang="ts"`
- * is required so TypeScript barrels parse — `export type { … }`, type-only
- * specifiers and annotations are the norm for a design-system's `index.ts`, and a
- * plain JS parse throws on them, leaving the whole library unfollowed.  Returns
- * `null` if it cannot be parsed — callers then leave the barrel unfollowed.
+ * Parse a `.js`/`.ts` barrel's top-level body via {@link parseModuleProgram}
+ * (the engine has no standalone JS parser; the shared helper wraps the source in
+ * a `<script module lang="ts">` so TypeScript barrels — `export type { … }`,
+ * type-only specifiers — parse, and neutralizes any `</script>` in the text so a
+ * valid module that merely mentions it still parses, issue #146).  Returns `null`
+ * if it cannot be parsed — callers then leave the barrel unfollowed.
  */
 function parseModuleBody(code: string, id: ComponentId): AnyNode[] | null {
-  try {
-    const ast = parseSvelte(`<script module lang="ts">\n${code}\n</script>`, id);
-    return ast.module?.content?.body ?? null;
-  } catch {
-    return null;
-  }
+  return parseModuleProgram(code, id)?.body ?? null;
 }
 
 /**

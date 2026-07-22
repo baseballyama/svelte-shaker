@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluate, evaluateWithSets } from '../src/eval';
+import { evaluate, evaluateWithSets, unwrapTsAssertions } from '../src/eval';
 import { tryLoadRsvelteParser } from '../src/rsvelte-parse';
 import { parseSvelte, type AnyNode } from '../src/parse';
 import type { Literal } from '../src/ir';
@@ -10,6 +10,16 @@ function expr(src: string): AnyNode {
   const tag = ast.fragment.nodes?.find((n) => n.type === 'ExpressionTag');
   if (!tag?.expression) throw new Error(`no expression in {${src}}`);
   return tag.expression;
+}
+
+/** Parse a TS expression (with `as`/`satisfies`/`!`) via a `lang="ts"` script
+ * initializer, returning its declarator `init` node — the only context where the
+ * svelte parser produces `TSAsExpression` / `TSNonNullExpression` / … nodes. */
+function tsExpr(src: string): AnyNode {
+  const ast = parseSvelte(`<script lang="ts">let _x = ${src};</script>`, 'expr.svelte');
+  const init = ast.instance?.content?.body?.[0]?.declarations?.[0]?.init;
+  if (!init) throw new Error(`no initializer in ${src}`);
+  return init;
 }
 
 const consts = (o: Record<string, Literal>) => new Map(Object.entries(o));
@@ -145,5 +155,43 @@ describe('evaluate (literal value domain)', () => {
     if (rsvelte) expect(evaluate(rsExpr('null'), empty)).toEqual({ known: true, value: null });
     expect(evaluate(expr('1 / 0'), empty)).toEqual({ known: true, value: Infinity });
     expect(evaluate(expr('0 / 0'), empty)).toEqual({ known: true, value: NaN });
+  });
+});
+
+/**
+ * TypeScript assertion expressions (`x as T`, `x!`, `x satisfies T`) are
+ * compile-time-only type operators that erase to their operand at runtime, so the
+ * evaluator must see through them and fold the wrapped value — otherwise a
+ * `<script lang="ts">` AST (which svelte/compiler keeps these nodes in) folds less
+ * than a parser that strips them, breaking parser-neutrality (issue #150).
+ */
+describe('evaluate: TypeScript assertion unwrapping (issue #150)', () => {
+  it("folds `'chips' as const` (TSAsExpression) to the literal", () => {
+    expect(evaluate(tsExpr("'chips' as const"), new Map())).toEqual({
+      known: true,
+      value: 'chips',
+    });
+  });
+
+  it('folds `x!` (TSNonNullExpression) through the env', () => {
+    expect(evaluate(tsExpr('x!'), consts({ x: 7 }))).toEqual({ known: true, value: 7 });
+  });
+
+  it('folds `x satisfies T` (TSSatisfiesExpression)', () => {
+    expect(evaluate(tsExpr("'ok' satisfies string"), new Map())).toEqual({
+      known: true,
+      value: 'ok',
+    });
+  });
+
+  it("peels nested assertions `('a' as const)!` down to the operand", () => {
+    expect(evaluate(tsExpr("('a' as const)!"), new Map())).toEqual({ known: true, value: 'a' });
+    expect(unwrapTsAssertions(tsExpr("('a' as const)!"))?.type).toBe('Literal');
+  });
+
+  it('a TS assertion wrapping a non-constant identifier stays UNKNOWN', () => {
+    // `dynamic` is not in the env, so the assertion cannot manufacture a value.
+    expect(evaluate(tsExpr('dynamic as string'), new Map()).known).toBe(false);
+    expect(unwrapTsAssertions(tsExpr('dynamic as string'))?.type).toBe('Identifier');
   });
 });

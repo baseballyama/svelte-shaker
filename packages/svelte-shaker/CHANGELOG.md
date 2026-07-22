@@ -1,5 +1,37 @@
 # svelte-shaker
 
+## 0.15.2
+
+### Patch Changes
+
+- 51d92f7: Fold TypeScript assertion expressions (`x as T`, `x!`, `x satisfies T`) at call
+  sites, owner-local consts, and prop defaults, so a `<script lang="ts">` app shakes
+  the same whether the analyzer runs on the svelte/compiler AST (which keeps these
+  nodes) or the rsvelte AST (which strips them). Previously `<Child pattern={'chips'
+as const} />` folded on the rsvelte path but not the svelte path, leaving the dead
+  `{#if pattern === 'text'}` arm and the `pattern` prop in place. These assertions
+  are compile-time-only type operators that erase to their operand at runtime, so
+  reading through them to the wrapped value is sound; the constant evaluator (and its
+  Rust/WASM twin) now unwrap them before evaluating.
+
+## 0.15.1
+
+### Patch Changes
+
+- 4e6af6d: Fix the non-`.svelte` module scan (and TypeScript barrel-following) failing on
+  valid modules whose text mentions `</script>`. The scan parses a `.ts`/`.js`
+  module by wrapping it in a `<script module lang="ts">` block, and any `</script>`
+  in the module's text — inside a comment, string, regex or template literal, as an
+  HTML sanitizer or a markdown pipeline routinely has — closed the wrapper early, so
+  a perfectly valid file failed to parse, landed in `unscannable`, and triggered the
+  "use `preserve`" warning (while silently losing shake coverage for components
+  mounted from it). The closing tag is now neutralized before wrapping. In valid
+  JS/TS `</script` only appears inside a comment or a string/regex/template literal,
+  so this touches only inert text — the one exception, a module specifier that
+  itself contains `</script`, is detected after parsing and makes the module report
+  as `unscannable` (the same loud degrade as before), rather than silently resolving
+  a rewritten path.
+
 ## 0.15.0
 
 ### Minor Changes
