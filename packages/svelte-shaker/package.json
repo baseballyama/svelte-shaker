@@ -71,6 +71,9 @@
   "peerDependencies": {
     "svelte": "^5.56.6"
   },
+  "optionalDependencies": {
+    "svelte-shaker-engine-scan-native": "~0.2.0"
+  },
   "engines": {
     "node": ">=22.23.1"
   }
