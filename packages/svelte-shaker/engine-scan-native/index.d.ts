@@ -57,8 +57,14 @@ export declare function irComponentTags(astJson: string): string;
  */
 export declare class ShakeSession {
   constructor();
-  /** Parse + retain `{ files: { id, code }[] }`; returns the {@link parseFiles} facts JSON. */
+  /** Parse + retain `{ files: { id, code }[] }` (replacing any retained set); returns the {@link parseFiles} facts JSON. */
   parse(inputJson: string): string;
+  /**
+   * Additive parse for the incremental crawl: parse + retain only files whose id is
+   * not already retained (dedup guards re-sends), appended in input order; returns the
+   * {@link parseFiles} facts JSON for the NEWLY parsed files only.
+   */
+  parseMore(inputJson: string): string;
   /**
    * `configJson` is `{ edges: ResolvedEdge[]; entries?: string[]; escaped?: string[];
    * mono?: { enabled: boolean; maxVariants: number; minSavings: number }; forceBail?:

@@ -19,6 +19,8 @@
 //!    files is the AUTHORITY; a residual failure is fed back as `forceBail`. Kept
 //!    in JS on purpose — svelte/compiler, not rsvelte, decides what is valid.
 
+use std::collections::HashSet;
+
 use napi::bindgen_prelude::Function;
 use napi_derive::napi;
 use rsvelte_core::ast::arena::with_serialize_arena;
@@ -64,6 +66,38 @@ fn reparses(code: &str) -> bool {
     parse(code, ParseOptions::default()).is_ok()
 }
 
+/// Parse + serialize a batch of `{ id, code }` inputs across cores, preserving input
+/// order (`par_iter().collect()` keeps it — the shake iterates `self.files` in
+/// program order). Returns each file's retained form plus its Round-1 facts JSON.
+/// Thread-safe: each file's `Root` and its serialize arena stay on one worker thread,
+/// and `SERIALIZE_ARENA` is a thread_local installed/restored per
+/// `with_serialize_arena` call, so the fan-out shares no mutable state.
+fn parse_batch(files: &[Value]) -> Vec<(StoredFile, Value)> {
+    let build = |f: &Value| -> (StoredFile, Value) {
+        let id = f.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let code = f.get("code").and_then(Value::as_str).unwrap_or_default().to_string();
+        // One parse feeds BOTH the retained shake AST and the Round-1 facts.
+        match parse(&code, ParseOptions::default()) {
+            Ok(root) => {
+                let (ast, facts) = with_serialize_arena(&root.arena, || {
+                    (root_to_ast_value(&root, &code), facts_from_root(&id, &root))
+                });
+                (StoredFile { id, code, ast }, facts.into_json())
+            }
+            Err(_) => {
+                // A file the engine cannot parse contributes nothing to the shake
+                // (its AST is Null → the engine skips it, sound under-shake).
+                let facts = json!({
+                    "id": id.clone(), "imports": [], "renderedTags": [], "memberTags": [], "parseError": true
+                });
+                (StoredFile { id, code, ast: Value::Null }, facts)
+            }
+        }
+    };
+    use rayon::prelude::*;
+    files.par_iter().map(build).collect()
+}
+
 #[napi]
 pub struct ShakeSession {
     /// Retained files in input order (the engine iterates files in this order, and
@@ -85,45 +119,16 @@ impl ShakeSession {
         Self::default()
     }
 
-    /// Parse + retain every file, and return the Round-1 `parseFiles` facts (same
-    /// shape as the stateless [`crate::parse_files`] export). `input_json` is
-    /// `{ files: [{ id, code }] }`.
+    /// Parse + retain every file (replacing any previously retained set), and return
+    /// the Round-1 `parseFiles` facts (same shape as the stateless
+    /// [`crate::parse_files`] export). `input_json` is `{ files: [{ id, code }] }`.
     #[napi]
     pub fn parse(&mut self, input_json: String) -> napi::Result<String> {
         let input: Value = serde_json::from_str(&input_json)
             .map_err(|e| napi::Error::from_reason(format!("session.parse: input: {e}")))?;
         let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
 
-        // Parse + serialize each file on a worker thread, then reassemble in input
-        // order (par_iter().collect() preserves it — required: the shake iterates
-        // `self.files` in program order). Each file's `Root` and its serialize arena
-        // stay on one thread; `SERIALIZE_ARENA` is a thread_local set/restored per
-        // `with_serialize_arena` call, so the fan-out shares no mutable state.
-        let build = |f: &Value| -> (StoredFile, Value) {
-            let id = f.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-            let code = f.get("code").and_then(Value::as_str).unwrap_or_default().to_string();
-            // One parse feeds BOTH the retained shake AST and the Round-1 facts.
-            match parse(&code, ParseOptions::default()) {
-                Ok(root) => {
-                    let (ast, facts) = with_serialize_arena(&root.arena, || {
-                        (root_to_ast_value(&root, &code), facts_from_root(&id, &root))
-                    });
-                    (StoredFile { id, code, ast }, facts.into_json())
-                }
-                Err(_) => {
-                    // A file the engine cannot parse contributes nothing to the shake
-                    // (its AST is Null → the engine skips it, sound under-shake).
-                    let facts = json!({
-                        "id": id.clone(), "imports": [], "renderedTags": [], "memberTags": [], "parseError": true
-                    });
-                    (StoredFile { id, code, ast: Value::Null }, facts)
-                }
-            }
-        };
-        let results: Vec<(StoredFile, Value)> = {
-            use rayon::prelude::*;
-            files.par_iter().map(build).collect()
-        };
+        let results = parse_batch(files);
         self.files.clear();
         self.files.reserve(results.len());
         let mut facts_out = Vec::with_capacity(results.len());
@@ -134,6 +139,39 @@ impl ShakeSession {
 
         serde_json::to_string(&json!({ "files": facts_out }))
             .map_err(|e| napi::Error::from_reason(format!("session.parse: serialize: {e}")))
+    }
+
+    /// Additive parse for the incremental crawl (chatty Round 1): parse + retain only
+    /// the files whose id is not already retained (dedup guards a caller re-sending a
+    /// file seen in an earlier round), append them in input order, and return facts
+    /// for the NEWLY parsed files only — the caller already holds facts for anything
+    /// it sent before. `input_json` is `{ files: [{ id, code }] }`.
+    #[napi]
+    pub fn parse_more(&mut self, input_json: String) -> napi::Result<String> {
+        let input: Value = serde_json::from_str(&input_json)
+            .map_err(|e| napi::Error::from_reason(format!("session.parseMore: input: {e}")))?;
+        let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+
+        let existing: HashSet<&str> = self.files.iter().map(|f| f.id.as_str()).collect();
+        let fresh: Vec<Value> = files
+            .iter()
+            .filter(|f| {
+                f.get("id").and_then(Value::as_str).map(|id| !existing.contains(id)).unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        drop(existing);
+
+        let results = parse_batch(&fresh);
+        self.files.reserve(results.len());
+        let mut facts_out = Vec::with_capacity(results.len());
+        for (stored, facts) in results {
+            self.files.push(stored);
+            facts_out.push(facts);
+        }
+
+        serde_json::to_string(&json!({ "files": facts_out }))
+            .map_err(|e| napi::Error::from_reason(format!("session.parseMore: serialize: {e}")))
     }
 
     /// Whole-program shake + monomorphization over the retained ASTs. `config_json`

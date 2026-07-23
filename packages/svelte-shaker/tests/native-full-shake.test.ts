@@ -60,6 +60,7 @@ const dylib = fileURLToPath(
 
 interface ShakeSession {
   parse: (inputJson: string) => string;
+  parseMore: (inputJson: string) => string;
   shake: (configJson: string, ownSize: (payload: string) => number | null) => string;
 }
 interface NativeAddon {
@@ -198,6 +199,50 @@ describe.skipIf(!addon)('native ShakeSession revert / parse-error semantics', ()
       session.parse(JSON.stringify({ files: [{ id: '/Bad.svelte', code: invalid }] })),
     ) as { files: { id: string; parseError: boolean }[] };
     expect(facts.files[0]!.parseError).toBe(true);
+  });
+});
+
+describe.skipIf(!addon)('native ShakeSession incremental parseMore (chatty crawl)', () => {
+  it('parseMore appends only new files, skipping already-retained ids', () => {
+    const a = { id: '/A.svelte', code: "<script>import X from './X.svelte';</script><X />" };
+    const b = { id: '/B.svelte', code: '<p>no script</p>' };
+    const session = new addon!.ShakeSession();
+    session.parse(JSON.stringify({ files: [a] }));
+    // Re-send A (must be skipped as already retained) plus the new B.
+    const more = JSON.parse(session.parseMore(JSON.stringify({ files: [a, b] }))) as {
+      files: { id: string }[];
+    };
+    // Only B is newly parsed, so only B's facts come back.
+    expect(more.files.map((f) => f.id)).toEqual(['/B.svelte']);
+  });
+
+  it('parse-all == parse + parseMore rounds (byte-identical shake) across the corpus', async () => {
+    for (const entry of entries) {
+      const input = await buildAnalyzeInput(entry, fsResolve, fsReadFile);
+      if (input.files.length < 2) continue; // nothing to split
+      const files = input.files.map((f) => ({ id: f.id, code: f.code }));
+      const config = {
+        edges: input.edges,
+        entries: input.entries,
+        escaped: input.escaped ?? [],
+        mono: MONO_OFF,
+        forceBail: [] as string[],
+      };
+      // Single-shot parse.
+      const one = new addon!.ShakeSession();
+      one.parse(JSON.stringify({ files }));
+      const single = JSON.parse(one.shake(JSON.stringify(config), ownSizePayload)) as Shaken;
+      // Incremental: split the SAME program-order list; the second round re-includes
+      // the first file to exercise the dedup skip. Order of retained files is
+      // preserved, so the shake must be byte-identical.
+      const mid = Math.max(1, Math.floor(files.length / 2));
+      const inc = new addon!.ShakeSession();
+      inc.parse(JSON.stringify({ files: files.slice(0, mid) }));
+      inc.parseMore(JSON.stringify({ files: [files[0]!, ...files.slice(mid)] }));
+      const incremental = JSON.parse(inc.shake(JSON.stringify(config), ownSizePayload)) as Shaken;
+      const label = entry.split('/fixtures/')[1] ?? entry.split('/packages/')[1] ?? entry;
+      expect(incremental.files, label).toEqual(single.files);
+    }
   });
 });
 
