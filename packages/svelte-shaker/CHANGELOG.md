@@ -1,5 +1,27 @@
 # svelte-shaker
 
+## 0.16.0
+
+### Minor Changes
+
+- da44824: Add an `exclude` option and make the build crawl much faster on real apps.
+
+  - **New `exclude` option** — directories the scans must not walk, for a compiled/generated tree that is not source (a SvelteKit adapter's `build/`, a `dist/`). The resolved Vite `build.outDir` is now always excluded automatically; add other output dirs (most importantly adapter-static `build/`, which lives outside `build.outDir`) via `exclude: ['build']`. Left unpruned, the escape scan parses megabytes of minified build output looking for call sites it can never contain, which can dominate the crawl. Like `entries`, over-listing errs unsafe, so name only generated output, never source.
+  - **Faster whole-program crawl** — a shared barrel (a design-system `index.ts` re-imported by hundreds of components) is now read and parsed once per build instead of once per call site, and monomorphization skips its whole-program size setup when nothing is specializable. No change to what is shaken; output is byte-for-byte identical.
+
+### Patch Changes
+
+- da44824: Faster builds on large apps — the same output, chosen and produced more cheaply:
+
+  - `engine: 'auto'` now keeps a large app (more than a few hundred components) on the JS engine. The native engine parses faster but marshals the whole-program AST across the JS↔WASM boundary as JSON; past that size the round-trip costs more than the parse saves. `engine: 'rust'` still forces the native engine.
+  - The default `parser` now follows the engine: rsvelte on the native engine (its AST feeds Rust directly), svelte/compiler on the JS engine, where rsvelte's parse was ~2x slower pure overhead. Pin either with the `parser` option.
+  - Monomorphization's net-win gate reuses the AST the analysis already produced for every file it did not fold, instead of re-parsing all of them.
+
+  All three are speed-only: the shaken output is byte-for-byte unchanged.
+
+- da44824: Fix invalid output when a folded numeric prop is used as a member-access object. `count.toLocaleString()`, with `count` folded to `5000`, emitted `5000.toLocaleString()` — the parser reads `5000.` as a float and fails (`Identifier directly after number`). The number is now parenthesized (`(5000).toLocaleString()`). Previously such a component made the whole build fall back to re-running the transform, so this also removes that wasted work.
+- e7bd872: Fix the Rust/WASM engine emitting invalid output for a folded numeric prop used as a member-access object. `count.toLocaleString()`, with `count` folded to `5000`, produced `5000.toLocaleString()` — a syntax error (the parser reads `5000.` as a float, then hits the method name) — so the revert cascade bailed the component and left it un-shaken. The Rust engine now parenthesizes the number (`(5000).toLocaleString()`), matching the TS engine (the fix #154 made to TS had not been ported to Rust). Since the default engine for small apps (≤300 components) is Rust/WASM, this restores the shake for those components. The `wasm-shake` differential test now sweeps every golden fixture so this class of gap can't recur.
+
 ## 0.15.3
 
 ### Patch Changes
