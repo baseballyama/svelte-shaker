@@ -13,17 +13,31 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::dead_code::compute_dead_spans;
+use crate::dead_code::compute_dead_spans_ir;
 use crate::eval::{Env, Literal, SetEnv};
 use crate::plan::{dead_spans_for_plans, is_fold_blocked, remap_to_local_names, ComponentPlan, Model, Plans};
 use crate::props::{read_call_site, PropDecl};
 use crate::shake::{remove_attr_with_space, shake_body};
 use crate::transform::MagicEdit;
 
-pub(crate) struct MonoOptions {
-    pub(crate) enabled: bool,
-    pub(crate) max_variants: usize,
-    pub(crate) min_savings: f64,
+// `pub` (not `pub(crate)`) so the native engine-scan-native crate can build the
+// options for the environment-free `shake_program_with_mono_value` core.
+pub struct MonoOptions {
+    pub enabled: bool,
+    pub max_variants: usize,
+    pub min_savings: f64,
+}
+
+impl MonoOptions {
+    /// Read `{ enabled, maxVariants, minSavings }` (the JS `MonomorphizeOptions`
+    /// shape), defaulting each field exactly as the wasm boundary did.
+    pub fn from_value(options: &Value) -> Self {
+        MonoOptions {
+            enabled: options.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+            max_variants: options.get("maxVariants").and_then(Value::as_u64).unwrap_or(8) as usize,
+            min_savings: options.get("minSavings").and_then(Value::as_f64).unwrap_or(0.0),
+        }
+    }
 }
 
 /// One live `<Child/>` site that folds extra literals (a specialization candidate).
@@ -94,7 +108,7 @@ pub(crate) fn render_residual(child: &Model, plan: &ComponentPlan, code: &str, e
 pub(crate) fn live_children_for_env(model: &Model, env: &Env, set_env: &SetEnv) -> Vec<String> {
     let local_env = remap_to_local_names(env, model);
     let local_set = remap_to_local_names(set_env, model);
-    let dead = compute_dead_spans(get(&model.ast, "fragment"), &local_env, &local_set);
+    let dead = compute_dead_spans_ir(&model.ir.fragment, &local_env, &local_set);
     let mut out = Vec::new();
     for (cid, node) in &model.child_calls {
         if !dead.is_empty() && in_spans(node, &dead) {

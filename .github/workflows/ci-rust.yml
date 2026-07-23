@@ -16,11 +16,17 @@ on:
     paths:
       - 'packages/svelte-shaker/engine-rs/**'
       - 'packages/svelte-shaker/engine-scan-native/**'
+      - 'packages/svelte-shaker/tests/native-*.test.ts'
+      - 'packages/svelte-shaker/tests/ir-parity.test.ts'
+      - 'packages/svelte-shaker/tests/native-addon.ts'
       - '.github/workflows/ci-rust.yml'
   pull_request:
     paths:
       - 'packages/svelte-shaker/engine-rs/**'
       - 'packages/svelte-shaker/engine-scan-native/**'
+      - 'packages/svelte-shaker/tests/native-*.test.ts'
+      - 'packages/svelte-shaker/tests/ir-parity.test.ts'
+      - 'packages/svelte-shaker/tests/native-addon.ts'
       - '.github/workflows/ci-rust.yml'
   workflow_dispatch:
 
@@ -75,3 +81,31 @@ jobs:
       - name: Compile WASM engine (wasm32)
         working-directory: packages/svelte-shaker/engine-rs
         run: cargo build --release --target wasm32-unknown-unknown
+
+      # Run the native byte-identity tests against the freshly built addon, so a Rust
+      # change that breaks native/JS parity fails HERE. The main `pnpm test` (ci.yml)
+      # runs these too, but there the addon isn't built, so they skipIf(!addon) — an
+      # assertion-free green. Building the addon above (its `target/release` cdylib is
+      # what `index.cjs` loads) makes them actually execute; the guard below fails loudly
+      # if the addon still didn't load, so the suite can never silently skip green.
+      - uses: pnpm/action-setup@v6 # version comes from package.json "packageManager"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Guard — the native addon must load
+        working-directory: packages/svelte-shaker
+        run: >
+          node -e "const a=require('./engine-scan-native/index.cjs');
+          if(typeof a.ShakeSession!=='function'||typeof a.parseFiles!=='function'){
+          console.error('native addon failed to load — the byte-identity tests would skip green');
+          process.exit(1);}"
+      - name: Native byte-identity tests
+        working-directory: packages/svelte-shaker
+        run: >
+          pnpm exec vitest run
+          tests/native-engine.test.ts
+          tests/native-full-shake.test.ts
+          tests/native-parse-files.test.ts
+          tests/ir-parity.test.ts

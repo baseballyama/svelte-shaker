@@ -23,6 +23,63 @@ export declare function scanViaValue(inputJson: string): string;
 export declare function scanProfile(inputJson: string): string;
 
 /**
+ * Chatty-protocol Round 1: parse every file with rsvelte (in parallel) and return
+ * the small per-file facts the JS crawl needs to resolve module edges — without
+ * shipping an AST across the boundary.
+ *
+ * `inputJson` is `{ files: { id: string; code: string }[] }`. Returns the JSON of
+ * `{ files: { id: string; imports: { local: string; imported: string; source:
+ * string }[]; renderedTags: string[]; memberTags: string[]; parseError: boolean }[] }`,
+ * one entry per input file in input order. `imported` is `"default"`, `"*"`, or the
+ * source's exported name; `renderedTags` are bare `<Local>` tags and `memberTags`
+ * are dotted `<ns.X>` tags. Mirrors the JS `importSources` /
+ * `renderedComponentTagNames` / `memberComponentTags`.
+ */
+export declare function parseFiles(inputJson: string): string;
+
+/**
+ * Focused IR parity pin: `[{ name, start, end }]` for every `<Component>` the internal
+ * template IR walk finds in `astJson` (svelte JSON) — so `ir-parity.test.ts` can assert
+ * it equals the engine's Value walk. A native-only shim that exercises the IR walk
+ * directly without touching the committed wasm.
+ */
+export declare function irComponentTags(astJson: string): string;
+
+/**
+ * Chatty-protocol Round 2: the native full-shake session. `parse` parses + retains
+ * every file's AST (returning the Round-1 {@link parseFiles} facts); `shake` runs
+ * the whole-program fold + monomorphization over the retained ASTs and returns only
+ * the edits.
+ *
+ * The inner revert cascade (re-parse each emitted file with rsvelte, force-bail the
+ * unparseable ones, re-run) is internal; the caller keeps a FINAL svelte/compiler
+ * validation as the authority and feeds any residual failure back via `forceBail`.
+ */
+export declare class ShakeSession {
+  constructor();
+  /** Parse + retain `{ files: { id, code }[] }` (replacing any retained set); returns the {@link parseFiles} facts JSON. */
+  parse(inputJson: string): string;
+  /**
+   * Additive parse for the incremental crawl: parse + retain only files whose id is
+   * not already retained (dedup guards re-sends), appended in input order; returns the
+   * {@link parseFiles} facts JSON for the NEWLY parsed files only.
+   */
+  parseMore(inputJson: string): string;
+  /**
+   * `configJson` is `{ edges: ResolvedEdge[]; entries?: string[]; escaped?: string[];
+   * mono?: { enabled: boolean; maxVariants: number; minSavings: number }; forceBail?:
+   * string[] }`. Returns `{ files: { [id]: code }; variants: { [specifier]: code } }` JSON.
+   *
+   * `ownSize` is the compiled-byte proxy the mono net-win gate calls. It receives a
+   * SINGLE JSON string argument — `[id, source]` — and returns that source's compiled
+   * size (svelte compile length) or `null` on failure. The single-arg form is a
+   * deliberate workaround for a napi multi-arg marshaling bug; wrap a normal
+   * `(id, source) => number | null` sizer as `(p) => size(...JSON.parse(p))`.
+   */
+  shake(configJson: string, ownSize: (payload: string) => number | null): string;
+}
+
+/**
  * In-memory scan state for incremental re-scans (editor / LSP). Construct once,
  * `init` with the full program, then `update` per change set — `update` re-parses
  * only the changed files and re-runs the cheap whole-program assembly over the

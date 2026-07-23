@@ -27,6 +27,8 @@ use rsvelte_core::ast::arena::with_serialize_arena;
 use rsvelte_core::{parse, ParseOptions};
 use serde_json::{json, Value};
 
+mod parse_files;
+mod session;
 mod typed_scan;
 mod utf16;
 use utf16::{convert_positions_to_utf16, Utf8ToUtf16};
@@ -90,6 +92,51 @@ pub fn scan(input_json: String) -> napi::Result<String> {
     let out = typed_scan::never_passed(&refs, &codes);
     serde_json::to_string(&out)
         .map_err(|e| napi::Error::from_reason(format!("scan: serialize output: {e}")))
+}
+
+/// Chatty-protocol Round 1: parse every file with rsvelte (in parallel) and return
+/// the small per-file facts the JS crawl needs to resolve module edges — nothing
+/// crosses the boundary but import specifiers and rendered component tag names.
+///
+/// `input_json` is `{ "files": [{ "id", "code" }] }`. Output is `{ "files": [{ id,
+/// imports: [{ local, imported, source }], renderedTags: [string], memberTags:
+/// [string], parseError: bool }] }`, one entry per input file in input order. The
+/// extraction mirrors the JS `importSources` / `renderedComponentTagNames` /
+/// `memberComponentTags` byte-for-byte (pinned by `tests/native-parse-files.test.ts`).
+#[napi]
+pub fn parse_files(input_json: String) -> napi::Result<String> {
+    let (files, _edges) = parse_input(&input_json)?;
+
+    let rows: Vec<Value> = files
+        .par_iter()
+        .map(|f| {
+            let id = f.get("id").and_then(Value::as_str).unwrap_or_default();
+            let code = f.get("code").and_then(Value::as_str).unwrap_or_default();
+            parse_files::parse_one(id, code).into_json()
+        })
+        .collect();
+
+    serde_json::to_string(&json!({ "files": rows }))
+        .map_err(|e| napi::Error::from_reason(format!("parse_files: serialize: {e}")))
+}
+
+/// Focused IR parity pin: return every `<Component>` the IR walk finds in `ast_json`
+/// (svelte JSON) as `[{ name, start, end }]`, so `tests/ir-parity.test.ts` can assert it
+/// equals the engine's Value walk over the same AST across the fixture corpus. A
+/// native-only shim — it exercises the Value→IR converter + IR walk directly without
+/// touching the committed wasm. The full-shake corpus tests cover the IR end-to-end;
+/// this keeps a direct, minimal check on the template `<Component>` read specifically.
+#[napi]
+pub fn ir_component_tags(ast_json: String) -> napi::Result<String> {
+    let ast: Value = serde_json::from_str(&ast_json)
+        .map_err(|e| napi::Error::from_reason(format!("ir_component_tags: parse: {e}")))?;
+    let root = svelte_shaker_engine::ir::from_value(&ast);
+    let tags: Vec<Value> = svelte_shaker_engine::ir::component_tags(&root)
+        .into_iter()
+        .map(|(name, span)| json!({ "name": name, "start": span.start, "end": span.end }))
+        .collect();
+    serde_json::to_string(&tags)
+        .map_err(|e| napi::Error::from_reason(format!("ir_component_tags: serialize: {e}")))
 }
 
 /// Parse one component's source into the rsvelte JSON AST with UTF-16 offsets — the

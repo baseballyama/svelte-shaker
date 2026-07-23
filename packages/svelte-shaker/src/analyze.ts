@@ -402,6 +402,41 @@ function buildModels(input: AnalyzeInput, parseCache?: ParseCache): Map<Componen
  * import is never crawled — its `<Comp/>` site cannot exist, so it cannot taint a
  * value set), keeping the produced model set — and thus the output — identical.
  */
+/**
+ * The three per-file facts the crawl needs to resolve edges — import specifiers,
+ * rendered `<Local>` tag names, and `<ns.X>` member tag names. `null` when the file
+ * has no instance script (nothing to attribute), matching the crawl's skip.
+ */
+export interface CrawlFacts {
+  imports: ImportInfo[];
+  renderedTags: Set<string>;
+  memberTags: Set<string>;
+}
+
+/**
+ * Source of {@link CrawlFacts} for one `(id, code)`. The default is a JS parse +
+ * extraction ({@link jsCrawlFacts}); the native engine passes a provider backed by
+ * `ShakeSession` facts, so the crawl resolves the SAME edges without the JS parse.
+ */
+export type FactsProvider = (id: ComponentId, code: string) => CrawlFacts | null;
+
+/** The default facts provider: parse (svelte/compiler or rsvelte) and extract. */
+export function jsCrawlFacts(
+  id: ComponentId,
+  code: string,
+  parseCache?: ParseCache,
+  parse?: Parse,
+): CrawlFacts | null {
+  const ast = parseCached(id, code, parseCache, parse);
+  const instance = ast.instance;
+  if (!instance) return null;
+  return {
+    imports: [...importSources(instance)],
+    renderedTags: renderedComponentTagNames(ast),
+    memberTags: memberComponentTags(ast),
+  };
+}
+
 export async function buildAnalyzeInput(
   entries: ComponentId | ComponentId[],
   resolve: Resolve,
@@ -409,7 +444,12 @@ export async function buildAnalyzeInput(
   parseCache?: ParseCache,
   parse?: Parse,
   escaped: ComponentId[] = [],
+  // The facts source. Defaults to a JS parse + extract; the native engine injects a
+  // `ShakeSession`-backed provider (docs M3). Internal — the public crawl is unchanged.
+  factsProvider?: FactsProvider,
 ): Promise<AnalyzeInput> {
+  const getFacts: FactsProvider =
+    factsProvider ?? ((id, code) => jsCrawlFacts(id, code, parseCache, parse));
   const entryList = Array.isArray(entries) ? [...entries] : [entries];
   const files: InputFile[] = [];
   const edges: ResolvedEdge[] = [];
@@ -424,16 +464,15 @@ export async function buildAnalyzeInput(
     const code = await readFile(id);
     files.push({ id, code });
 
-    const ast = parseCached(id, code, parseCache, parse);
-    const instance = ast.instance;
-    if (!instance) continue;
+    const facts = getFacts(id, code);
+    if (!facts) continue;
 
     // The bare component tags this file renders (`<Local …>`). Resolving a barrel
     // (a `.js`/`.ts` re-export) means READING and PARSING the target module to
     // chase the export, so we do it ONLY for named imports actually rendered as a
     // component here — a named import used as a value (a helper / type) can never
     // be a `<Local>` call site, so chasing it is pure waste.
-    const renderedTags = renderedComponentTagNames(ast);
+    const renderedTags = facts.renderedTags;
 
     // Resolve this file's imports into the three attributable edge kinds.  Direct
     // default `.svelte` and simple barrel/named imports bind a bare local; a
@@ -442,7 +481,7 @@ export async function buildAnalyzeInput(
     const barrelLocals = new Map<string, ComponentId>();
     const namespaceSources = new Map<string, string>();
     const directChildren: ComponentId[] = [];
-    for (const imp of importSources(instance)) {
+    for (const imp of facts.imports) {
       if (imp.imported === '*') {
         namespaceSources.set(imp.local, imp.value);
         continue;
@@ -479,7 +518,7 @@ export async function buildAnalyzeInput(
     // renders, so the engine attributes `<ns.X .../>` by name lookup.
     const nsChildren: ComponentId[] = [];
     if (namespaceSources.size > 0) {
-      for (const tag of memberComponentTags(ast)) {
+      for (const tag of facts.memberTags) {
         const dot = tag.indexOf('.');
         const source = namespaceSources.get(tag.slice(0, dot));
         if (source == null) continue;
@@ -525,7 +564,10 @@ export function buildAnalyzeInputSync(
   parseCache?: ParseCache,
   parse?: Parse,
   escaped: ComponentId[] = [],
+  factsProvider?: FactsProvider,
 ): AnalyzeInput {
+  const getFacts: FactsProvider =
+    factsProvider ?? ((id, code) => jsCrawlFacts(id, code, parseCache, parse));
   const entryList = Array.isArray(entries) ? [...entries] : [entries];
   const files: InputFile[] = [];
   const edges: ResolvedEdge[] = [];
@@ -538,19 +580,18 @@ export function buildAnalyzeInputSync(
     const code = readFile(id);
     files.push({ id, code });
 
-    const ast = parseCached(id, code, parseCache, parse);
-    const instance = ast.instance;
-    if (!instance) continue;
+    const facts = getFacts(id, code);
+    if (!facts) continue;
 
     // See {@link buildAnalyzeInput}: resolve a barrel only for named imports
     // actually rendered as a `<Local>` component here, to avoid reading+parsing
     // modules behind value-only named imports.
-    const renderedTags = renderedComponentTagNames(ast);
+    const renderedTags = facts.renderedTags;
 
     const barrelLocals = new Map<string, ComponentId>();
     const namespaceSources = new Map<string, string>();
     const directChildren: ComponentId[] = [];
-    for (const imp of importSources(instance)) {
+    for (const imp of facts.imports) {
       if (imp.imported === '*') {
         namespaceSources.set(imp.local, imp.value);
         continue;
@@ -580,7 +621,7 @@ export function buildAnalyzeInputSync(
 
     const nsChildren: ComponentId[] = [];
     if (namespaceSources.size > 0) {
-      for (const tag of memberComponentTags(ast)) {
+      for (const tag of facts.memberTags) {
         const dot = tag.indexOf('.');
         const source = namespaceSources.get(tag.slice(0, dot));
         if (source == null) continue;
@@ -1657,7 +1698,7 @@ function collectChildCalls(ast: Root, imports: Map<string, ComponentId>): ChildC
  * nothing. Skipping it only ever drops a non-call-site, so attribution (and the
  * resulting models) are unchanged.
  */
-function renderedComponentTagNames(ast: Root): Set<string> {
+export function renderedComponentTagNames(ast: Root): Set<string> {
   const names = new Set<string>();
   walk<null>(ast.fragment, null, {
     Component(node, { next }) {
@@ -1675,7 +1716,7 @@ function renderedComponentTagNames(ast: Root): Set<string> {
  * Shell resolves each through its namespace import's barrel; bare `<Child/>` tags
  * have no dot and are bound by the plain import maps instead.
  */
-function memberComponentTags(ast: Root): Set<string> {
+export function memberComponentTags(ast: Root): Set<string> {
   const tags = new Set<string>();
   walk<null>(ast.fragment, null, {
     Component(node, { next }) {
@@ -2057,7 +2098,7 @@ function literalDefault(
 
 // ---- small AST helpers -------------------------------------------------
 
-interface ImportInfo {
+export interface ImportInfo {
   value: string;
   local: string;
   /** `default` for a default import, the exported name for a named import, or
@@ -2065,7 +2106,7 @@ interface ImportInfo {
   imported: string;
 }
 
-function* importSources(instance: AnyNode): Generator<ImportInfo> {
+export function* importSources(instance: AnyNode): Generator<ImportInfo> {
   const program = instance.content;
   for (const stmt of program?.body ?? []) {
     if (stmt.type !== 'ImportDeclaration') continue;

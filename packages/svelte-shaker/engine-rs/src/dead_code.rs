@@ -257,6 +257,11 @@ fn collect_set_vars(test: &Value, set_env: &SetEnv, out: &mut HashSet<String>) {
     });
 }
 
+// PARITY ORACLE (test-only): the fixpoint calls `compute_dead_spans_ir` (below) in
+// production; this Value walk over the svelte/compiler JSON is kept as the differential
+// oracle the cargo test pins the IR walk against. Its output is the definition of
+// "correct" the IR walk must reproduce, so it stays even though nothing ships it.
+#[cfg(test)]
 pub(crate) fn compute_dead_spans(fragment: &Value, env: &Env, set_env: &SetEnv) -> Vec<Span> {
     if env.is_empty() && set_env.is_empty() {
         return Vec::new();
@@ -266,6 +271,69 @@ pub(crate) fn compute_dead_spans(fragment: &Value, env: &Env, set_env: &SetEnv) 
     dead
 }
 
+/// IR-consuming `compute_dead_spans` (M4 slice b). The FIND — the per-fixpoint-round
+/// cost — runs over the typed IR (the fast walk that replaces the Value fragment
+/// re-walk); the per-`{#if}` `decide_chain` stays the Value implementation via the IR
+/// IfBlock's `raw` bridge. That split is deliberate and permanent: the hybrid IR types
+/// only the template STRUCTURE, keeping embedded JS (the `{#if}` test, `decide_chain`'s
+/// evaluation) as Value, and there are few if-blocks per file so the walk — not
+/// `decide_chain` — is the hot path. Reproduces `collect_dead` exactly and is pinned
+/// byte-for-byte to it by the parity test + the shake corpus.
+pub(crate) fn compute_dead_spans_ir(
+    fragment: &crate::ir::Fragment,
+    env: &Env,
+    set_env: &SetEnv,
+) -> Vec<Span> {
+    if env.is_empty() && set_env.is_empty() {
+        return Vec::new();
+    }
+    let mut dead = Vec::new();
+    collect_dead_ir(fragment, env, set_env, &mut dead);
+    dead
+}
+
+fn span_contained(span: Span, spans: &[Span]) -> bool {
+    let (s, e) = span;
+    spans.iter().any(|&(a, b)| s >= a && e <= b)
+}
+
+fn collect_dead_ir(
+    fragment: &crate::ir::Fragment,
+    env: &Env,
+    set_env: &SetEnv,
+    dead: &mut Vec<Span>,
+) {
+    use crate::ir::Node;
+    for node in &fragment.nodes {
+        if let Node::IfBlock(b) = node {
+            // elseif continuations are owned by their head; skip removed regions —
+            // exactly `collect_dead`'s early `return` for such an `{#if}` node.
+            let span: Span = (b.span.start as i64, b.span.end as i64);
+            if b.elseif || span_contained(span, dead) {
+                continue;
+            }
+            let decision = decide_chain(&b.raw, env, set_env);
+            dead.extend(decision.removed);
+            if decision.recurse {
+                collect_dead_ir(&b.consequent, env, set_env, dead);
+                if let Some(alt) = &b.alternate {
+                    collect_dead_ir(alt, env, set_env, dead);
+                }
+            }
+        } else {
+            // Non-`{#if}` nodes hold no dead-branch decision; descend their child
+            // fragments (the only place a nested `{#if}` can live).
+            for frag in node.child_fragments() {
+                collect_dead_ir(frag, env, set_env, dead);
+            }
+        }
+    }
+}
+
+// PARITY ORACLE (test-only): only the test-only `compute_dead_spans` calls this; the
+// production IR path uses `collect_dead_ir`. Kept as the Value reference the IR walk is
+// pinned against.
+#[cfg(test)]
 pub(crate) fn collect_dead(node: &Value, env: &Env, set_env: &SetEnv, dead: &mut Vec<Span>) {
     match node {
         Value::Array(items) => {

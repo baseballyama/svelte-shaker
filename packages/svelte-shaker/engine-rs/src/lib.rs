@@ -16,6 +16,10 @@ mod ast;
 mod css;
 mod dead_code;
 mod eval;
+// docs/RUST-MIGRATION.md M4 — the engine's internal template IR (WIP: the phase ports
+// land in subsequent slices). `pub` so the native crate can drive the slice-(a) parity
+// pin (IR-walk vs Value-walk) through a napi shim without touching the committed wasm.
+pub mod ir;
 mod mono;
 mod plan;
 mod props;
@@ -36,6 +40,11 @@ use crate::unread::collect_unread;
 // Preserve the crate-root path the native (napi) scanner links against
 // (`svelte_shaker_engine::find_never_passed_props`).
 pub use crate::plan::find_never_passed_props;
+
+// The native (napi) engine drives the same whole-program shake through these
+// environment-free cores (`shake_program_value` / `shake_program_with_mono_value`
+// are `pub fn` above); it builds the mono options with this re-exported type.
+pub use crate::mono::MonoOptions;
 
 /// Analyze one component AST (JSON) given its resolved outgoing edges (JSON), and
 /// return the per-file model fields ported so far: declared props, `...rest`
@@ -129,10 +138,17 @@ pub fn find_never_passed_props_json(input_json: &str) -> String {
 /// byte-for-byte the output of the always-on folds (the `svelteShaker` equivalent).
 #[wasm_bindgen]
 pub fn shake_program(input_json: &str) -> String {
-    let input: Value = match serde_json::from_str(input_json) {
-        Ok(v) => v,
-        Err(e) => return json!({ "error": e.to_string() }).to_string(),
-    };
+    match serde_json::from_str::<Value>(input_json) {
+        Ok(input) => shake_program_value(&input).to_string(),
+        Err(e) => json!({ "error": e.to_string() }).to_string(),
+    }
+}
+
+/// Environment-free core of [`shake_program`]: the program input is already parsed,
+/// so there is no js_sys here and the native (napi) engine can call it directly
+/// (docs/ARCHITECTURE.md §5 — the Engine stays environment-free). Returns the
+/// `{ id: slimmedSource }` object.
+pub fn shake_program_value(input: &Value) -> Value {
     let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
     for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(from) = e.get("from").and_then(Value::as_str) {
@@ -178,7 +194,7 @@ pub fn shake_program(input_json: &str) -> String {
         }
     }
     // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2).
-    stamp_module_escapes(&mut models, &input);
+    stamp_module_escapes(&mut models, input);
 
     let plans = run_fixpoint(&models);
 
@@ -258,7 +274,7 @@ pub fn shake_program(input_json: &str) -> String {
         .iter()
         .map(|m| (m.id.clone(), Value::String(edits_map.get(&m.id).map(|e| e.render()).unwrap_or_default())))
         .collect();
-    Value::Object(out).to_string()
+    Value::Object(out)
 }
 
 /// Whole-program shake WITH monomorphization.  `input` is the same shape as
@@ -273,32 +289,85 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         Err(e) => return json!({ "error": e.to_string() }).to_string(),
     };
     let options: Value = serde_json::from_str(options_json).unwrap_or(Value::Null);
-    let opts = MonoOptions {
-        enabled: options.get("enabled").and_then(Value::as_bool).unwrap_or(false),
-        max_variants: options.get("maxVariants").and_then(Value::as_u64).unwrap_or(8) as usize,
-        min_savings: options.get("minSavings").and_then(Value::as_f64).unwrap_or(0.0),
+    let opts = MonoOptions::from_value(&options);
+    // Adapt the JS `ownSize` function into the environment-free core's raw size
+    // callback (the size memo lives in the core, matching the TS `sizeCache`).
+    let mut js_size = |id: &str, src: &str| -> Option<f64> {
+        own_size
+            .call2(&JsValue::NULL, &JsValue::from_str(id), &JsValue::from_str(src))
+            .ok()
+            .and_then(|v| v.as_f64())
     };
+    // Borrow the parsed ASTs out of `input` (which owns them for this call) into the
+    // core's `files` slice; `input` itself carries the edges/entries/… config.
+    let null = Value::Null;
+    let files: Vec<ShakeFile> = input
+        .get("files")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|f| {
+            Some(ShakeFile {
+                id: f.get("id").and_then(Value::as_str)?,
+                ast: f.get("ast").unwrap_or(&null),
+                code: f.get("code").and_then(Value::as_str).unwrap_or(""),
+            })
+        })
+        .collect();
+    shake_program_with_mono_value(&files, &input, &opts, &mut js_size).to_string()
+}
 
+/// One file handed to the shake core: its id, its parsed AST, and its source, all
+/// BORROWED. Passing the retained ASTs by reference (rather than folding them into a
+/// cloned input `Value`) is what lets the native session skip a full-program AST
+/// clone at the boundary — the engine clones each AST exactly once, into its `Model`.
+pub struct ShakeFile<'a> {
+    pub id: &'a str,
+    pub ast: &'a Value,
+    pub code: &'a str,
+}
+
+/// Environment-free core of [`shake_program_with_mono`]: `files` are the parsed ASTs
+/// (borrowed), `config` is `{ edges, entries?, escaped?, forceBail? }` (everything
+/// but the ASTs), and `own_size(id, source)` is a raw per-module size callback (the
+/// wasm boundary adapts the JS function; the native engine passes a napi callback).
+/// No js_sys here, so the Shell boundary holds. Returns `{ files, variants }`.
+pub fn shake_program_with_mono_value(
+    files: &[ShakeFile],
+    config: &Value,
+    opts: &MonoOptions,
+    own_size: &mut dyn FnMut(&str, &str) -> Option<f64>,
+) -> Value {
     let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
-    for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+    for e in config.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(from) = e.get("from").and_then(Value::as_str) {
             edges_by_from.entry(from.to_string()).or_default().push(e.clone());
         }
     }
-    let mut models: Vec<Model> = Vec::new();
-    let mut code_by_id: HashMap<String, String> = HashMap::new();
-    for f in input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
-        let id = match f.get("id").and_then(Value::as_str) {
-            Some(i) => i.to_string(),
-            None => continue,
-        };
-        let ast = f.get("ast").cloned().unwrap_or(Value::Null);
-        code_by_id.insert(id.clone(), f.get("code").and_then(Value::as_str).unwrap_or("").to_string());
+    // Per-file build is pure and independent; the resulting Vec order is preserved by
+    // par_iter().collect(), so mono variant ids (keyed by first caller in program
+    // order) stay identical. On native we fan it across cores; wasm stays sequential.
+    let build_one = |f: &ShakeFile| -> (Model, String, String) {
         let empty = Vec::new();
-        let edges = edges_by_from.get(&id).unwrap_or(&empty);
-        models.push(build_model_full(&id, ast, edges));
+        let edges = edges_by_from.get(f.id).unwrap_or(&empty);
+        let model = build_model_full(f.id, f.ast.clone(), edges);
+        (model, f.id.to_string(), f.code.to_string())
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let built: Vec<(Model, String, String)> = {
+        use rayon::prelude::*;
+        files.par_iter().map(build_one).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let built: Vec<(Model, String, String)> = files.iter().map(build_one).collect();
+    let mut models: Vec<Model> = Vec::with_capacity(built.len());
+    let mut code_by_id: HashMap<String, String> = HashMap::with_capacity(built.len());
+    for (model, id, code) in built {
+        code_by_id.insert(id, code);
+        models.push(model);
     }
-    let entries: Vec<String> = input
+    let entries: Vec<String> = config
         .get("entries")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
@@ -306,7 +375,7 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
 
     // Revert cascade (see `shake_program`): force-bail components the JS caller
     // flagged as unparseable so they are neither folded nor specialized.
-    let force_bail: HashSet<String> = input
+    let force_bail: HashSet<String> = config
         .get("forceBail")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
@@ -327,7 +396,7 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         }
     }
     // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2).
-    stamp_module_escapes(&mut models, &input);
+    stamp_module_escapes(&mut models, config);
 
     let plans = run_fixpoint(&models);
 
@@ -341,29 +410,36 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
             if let Some(v) = size_memo.get(src) {
                 return *v;
             }
-            let res = own_size
-                .call2(&JsValue::NULL, &JsValue::from_str(id), &JsValue::from_str(src))
-                .ok()
-                .and_then(|v| v.as_f64());
+            let res = own_size(id, src);
             size_memo.insert(src.to_string(), res);
             res
         };
-        monomorphize(&models, &plans, &code_by_id, &entries, &opts, &mut own_size_fn)
+        monomorphize(&models, &plans, &code_by_id, &entries, opts, &mut own_size_fn)
     };
 
     // Base phases (identical to shake_program): reverse-removal collection, fold
     // bodies + drop props, strip dropped-prop attributes, then the reverse removals.
     let models_by_id: HashMap<&str, &Model> = models.iter().map(|m| (m.id.as_str(), m)).collect();
-    let mut reverse: HashMap<String, Vec<ReverseOp>> = HashMap::new();
-    for model in &models {
+    // Per-owner and independent (reads the shared models/plans, writes an id-keyed map);
+    // fanned across cores on native.
+    let reverse_one = |model: &Model| -> Option<(String, Vec<ReverseOp>)> {
         if plans[&model.id].bail {
-            continue;
+            return None;
         }
         let ops = collect_reverse_removals(model, &models_by_id, &plans);
-        if !ops.is_empty() {
-            reverse.insert(model.id.clone(), ops);
+        if ops.is_empty() {
+            None
+        } else {
+            Some((model.id.clone(), ops))
         }
-    }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut reverse: HashMap<String, Vec<ReverseOp>> = {
+        use rayon::prelude::*;
+        models.par_iter().filter_map(reverse_one).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let mut reverse: HashMap<String, Vec<ReverseOp>> = models.iter().filter_map(reverse_one).collect();
 
     // Unread declared props (docs §PR7): same wiring as `shake_program`.
     let unread = collect_unread(&models, &models_by_id, &plans);
@@ -373,10 +449,11 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
     let unread_drops = unread.drops;
     let empty_drops: HashSet<String> = HashSet::new();
 
-    let mut edits_map: HashMap<String, MagicEdit> = HashMap::new();
-    let mut dropped: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::new();
-    for model in &models {
+    // Phase 1 folds each body into its OWN MagicEdit and returns its dropped props —
+    // per-model and independent (all shared reads are immutable), so fan it across
+    // cores on native. The outputs are id-keyed maps, so assembling them afterwards is
+    // order-independent.
+    let phase1_one = |model: &Model| -> (String, HashSet<String>, Vec<Span>, MagicEdit) {
         let plan = &plans[&model.id];
         let mut edits = MagicEdit::new(code_by_id.get(&model.id).map(String::as_str).unwrap_or(""));
         let mut dead: Vec<Span> = Vec::new();
@@ -387,9 +464,22 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         } else {
             shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead, &seed, extra)
         };
-        dropped.insert(model.id.clone(), d);
-        edited_spans.insert(model.id.clone(), dead);
-        edits_map.insert(model.id.clone(), edits);
+        (model.id.clone(), d, dead, edits)
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let phase1: Vec<(String, HashSet<String>, Vec<Span>, MagicEdit)> = {
+        use rayon::prelude::*;
+        models.par_iter().map(phase1_one).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let phase1: Vec<(String, HashSet<String>, Vec<Span>, MagicEdit)> = models.iter().map(phase1_one).collect();
+    let mut edits_map: HashMap<String, MagicEdit> = HashMap::with_capacity(phase1.len());
+    let mut dropped: HashMap<String, HashSet<String>> = HashMap::with_capacity(phase1.len());
+    let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::with_capacity(phase1.len());
+    for (id, d, dead, edits) in phase1 {
+        dropped.insert(id.clone(), d);
+        edited_spans.insert(id.clone(), dead);
+        edits_map.insert(id, edits);
     }
     for model in &models {
         let plan = &plans[&model.id];
@@ -422,7 +512,7 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
         .collect();
     let variants_obj: serde_json::Map<String, Value> =
         variants.into_iter().map(|(spec, code)| (spec, Value::String(code))).collect();
-    json!({ "files": Value::Object(files), "variants": Value::Object(variants_obj) }).to_string()
+    json!({ "files": Value::Object(files), "variants": Value::Object(variants_obj) })
 }
 
 #[cfg(test)]

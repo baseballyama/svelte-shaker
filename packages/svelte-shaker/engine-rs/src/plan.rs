@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::analyze::*;
 use crate::ast::*;
-use crate::dead_code::compute_dead_spans;
+use crate::dead_code::compute_dead_spans_ir;
 use crate::eval::{Env, Literal, SetEnv};
 use crate::props::*;
 
@@ -149,6 +149,11 @@ pub(crate) fn build_plan(
 pub(crate) struct Model {
     pub(crate) id: String,
     pub(crate) ast: Value,
+    /// The typed template IR (M4), built once from `ast`. The fixpoint's dead-branch
+    /// scan reads it instead of re-walking `ast` each round. It coexists with `ast` by
+    /// design: the IR types only the template STRUCTURE, while the engine's other phases
+    /// (shake_body, css, fold) read `ast` as `Value` (see `ir.rs` module docs).
+    pub(crate) ir: crate::ir::Root,
     pub(crate) imports: HashMap<String, String>, // tag name -> childId (all edge kinds), for call-site edits
     pub(crate) props_info: Option<PropsInfo>,
     /// The inputs this component can observe (docs §PR4) — drives the reverse pass.
@@ -175,7 +180,12 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
     let imports = edge_imports(&Value::Array(edges.to_vec()));
     let props_info = declared_props_full(&ast);
     let reachable_inputs = compute_reachable_inputs(&ast, &props_info);
-    let (shadowed_vec, debug_vec, written_vec) = template_bindings(&ast);
+    // M4 slice (a): the template binder scan runs over the typed IR (the Value→IR
+    // build is the temporary double representation until the remaining fragment reads
+    // move over too). The instance-script half of `template_bindings_ir` stays a Value
+    // walk; embedded template JS is delegated to the same Value `collect_written`.
+    let ir_root = crate::ir::from_value(&ast);
+    let (shadowed_vec, debug_vec, written_vec) = template_bindings_ir(&ir_root);
     let shadowed: HashSet<String> = shadowed_vec.into_iter().collect();
     let debug: HashSet<String> = debug_vec.into_iter().collect();
     let written: HashSet<String> = written_vec.into_iter().collect();
@@ -195,10 +205,11 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
         }
     });
     let imported = imported_locals(&ast);
-    let escaped = escaped_components(&ast, &imports, &imported, &namespace_locals(&ast));
+    let escaped = escaped_components_ir(&ir_root, &imports, &imported, &namespace_locals(&ast));
     Model {
         id: id.to_string(),
         ast,
+        ir: ir_root,
         imports,
         props_info,
         reachable_inputs,
@@ -239,15 +250,37 @@ pub(crate) fn stamp_module_escapes(models: &mut [Model], input: &Value) {
 }
 
 pub(crate) fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -> HashMap<String, Vec<CallSite>> {
-    let mut usage: HashMap<String, Vec<CallSite>> = HashMap::new();
-    for model in models {
+    // Each owner's (child_id, call_site) pairs are independent; compute them per model
+    // (fanned across cores on native), then group. `par_iter().collect()` keeps the
+    // per-model order, and grouping walks models in order, so each child profile's
+    // call-site order is identical to the sequential build (it feeds mono's
+    // first-caller keying, so the order must not drift).
+    let one = |model: &Model| -> Vec<(String, CallSite)> {
         let empty = Vec::new();
         let spans = dead.get(&model.id).unwrap_or(&empty);
-        for (child_id, node) in &model.child_calls {
-            if !spans.is_empty() && in_spans(node, spans) {
-                continue; // folded-away call site: excluded from the child's profile
-            }
-            usage.entry(child_id.clone()).or_default().push(read_call_site(node, Some(model.id.clone())));
+        model
+            .child_calls
+            .iter()
+            .filter_map(|(child_id, node)| {
+                if !spans.is_empty() && in_spans(node, spans) {
+                    None // folded-away call site: excluded from the child's profile
+                } else {
+                    Some((child_id.clone(), read_call_site(node, Some(model.id.clone()))))
+                }
+            })
+            .collect()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let per_model: Vec<Vec<(String, CallSite)>> = {
+        use rayon::prelude::*;
+        models.par_iter().map(one).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let per_model: Vec<Vec<(String, CallSite)>> = models.iter().map(one).collect();
+    let mut usage: HashMap<String, Vec<CallSite>> = HashMap::new();
+    for pairs in per_model {
+        for (child_id, site) in pairs {
+            usage.entry(child_id).or_default().push(site);
         }
     }
     usage
@@ -258,8 +291,9 @@ pub(crate) fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -
 /// props by their local binding). Computed once per owner per round — no O(n²).
 /// Mirrors the memoized `ownerEnv` in analyze.ts's buildPlans.
 fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
-    let mut envs = OwnerEnvs::new();
-    for model in models {
+    // Per-owner and independent; the result is an id-keyed map, so fanning it across
+    // cores (native) is a pure speedup with no order dependence.
+    let one = |model: &Model| -> Option<(String, OwnerEnv)> {
         // A bailed owner still forwards its own SCRIPT CONSTANTS unchanged — its
         // bail only makes ITS props unobservable, but it keeps rendering its call
         // sites (docs §4.2), so `script_const_env` (a static source fact)
@@ -277,10 +311,20 @@ fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
         };
         let fold = merge_script_consts(&model.script_const_env, folded_props);
         if !fold.is_empty() || !narrow.is_empty() {
-            envs.insert(model.id.clone(), OwnerEnv { fold, narrow });
+            Some((model.id.clone(), OwnerEnv { fold, narrow }))
+        } else {
+            None
         }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        models.par_iter().filter_map(one).collect()
     }
-    envs
+    #[cfg(target_arch = "wasm32")]
+    {
+        models.iter().filter_map(one).collect()
+    }
 }
 
 /// Merge an owner's static script constants ([`Model::script_const_env`]) with its
@@ -305,28 +349,46 @@ pub(crate) fn merge_script_consts(script_consts: &HashMap<String, Literal>, fold
 
 pub(crate) fn build_plans(models: &[Model], usage: &HashMap<String, Vec<CallSite>>, prev: &Plans) -> Plans {
     let owner_envs = owner_envs_for(models, prev);
-    models.iter().map(|m| (m.id.clone(), build_plan(m, usage.get(&m.id), &owner_envs))).collect()
+    let build = |m: &Model| (m.id.clone(), build_plan(m, usage.get(&m.id), &owner_envs));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        models.par_iter().map(build).collect()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        models.iter().map(build).collect()
+    }
 }
 
 pub(crate) fn dead_spans_for_plans(models: &[Model], plans: &Plans) -> HashMap<String, Vec<Span>> {
-    let mut out = HashMap::new();
-    for model in models {
+    // Dead spans are derived from the TEMPLATE, which references props by their
+    // LOCAL binding name — so the fold/narrow envs (keyed by external prop name)
+    // must be remapped here.  This MUST match the transform's own remap exactly,
+    // or the fixpoint and the edit could disagree on what folds (unsound).
+    let one = |model: &Model| -> Option<(String, Vec<Span>)> {
         let plan = &plans[&model.id];
         if plan.bail {
-            continue;
+            return None;
         }
-        // Dead spans are derived from the TEMPLATE, which references props by their
-        // LOCAL binding name — so the fold/narrow envs (keyed by external prop name)
-        // must be remapped here.  This MUST match the transform's own remap exactly,
-        // or the fixpoint and the edit could disagree on what folds (unsound).
         let env = remap_to_local_names(&plan.const_env(), model);
         let set_env = remap_to_local_names(&plan.set_env(), model);
-        let spans = compute_dead_spans(get(&model.ast, "fragment"), &env, &set_env);
-        if !spans.is_empty() {
-            out.insert(model.id.clone(), spans);
+        let spans = compute_dead_spans_ir(&model.ir.fragment, &env, &set_env);
+        if spans.is_empty() {
+            None
+        } else {
+            Some((model.id.clone(), spans))
         }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        models.par_iter().filter_map(one).collect()
     }
-    out
+    #[cfg(target_arch = "wasm32")]
+    {
+        models.iter().filter_map(one).collect()
+    }
 }
 
 pub(crate) fn plans_equal(a: &Plans, b: &Plans) -> bool {

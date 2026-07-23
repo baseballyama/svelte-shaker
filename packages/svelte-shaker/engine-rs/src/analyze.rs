@@ -159,6 +159,122 @@ pub(crate) fn template_bindings(ast: &Value) -> (Vec<String>, Vec<String>, Vec<S
     (shadowed, debug, written)
 }
 
+/// IR-consuming `template_bindings` (M4 slice a). The instance-script pass stays a
+/// Value walk (JS analysis is out of the IR's scope). The TEMPLATE pass walks the
+/// typed IR for the template binders / `{@debug}`, and delegates every embedded
+/// expression Value to the same `collect_written` / `add_pattern_names`, so writes
+/// and binders inside embedded JS (event handlers, `{expr}`, tests) are still found
+/// (the fallback invariant). `bind:` and `let:` are reproduced explicitly since the
+/// IR carries them as typed attributes, not as walked nodes. Pinned byte-for-byte to
+/// `template_bindings` by the shake corpus.
+pub(crate) fn template_bindings_ir(root: &crate::ir::Root) -> (Vec<String>, Vec<String>, Vec<String>) {
+    use crate::ir;
+    let mut shadowed = Vec::new();
+    let mut debug = Vec::new();
+    let mut written = Vec::new();
+
+    // Instance script — identical to `template_bindings`.
+    walk(get(&root.ast, "instance"), &mut |node| {
+        if matches!(type_of(node), Some("VariableDeclarator") | Some("FunctionDeclaration")) {
+            let id = get(node, "id");
+            if str_eq(id, "type", "Identifier") {
+                if let Some(n) = id.get("name").and_then(Value::as_str) {
+                    push_unique(&mut shadowed, n);
+                }
+            }
+        }
+        if matches!(
+            type_of(node),
+            Some("FunctionDeclaration") | Some("FunctionExpression") | Some("ArrowFunctionExpression")
+        ) {
+            for param in arr(node, "params") {
+                add_pattern_names(param, &mut shadowed);
+            }
+        }
+        collect_written(node, &mut written);
+    });
+
+    // Template — typed IR walk + Value delegation for embedded JS.
+    ir::walk(&root.fragment, &mut |node| {
+        match node {
+            ir::Node::EachBlock(b) => {
+                if let Some(ctx) = &b.context {
+                    add_pattern_names(ctx, &mut shadowed);
+                }
+                if let Some(i) = &b.index {
+                    push_unique(&mut shadowed, i);
+                }
+            }
+            ir::Node::SnippetBlock(b) => {
+                if str_eq(&b.expression, "type", "Identifier") {
+                    if let Some(n) = b.expression.get("name").and_then(Value::as_str) {
+                        push_unique(&mut shadowed, n);
+                    }
+                }
+                for p in &b.parameters {
+                    add_pattern_names(p, &mut shadowed);
+                }
+            }
+            ir::Node::AwaitBlock(b) => {
+                if let Some(v) = &b.value {
+                    add_pattern_names(v, &mut shadowed);
+                }
+                if let Some(e) = &b.error {
+                    add_pattern_names(e, &mut shadowed);
+                }
+            }
+            ir::Node::ConstTag(e) => {
+                for d in arr(&e.expr, "declarations") {
+                    add_pattern_names(get(d, "id"), &mut shadowed);
+                }
+            }
+            ir::Node::DebugTag(idents) => {
+                for ident in idents {
+                    if str_eq(ident, "type", "Identifier") {
+                        if let Some(n) = ident.get("name").and_then(Value::as_str) {
+                            push_unique(&mut debug, n);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for attr in node.attributes() {
+            match attr {
+                // `bind:name={ident}` two-way binds a write (collect_written's
+                // BindDirective case); the IR carries it as a typed attribute.
+                ir::Attribute::Bind(a) => {
+                    if str_eq(&a.value, "type", "Identifier") {
+                        if let Some(n) = a.value.get("name").and_then(Value::as_str) {
+                            push_unique(&mut written, n);
+                        }
+                    }
+                    walk(&a.value, &mut |x| collect_written(x, &mut written));
+                }
+                // `let:name` binds a template-scope name; also delegate for handler writes.
+                ir::Attribute::Other(o) => {
+                    if str_eq(&o.node, "type", "LetDirective") {
+                        if let Some(n) = o.node.get("name").and_then(Value::as_str) {
+                            push_unique(&mut shadowed, n);
+                        }
+                    }
+                    walk(&o.node, &mut |x| collect_written(x, &mut written));
+                }
+                _ => {
+                    if let Some(v) = attr.value() {
+                        walk(v, &mut |x| collect_written(x, &mut written));
+                    }
+                }
+            }
+        }
+        for expr in node.embedded_exprs() {
+            walk(expr, &mut |x| collect_written(x, &mut written));
+        }
+    });
+
+    (shadowed, debug, written)
+}
+
 /// Add the names an assignment / update expression or `bind:` directive WRITES to
 /// `out`: a bare-identifier target (`p = …`, `p++`), a destructuring assignment
 /// (`({ p } = obj)`), or a two-way `bind:value={p}` / `bind:this={p}`. A
@@ -632,5 +748,76 @@ pub(crate) fn escaped_components(
             }
         }
     });
+    sorted(out)
+}
+
+/// Escapes from ONE embedded template expression Value. The engine's fragment walk
+/// gives a top-level expression Identifier a value-position parent (`ExpressionTag`,
+/// attribute value, `{#if}` test, `this={…}`, …), so a delegated expression's ROOT
+/// counts as a value-use; deeper nodes use the real parent. Mirrors typed_scan's
+/// `expression_escapes` (itself corpus-pinned to this Value walk).
+fn expression_escapes(
+    expr: &Value,
+    imported: &HashSet<String>,
+    imports: &HashMap<String, String>,
+    namespace_locals: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    let not_type = |n: &Value| !is_type_only_node(n);
+    let mut first = true;
+    walk_parented_pruned(expr, None, &not_type, &mut |node, parent| {
+        let value_use =
+            if first { str_eq(node, "type", "Identifier") } else { is_value_use(node, parent) };
+        first = false;
+        if str_eq(node, "type", "Identifier") {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                if imported.contains(name) && value_use {
+                    flag_escape(name, imports, namespace_locals, out);
+                }
+            }
+        }
+    });
+}
+
+/// IR-consuming `escaped_components` (M4 slice a). The TEMPLATE half walks the typed
+/// IR and runs `expression_escapes` on every embedded expression Value (block/tag
+/// expressions + attribute values), so the escaping Identifiers — which only ever
+/// live in embedded JS — are found through the Value delegation (the fallback
+/// invariant). The instance-script half stays the identical Value walk. Pinned
+/// byte-for-byte to `escaped_components` by the shake corpus.
+pub(crate) fn escaped_components_ir(
+    root: &crate::ir::Root,
+    imports: &HashMap<String, String>,
+    imported: &HashSet<String>,
+    namespace_locals: &HashSet<String>,
+) -> Vec<String> {
+    use crate::ir;
+    let mut out = Vec::new();
+
+    ir::walk(&root.fragment, &mut |node| {
+        for expr in node.embedded_exprs() {
+            expression_escapes(expr, imported, imports, namespace_locals, &mut out);
+        }
+        for attr in node.attributes() {
+            if let Some(v) = attr.value() {
+                expression_escapes(v, imported, imports, namespace_locals, &mut out);
+            }
+        }
+    });
+
+    // Instance script: identical to `escaped_components`.
+    let not_type = |n: &Value| !is_type_only_node(n);
+    walk_parented_pruned(get(&root.ast, "instance"), None, &not_type, &mut |node, parent| {
+        if str_eq(node, "type", "Identifier") {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                if (imports.contains_key(name) || namespace_locals.contains(name))
+                    && is_value_use(node, parent)
+                {
+                    flag_escape(name, imports, namespace_locals, &mut out);
+                }
+            }
+        }
+    });
+
     sorted(out)
 }
