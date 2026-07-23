@@ -8,7 +8,14 @@ import { shaker } from '../src/vite';
 import { analyze } from '../src/analyze';
 import { monomorphize } from '../src/mono';
 import { svelteShakerWithMono, svelteShaker } from '../src/index';
+import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { assertCompiles, cleanTmp, renderGraphHtml } from './diff';
+
+// The monomorphization net-win gate's size proxy — rsvelte's client codegen, the same
+// proxy the plugin injects and the native engine computes in-process. Without it the
+// gate can't measure and declines every child, so the specialization tests below pass
+// it explicitly (matching production).
+const ownSize = tryLoadRsvelteOwnSize() ?? ((): number | null => null);
 
 afterAll(() => cleanTmp());
 
@@ -119,7 +126,7 @@ describe('monomorphization / correlated condition (C IS specialized, Heavy remov
   it('monomorphization specializes Child: every variant drops `<Heavy/>` (net win)', async () => {
     const { resolve, readFile } = memGraph(CORRELATED_FILES);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON, '/App.svelte');
+    const res = monomorphize(models, plans, ON, '/App.svelte', ownSize);
 
     // Both live Child sites are specialized (all-sites-or-nothing satisfied).
     expect(res.bindings.length).toBe(2);
@@ -136,7 +143,7 @@ describe('monomorphization / correlated condition (C IS specialized, Heavy remov
   it('soundness: each variant renders identically to base Child for its (a,b)', async () => {
     const { resolve, readFile } = memGraph(CORRELATED_FILES);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON, '/App.svelte');
+    const res = monomorphize(models, plans, ON, '/App.svelte', ownSize);
 
     const deps = { './Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']! };
     for (const b of res.bindings) {
@@ -185,13 +192,22 @@ describe('monomorphization / correlated condition (C IS specialized, Heavy remov
       'secondary',
     ]);
 
-    const res = monomorphize(models, plans, ON, '/App.svelte');
+    const res = monomorphize(models, plans, ON, '/App.svelte', ownSize);
     expect(res.variants.size).toBe(0); // declined: specializing would bloat
     expect(res.bindings.length).toBe(0);
 
     // And the wired output is byte-identical to the plain value-set narrowing shake.
     const base = await svelteShaker('/App.svelte', resolve, readFile);
-    const withMono = await svelteShakerWithMono('/App.svelte', resolve, readFile, ON, (id) => id);
+    const withMono = await svelteShakerWithMono(
+      '/App.svelte',
+      resolve,
+      readFile,
+      ON,
+      (id) => id,
+      undefined,
+      undefined,
+      ownSize,
+    );
     expect(withMono.files).toEqual(base);
   });
 });
@@ -210,7 +226,7 @@ describe('monomorphization / all-sites-or-nothing gate', () => {
     };
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON, '/App.svelte');
+    const res = monomorphize(models, plans, ON, '/App.svelte', ownSize);
     expect(res.variants.size).toBe(0);
     expect(res.bindings.length).toBe(0);
   });
@@ -254,7 +270,7 @@ describe('monomorphization / all-sites-or-nothing gate', () => {
     };
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON, '/App.svelte');
+    const res = monomorphize(models, plans, ON, '/App.svelte', ownSize);
     // Leaf is never specialized (its owner Mid is a candidate).
     expect([...res.variants.values()].some((v) => v.childId === '/Leaf.svelte')).toBe(false);
     expect(res.bindings.some((b) => b.childId === '/Leaf.svelte')).toBe(false);
@@ -273,7 +289,7 @@ describe('monomorphization / bail-safety (soundness over aggressiveness)', () =>
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
     expect(plans.get('/D.svelte')!.bail).toBe(true);
-    const res = monomorphize(models, plans, ON, '/App.svelte');
+    const res = monomorphize(models, plans, ON, '/App.svelte', ownSize);
     expect(res.variants.size).toBe(0); // escaped child -> no specialization
   });
 
@@ -289,7 +305,7 @@ describe('monomorphization / bail-safety (soundness over aggressiveness)', () =>
     };
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON, '/App.svelte');
+    const res = monomorphize(models, plans, ON, '/App.svelte', ownSize);
     for (const v of res.variants.values()) expect(v.foldedProps.has('item')).toBe(false);
   });
 
@@ -306,7 +322,7 @@ describe('monomorphization / bail-safety (soundness over aggressiveness)', () =>
     };
     const { resolve, readFile } = memGraph(files);
     const { models, plans } = await analyze('/App.svelte', resolve, readFile);
-    const res = monomorphize(models, plans, ON, '/App.svelte');
+    const res = monomorphize(models, plans, ON, '/App.svelte', ownSize);
     const btnVariants = [...res.variants.values()].filter((v) => v.childId === '/Btn.svelte');
     expect(btnVariants.length).toBe(0);
   });
@@ -324,7 +340,16 @@ describe('monomorphization / bail-safety (soundness over aggressiveness)', () =>
       '/Heavy.svelte': CORRELATED_FILES['/Heavy.svelte']!,
     };
     const { resolve, readFile } = memGraph(files);
-    const res = await svelteShakerWithMono('/App.svelte', resolve, readFile, ON, (id) => id);
+    const res = await svelteShakerWithMono(
+      '/App.svelte',
+      resolve,
+      readFile,
+      ON,
+      (id) => id,
+      undefined,
+      undefined,
+      ownSize,
+    );
     const variant = [...res.mono.variants.values()][0]!;
     expect(variant.code).toContain('{...rest}'); // rest still forwarded
     expect(variant.code).not.toContain('<Heavy');

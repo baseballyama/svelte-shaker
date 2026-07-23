@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Parse, Root } from './parse.js';
+import type { OwnSize } from './mono.js';
 
 // NODE-ONLY: loads rsvelte's parser from `@rsvelte/compiler` — rsvelte's
 // parser/compiler shipped as a `wasm-pack --target web` WASM module. It is a
@@ -21,6 +22,10 @@ const WASM_FILE = '@rsvelte/compiler/wasm';
 interface RsvelteCompiler {
   initSync: (module: { module: BufferSource }) => unknown;
   parse_svelte: (source: string) => { success: boolean; ast: string; error?: string | undefined };
+  compile_client: (
+    source: string,
+    name: string,
+  ) => { success: boolean; js: string; css: string; error?: string | undefined };
 }
 
 let ready = false;
@@ -64,5 +69,26 @@ export function tryLoadRsvelteParser(): Parse | null {
     const result = compiler.parse_svelte(code);
     if (!result.success) throw new Error(`rsvelte parse failed: ${result.error ?? 'unknown'}`);
     return JSON.parse(result.ast) as Root;
+  };
+}
+
+/**
+ * Build the rsvelte-backed {@link OwnSize} for the JS/WASM engines, or `null` if
+ * `@rsvelte/compiler` can't be loaded/initialized. The native engine computes the
+ * SAME proxy in-process (`session::own_size` over the pinned rsvelte crate), so all
+ * three engines' monomorphization gates decide byte-for-byte alike (parity is
+ * test-gated). `name` is passed as the component id — its exact string is immaterial
+ * to the SIZE as long as every engine passes the same one, which they do.
+ */
+export function tryLoadRsvelteOwnSize(): OwnSize | null {
+  let compiler: RsvelteCompiler;
+  try {
+    compiler = loadCompiler();
+  } catch {
+    return null;
+  }
+  return (id, source) => {
+    const result = compiler.compile_client(source, id);
+    return result.success ? result.js.length : null;
   };
 }
