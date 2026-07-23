@@ -19,13 +19,26 @@ napi-derive = "3.6.0"
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
 rayon = "1.12.0"
 
-# The rsvelte parser, pinned to the exact rev the scanner is validated against
-# (the corpus oracle test). `default-features = false` deliberately drops
-# rsvelte's `native` feature (jemalloc / mimalloc global allocators) so this
-# cdylib keeps the host/napi allocator — only the pure parser + AST surface is
-# pulled in. rsvelte is public, so cargo fetches it with no credentials. For local
-# dev against a side-by-side checkout, override with a `[patch]` in a local
-# `.cargo/config.toml` (uncommitted) pointing `rsvelte_core` at the path.
+# rsvelte, used for BOTH parsing AND the monomorphization size proxy
+# (`session::own_size` calls `rsvelte_core::compiler::compile` with client codegen —
+# the same output `@rsvelte/compiler`'s `compile_client` produces), so the native gate
+# never calls back into a JS compiler. `default-features = false` deliberately drops
+# rsvelte's `native` feature (jemalloc / mimalloc global allocators) so this cdylib
+# keeps the host/napi allocator; the client codegen path is not feature-gated, so it
+# needs no extra deps.
+#
+# SIZE-PROXY PARITY: the gate must decide identically across the TS / WASM / native
+# engines — the JS engines compute the proxy from `@rsvelte/compiler` (0.8.1) while
+# native computes it from THIS crate, so their client codegen must agree byte-for-byte.
+# This rev (0.7.17) is verified byte-identical to `@rsvelte/compiler` 0.8.1 across the
+# whole fixture/example/e2e corpus by the differential parity tests
+# (`tests/native-engine.test.ts` etc.). Ideally the pin would be the exact 0.8.1
+# release rev (bd17e3c…) for a matching-rev guarantee, but rsvelte at that rev carries
+# a broken nested corpus submodule (`temp_web/element`, no URL) that breaks cargo's
+# recursive submodule checkout; bumping is deferred until that is fixed upstream (the
+# corpus-verified parity holds meanwhile). rsvelte is public, so cargo fetches it with
+# no credentials. For local dev against a side-by-side checkout, override with a
+# `[patch]` in a local `.cargo/config.toml` (uncommitted) pointing `rsvelte_core` at the path.
 rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "852f80e27a442ea209a19b9f1e4339b62a5dbde2", default-features = false }
 
 # The Value-based analysis engine, reused verbatim (rlib): its

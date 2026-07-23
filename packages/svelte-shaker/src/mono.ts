@@ -56,7 +56,6 @@
 // ----------------------------------------------------------------------
 
 import MagicString from 'magic-string';
-import { compile } from 'svelte/compiler';
 import { inSpans } from './dead.js';
 import { shakeBody } from './transform.js';
 import {
@@ -68,6 +67,20 @@ import {
 } from './analyze.js';
 import { parseSvelte, walk, type AnyNode, type Root } from './parse.js';
 import { isFoldableValue, type ComponentId, type ComponentPlan, type Literal } from './ir.js';
+
+/**
+ * The monomorphization net-win gate's per-module compiled-byte size proxy (docs §3):
+ * `(id, source) -> byte count | null`, where `null` means the module can't be sized
+ * (a compile error) and the gate declines the child rather than bloat.
+ *
+ * INJECTED by the Shell so the environment-free engine holds no compiler: the Vite
+ * plugin passes an rsvelte-backed sizer (`@rsvelte/compiler`'s `compile_client`),
+ * and the native engine computes the SAME proxy in-process (`session::own_size`), so
+ * all three engines' gates decide byte-for-byte alike (parity is test-gated). The
+ * default (`() => null`) sizes nothing, so an environment without a sizer simply
+ * specializes nothing — sound, just unoptimized.
+ */
+export type OwnSize = (id: ComponentId, source: string) => number | null;
 
 /** Tuning knobs for monomorphization (docs §8.1, §13.2).  All have sound defaults. */
 export interface MonomorphizeOptions {
@@ -170,6 +183,7 @@ export function monomorphize(
   plans: Map<ComponentId, ComponentPlan>,
   options: MonomorphizeOptions = DEFAULT_MONO_OPTIONS,
   entries: ComponentId | ComponentId[] = [],
+  measureSize: OwnSize = () => null,
 ): MonomorphizeResult {
   const variants = new Map<string, Variant>();
   const bindings: CallSiteBinding[] = [];
@@ -254,21 +268,16 @@ export function monomorphize(
   const entryList = (Array.isArray(entries) ? entries : [entries]).filter((e) => models.has(e));
   const roots = entryList.filter((e) => !incoming.has(e));
 
+  // Memoize the injected size proxy by source string (measuring is the hot cost).
+  // `measureSize` is the rsvelte compiled-byte proxy the Shell injects (docs §3);
+  // its default (`() => null`) makes every module un-sizable, so the gate below
+  // declines every child — an environment with no sizer specializes nothing, which
+  // is sound (never bloat), just unoptimized.
   const sizeCache = new Map<string, number>();
   const ownSize = (id: ComponentId, source: string): number | null => {
     const cached = sizeCache.get(source);
     if (cached !== undefined) return cached;
-    let size: number | null;
-    try {
-      const { js } = compile(source, {
-        generate: 'client',
-        dev: false,
-        filename: id,
-      });
-      size = js.code.length;
-    } catch {
-      size = null; // un-sizable -> caller skips the child
-    }
+    const size = measureSize(id, source);
     if (size !== null) sizeCache.set(source, size);
     return size;
   };

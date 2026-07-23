@@ -1,5 +1,4 @@
 import { createRequire } from 'node:module';
-import { compile } from 'svelte/compiler';
 import {
   buildAnalyzeInput,
   type CrawlFacts,
@@ -29,24 +28,39 @@ interface NativeFacts {
   parseError: boolean;
 }
 
-/** The long-lived native session: parse + retain ASTs, then shake to edits. */
+/** The long-lived native session: parse + retain ASTs, then shake to edits. The
+ * shake needs no size callback — the monomorphization net-win gate's compiled-byte
+ * proxy is computed in-process by rsvelte (`session::own_size`), so the native path
+ * never calls back into a JS compiler. */
 interface ShakeSession {
   parse: (inputJson: string) => string;
   parseMore: (inputJson: string) => string;
-  shake: (configJson: string, ownSize: (payload: string) => number | null) => string;
+  shake: (configJson: string) => string;
 }
 
 /** The subset of the napi addon the plugin uses. */
 interface NativeEngine {
   ShakeSession: new () => ShakeSession;
+  engineApiVersion: () => number;
 }
 
-/** Whether a loaded module exposes the `ShakeSession` API this engine drives —
- * `parse` + `parseMore` + `shake` on the prototype. Guards against an OLDER published
- * `svelte-shaker-engine-scan-native` (e.g. one predating `parseMore`) being resolved:
- * an API-incompatible binary is rejected so the caller falls back to WASM/JS rather
- * than crashing on a missing method. */
-function hasSessionApi(mod: Partial<NativeEngine>): mod is NativeEngine {
+/** The addon ABI generation this driver speaks (native `engine_api_version`). Bump
+ * in lockstep with a breaking change to the exported methods. The 0.2.x addon's
+ * `shake` took a JS `ownSize` callback; 0.3.x computes the size proxy in Rust and
+ * `shake` takes ONE argument — calling a 0.2.x binary the 0.3.x way throws a napi
+ * TypeError that crashes `vite build`, so a version mismatch MUST be rejected here. */
+const EXPECTED_ENGINE_API_VERSION = 3;
+
+/** Whether a loaded module is a native addon this engine can drive: the right ABI
+ * generation AND the `ShakeSession` shape (`parse` + `parseMore` + `shake`). An OLDER
+ * published `svelte-shaker-engine-scan-native` — one with no `engineApiVersion`, a
+ * different generation, or predating `parseMore` — is REJECTED so the caller degrades
+ * to WASM/JS instead of mis-calling an incompatible binary and crashing the build. */
+export function hasSessionApi(mod: Partial<NativeEngine>): mod is NativeEngine {
+  const versionFn = mod.engineApiVersion;
+  // The 0.2.x addon has no `engineApiVersion` export, so this rejects it — the exact
+  // skew that would otherwise throw on the new one-argument `shake` call.
+  if (typeof versionFn !== 'function' || versionFn() !== EXPECTED_ENGINE_API_VERSION) return false;
   const ctor = mod.ShakeSession as (new () => ShakeSession) | undefined;
   const proto = ctor?.prototype as Partial<ShakeSession> | undefined;
   return (
@@ -74,29 +88,13 @@ export function tryLoadNativeEngine(): NativeEngine | null {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(spec) as Partial<NativeEngine>;
-      if (hasSessionApi(mod)) return { ShakeSession: mod.ShakeSession };
+      if (hasSessionApi(mod))
+        return { ShakeSession: mod.ShakeSession, engineApiVersion: mod.engineApiVersion };
     } catch {
       // Not resolvable here — try the next location.
     }
   }
   return null;
-}
-
-/** The compiled-byte size proxy the monomorphization net-win gate uses — the same call
- * `mono.ts` / the WASM engine make, so the Rust gate decides byte-for-byte alike. */
-function ownSize(id: ComponentId, source: string): number | null {
-  try {
-    return compile(source, { generate: 'client', dev: false, filename: id }).js.code.length;
-  } catch {
-    return null;
-  }
-}
-
-/** `ShakeSession.shake`'s single-arg `ownSize` form: `[id, source]` JSON in (a napi
- * multi-arg marshaling bug makes the single-arg payload the reliable shape). */
-function ownSizePayload(payload: string): number | null {
-  const [id, source] = JSON.parse(payload) as [ComponentId, string];
-  return ownSize(id, source);
 }
 
 /**
@@ -130,9 +128,11 @@ export interface NativeMonoResult {
  * parse); the crawl then resolves edges reading those facts instead of re-parsing in
  * JS, parsing any file discovered outside the seed on demand (`parseMore`). The
  * session retains every AST, so the shake needs no AST at the boundary — only the
- * resolved graph and the `ownSize` callback cross. A final svelte/compiler revert
- * cascade (the AUTHORITY) force-bails any residual unparseable output; the session's
- * own inner rsvelte cascade means valid programs settle in one outer pass.
+ * resolved graph crosses, and the monomorphization size proxy is computed in-process
+ * by rsvelte (`session::own_size`), so nothing calls back into a JS compiler. A final
+ * svelte/compiler revert cascade (the AUTHORITY) force-bails any residual unparseable
+ * output; the session's own inner rsvelte cascade means valid programs settle in one
+ * outer pass.
  */
 export async function svelteShakerNativeWithMono(
   engine: NativeEngine,
@@ -198,9 +198,10 @@ export async function svelteShakerNativeWithMono(
   };
   let last!: { files: Record<ComponentId, string>; variants: Record<string, string> };
   const files = revertCascade(input.files, (forceBail) => {
-    last = JSON.parse(
-      session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] }), ownSizePayload),
-    ) as { files: Record<ComponentId, string>; variants: Record<string, string> };
+    last = JSON.parse(session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] }))) as {
+      files: Record<ComponentId, string>;
+      variants: Record<string, string>;
+    };
     return last.files;
   });
   // The engine already keys each variant by its `?shaker_variant=` request specifier

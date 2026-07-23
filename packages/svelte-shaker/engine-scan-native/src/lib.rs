@@ -33,6 +33,18 @@ mod typed_scan;
 mod utf16;
 use utf16::{convert_positions_to_utf16, Utf8ToUtf16};
 
+/// The addon's ABI/protocol generation. The JS loader (`tryLoadNativeEngine`) checks
+/// this so a version-skewed prebuilt binary is REJECTED (→ fall back to WASM/JS)
+/// rather than silently mis-called: e.g. the 0.2.x addon's `shake` took a JS
+/// `ownSize` callback, whereas 0.3.x computes the size proxy in Rust and `shake`
+/// takes one argument — calling the old binary the new way throws a napi TypeError
+/// that would crash the build. Bump this on ANY breaking change to the exported
+/// method signatures. `engineApiVersion` on the JS side (napi camel-cases it).
+#[napi]
+pub fn engine_api_version() -> u32 {
+    3
+}
+
 /// Group the resolved edges into a per-file import map (tag name -> child id),
 /// mirroring engine-rs `edge_imports` grouped by `from`.
 fn imports_by_file(edges: &[Value]) -> HashMap<String, HashMap<String, String>> {

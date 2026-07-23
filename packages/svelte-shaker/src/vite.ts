@@ -15,8 +15,8 @@ import { compileExclude, type ExcludeFilter } from './exclude.js';
 
 // Re-export so a user can extend the default dev-only list: `devOnly: [...DEFAULT_DEV_ONLY, '…']`.
 export { DEFAULT_DEV_ONLY } from './dev-only.js';
-import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions } from './mono.js';
-import { tryLoadRsvelteParser } from './rsvelte-parse.js';
+import { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions, type OwnSize } from './mono.js';
+import { tryLoadRsvelteParser, tryLoadRsvelteOwnSize } from './rsvelte-parse.js';
 import { svelteShakerWasm, svelteShakerWasmWithMono, tryLoadWasmEngine } from './wasm-engine.js';
 import { svelteShakerNativeWithMono, tryLoadNativeEngine } from './native-engine.js';
 import type { ComponentId } from './ir.js';
@@ -714,6 +714,14 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       reportEscapeDiagnostics(escapeScan);
       const escaped = escapeScan.escaped;
 
+      // The monomorphization net-win gate's size proxy, computed by rsvelte's client
+      // codegen (`@rsvelte/compiler`), for the JS and WASM engines so their gate decides
+      // byte-for-byte like the native engine (which computes the SAME proxy in-process).
+      // Loaded lazily by the js/wasm mono branches only — the native path sizes in Rust
+      // and never needs it. If `@rsvelte/compiler` can't load, sizing returns null and
+      // the gate specializes nothing — sound (never bloat), just unoptimized.
+      const loadOwnSize = (): OwnSize => tryLoadRsvelteOwnSize() ?? (() => null);
+
       // Decide the engine.  The native Rust engine now implements every pass
       // INCLUDING monomorphization (it calls back to JS only for the compiled-size
       // proxy), so it
@@ -760,18 +768,33 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         // retained ASTs, and returns only the edits — byte-identical to the JS engine,
         // monomorphization included (mono off -> an empty variant set). The `parser`
         // option does not apply here (the session always parses in-process rsvelte).
-        const result = await svelteShakerNativeWithMono(
-          native,
-          entryComponents,
-          resolve,
-          read,
-          mono,
-          escaped,
-        );
-        shaken = result.files;
-        variantSources = result.variants;
-        reportSizes(shaken, read, root, options.verbose === true, log);
-        return;
+        //
+        // Defense in depth: `tryLoadNativeEngine` already rejects an ABI-incompatible
+        // binary (`engineApiVersion`), but any OTHER native failure (a napi marshaling
+        // error, an unforeseen throw) must NOT crash the build — degrade to the JS
+        // engine with a warning. `session.shake` is `catch_unwind`, so a native panic
+        // surfaces here as a throw rather than aborting the process.
+        try {
+          const result = await svelteShakerNativeWithMono(
+            native,
+            entryComponents,
+            resolve,
+            read,
+            mono,
+            escaped,
+          );
+          shaken = result.files;
+          variantSources = result.variants;
+          reportSizes(shaken, read, root, options.verbose === true, log);
+          return;
+        } catch (err) {
+          warn(
+            `the native engine failed at runtime (${err instanceof Error ? err.message : String(err)}); ` +
+              `falling back to the JS engine for this build`,
+          );
+          native = null;
+          wasm = null; // fall through to the always-available JS engine below
+        }
       }
 
       if (wasm) {
@@ -784,6 +807,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
             resolve,
             read,
             mono,
+            loadOwnSize(),
             getParse(true),
             escaped,
           );
@@ -821,6 +845,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         variantSpecifier,
         getParse(false),
         escaped,
+        loadOwnSize(),
       );
       shaken = result.files;
       variantSources = new Map();

@@ -1,8 +1,7 @@
 import { createRequire } from 'node:module';
-import { compile } from 'svelte/compiler';
 import { buildAnalyzeInput, type ReadFile, type Resolve } from './analyze.js';
 import { parseCached, type Parse, type ParseCache } from './parse.js';
-import { type MonomorphizeOptions } from './mono.js';
+import { type MonomorphizeOptions, type OwnSize } from './mono.js';
 import { revertCascade } from './revert-cascade.js';
 import type { ComponentId } from './ir.js';
 
@@ -58,16 +57,6 @@ export function tryLoadWasmEngine(): WasmEngine | null {
   return null;
 }
 
-/** The compiled-byte size proxy the monomorphization net-win gate uses — the same call
- * `mono.ts` makes, so the Rust gate decides byte-for-byte like the JS engine. */
-function ownSize(id: ComponentId, source: string): number | null {
-  try {
-    return compile(source, { generate: 'client', dev: false, filename: id }).js.code.length;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Whole-program shake via the native Rust engine — the unused-prop fold / constant fold / value-set narrowing counterpart of
  * {@link svelteShaker} (monomorphization lives only in the JS engine).  The crawl/resolution
@@ -121,9 +110,9 @@ export interface WasmMonoResult {
  * Whole-program shake WITH monomorphization, run entirely in the native Rust
  * engine — the counterpart of {@link svelteShakerWithMono}.  The crawl/resolution
  * stays in JS; the Rust engine does the analysis, the monomorphization graph/gate, and the
- * call-site rewrite, calling back into JS only for {@link ownSize} (the Svelte
- * compiler).  Feeding it the same compiler the JS engine uses makes the result
- * byte-identical (pinned by the differential `wasm-mono` test).
+ * call-site rewrite, calling back into JS only for `ownSize` (the injected rsvelte
+ * size proxy).  The native engine computes the SAME proxy in-process, so the results
+ * are byte-identical (pinned by the differential `wasm-mono` / native parity tests).
  */
 export async function svelteShakerWasmWithMono(
   engine: WasmEngine,
@@ -131,6 +120,7 @@ export async function svelteShakerWasmWithMono(
   resolve: Resolve,
   readFile: ReadFile,
   mono: MonomorphizeOptions,
+  ownSize: OwnSize,
   parse?: Parse,
   escaped: ComponentId[] = [],
 ): Promise<WasmMonoResult> {

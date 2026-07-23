@@ -11,10 +11,15 @@ import {
 } from '../src/index';
 import { analyze } from '../src/analyze';
 import type { ParseCache } from '../src/parse';
+import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { rsvelteParse } from './rsvelte-parse';
 import { assertCompiles, cleanTmp, renderGraphHtml } from './diff';
 
 const MONO_ON = { enabled: true, maxVariants: 8, minSavings: 0 } as const;
+
+// The rsvelte-backed size proxy the mono gate needs (both parser paths use the same
+// one, so specialization decisions depend only on the parser under test).
+const ownSize = tryLoadRsvelteOwnSize() ?? ((): number | null => null);
 
 afterAll(() => cleanTmp());
 
@@ -231,7 +236,16 @@ describe('monomorphization specializes identically under both parsers (issue #15
       '/Heavy.svelte': `<script lang="ts">\n  let { n = 0 } = $props();\n</script>\n${heavyBody}\n`,
     };
     const { resolve, readFile } = memGraph(files);
-    const viaSvelte = await svelteShakerWithMono('/App.svelte', resolve, readFile, MONO_ON);
+    const viaSvelte = await svelteShakerWithMono(
+      '/App.svelte',
+      resolve,
+      readFile,
+      MONO_ON,
+      undefined,
+      undefined,
+      undefined,
+      ownSize,
+    );
     const viaRsvelte = await svelteShakerWithMono(
       '/App.svelte',
       resolve,
@@ -239,6 +253,8 @@ describe('monomorphization specializes identically under both parsers (issue #15
       MONO_ON,
       undefined,
       rsvelteParse,
+      undefined,
+      ownSize,
     );
     expect(monoProjection(viaRsvelte)).toEqual(monoProjection(viaSvelte));
     // Specialization actually fired (both sites), so the parity assertion is

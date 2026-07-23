@@ -12,6 +12,7 @@ import {
   DEFAULT_MONO_OPTIONS,
   type MonomorphizeOptions,
   type MonomorphizeResult,
+  type OwnSize,
 } from './mono.js';
 import { shakeWithRevertCascade } from './revert-cascade.js';
 import type { ComponentId } from './ir.js';
@@ -42,6 +43,7 @@ export {
   DEFAULT_MONO_OPTIONS,
   type MonomorphizeOptions,
   type MonomorphizeResult,
+  type OwnSize,
   type Variant,
   type CallSiteBinding,
 } from './mono.js';
@@ -122,6 +124,7 @@ export async function svelteShakerWithMono(
   variantSpecifier: VariantSpecifier = (id) => id,
   parse?: Parse,
   escaped: ComponentId[] = [],
+  ownSize?: OwnSize,
 ): Promise<ShakeResult> {
   const { models, plans } = await analyzeWith(entries, resolve, readFile, parse, escaped);
   // The cascade may re-run the transform with force-bailed plans, so recompute
@@ -134,7 +137,7 @@ export async function svelteShakerWithMono(
   const files = shakeWithRevertCascade(models, plans, (p) => {
     // Thread the shake entries through so the net-win gate can compute module
     // reachability from them (docs §3 monomorphization, §13.2).
-    lastResult = monomorphize(models, p, mono, entries);
+    lastResult = monomorphize(models, p, mono, entries, ownSize);
     // With no bindings the wired pass and the base pass are identical, so reuse
     // the plain transform to keep the default path byte-for-byte unchanged.
     return lastResult.bindings.length === 0

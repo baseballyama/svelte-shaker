@@ -47,7 +47,13 @@ const nativeAvailable = (() => {
 
 vi.mock('../src/rsvelte-parse', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../src/rsvelte-parse')>();
-  return { tryLoadRsvelteParser: vi.fn(orig.tryLoadRsvelteParser) };
+  return {
+    tryLoadRsvelteParser: vi.fn(orig.tryLoadRsvelteParser),
+    // The monomorphization size proxy loader — a distinct entry point from the parser,
+    // so forcing the PARSER unavailable (below) does not touch sizing. Left real: these
+    // tests assert which paths reach for the rsvelte PARSER, not the sizer.
+    tryLoadRsvelteOwnSize: orig.tryLoadRsvelteOwnSize,
+  };
 });
 vi.mock('../src/native-engine', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../src/native-engine')>();

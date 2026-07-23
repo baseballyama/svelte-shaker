@@ -146,8 +146,8 @@ importers:
         version: 8.1.5(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.1)
     optionalDependencies:
       svelte-shaker-engine-scan-native:
-        specifier: ~0.2.0
-        version: 0.2.0
+        specifier: ~0.3.0
+        version: 0.3.0
 
 packages:
 
@@ -1882,8 +1882,8 @@ packages:
       svelte: ^4.0.0 || ^5.0.0-next.0
       typescript: '>=5.0.0'
 
-  svelte-shaker-engine-scan-native@0.2.0:
-    resolution: {integrity: sha512-6hmmtusD05dbiEu7AEaCY2FUkWe6CL75TyAJsB3Ne0bgvWPEtghhQwdbEAO77RAcf0TnDO+Ljg3TZ+4kZhvYyA==}
+  svelte-shaker-engine-scan-native@0.3.0:
+    resolution: {integrity: sha512-6r6UNE4Hxw92SZXqJCjuHJxeo5UhrlnH7MLe5gdsiNDGaJsEVI2wevBx2RkpM+penmoFhszFouf7nrCa1xxiBQ==}
     engines: {node: '>=22.23.1'}
 
   svelte-toolbelt@0.7.1:
@@ -3552,7 +3552,7 @@ snapshots:
     transitivePeerDependencies:
       - picomatch
 
-  svelte-shaker-engine-scan-native@0.2.0:
+  svelte-shaker-engine-scan-native@0.3.0:
     optional: true
 
   svelte-toolbelt@0.7.1(svelte@5.56.6):

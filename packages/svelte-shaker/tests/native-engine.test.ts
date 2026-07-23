@@ -4,7 +4,13 @@ import { join, resolve as resolvePath } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { svelteShakerWithMono, type ComponentId, type MonomorphizeOptions } from '../src/index';
 import { svelteShakerNativeWithMono, tryLoadNativeEngine } from '../src/native-engine';
+import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { fsReadFile, fsResolve } from '../src/scan';
+
+// The gate's size proxy: the TS reference measures it with `@rsvelte/compiler`
+// (`compile_client`), the native engine computes the SAME proxy in-process from the
+// pinned rsvelte crate. Byte-parity here is exactly what pins those two in sync.
+const ownSize = tryLoadRsvelteOwnSize() ?? ((): number | null => null);
 
 // The PRODUCTION native path — `svelteShakerNativeWithMono` (what vite.ts calls) — must
 // produce byte-for-byte the SAME files + variants as the audited TS `svelteShakerWithMono`.
@@ -25,7 +31,16 @@ function variantSpecifier(variantId: string): string {
 type Shaken = { files: Record<ComponentId, string>; variants: Record<string, string> };
 
 async function tsShake(entry: ComponentId, mono: MonomorphizeOptions): Promise<Shaken> {
-  const result = await svelteShakerWithMono(entry, fsResolve, fsReadFile, mono, variantSpecifier);
+  const result = await svelteShakerWithMono(
+    entry,
+    fsResolve,
+    fsReadFile,
+    mono,
+    variantSpecifier,
+    undefined,
+    undefined,
+    ownSize,
+  );
   const variants: Record<string, string> = {};
   for (const v of result.mono.variants.values()) variants[variantSpecifier(v.id)] = v.code;
   return { files: result.files, variants };

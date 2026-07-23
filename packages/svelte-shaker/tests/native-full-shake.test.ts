@@ -2,7 +2,6 @@ import { existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve as resolvePath } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compile } from 'svelte/compiler';
 import {
   buildAnalyzeInput,
   svelteShakerWithMono,
@@ -12,6 +11,7 @@ import {
   type Resolve,
 } from '../src/index';
 import { revertCascade } from '../src/revert-cascade';
+import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 import { loadNativeAddon } from './native-addon';
 
@@ -39,14 +39,15 @@ function memGraph(files: Record<string, string>): { resolve: Resolve; readFile: 
 // The native chatty full-shake (Round 2) must produce byte-for-byte the SAME output
 // as the TS `svelteShakerWithMono` — the audited, differential-SSR-tested reference.
 // The native path parses with rsvelte and shakes in-process through the engine-rs
-// cores; the ONLY thing crossing back to JS is the `ownSize` compile-size proxy, so
-// feeding both engines the same compiler makes the result byte-identical. This is
-// the M2 gate: over the whole fixture/example/e2e corpus, native `files` AND its
+// cores, computing the monomorphization size proxy IN RUST (rsvelte's client codegen)
+// — nothing crosses back to a JS compiler. The TS reference measures the SAME proxy
+// with `@rsvelte/compiler` (`compile_client`), so the results are byte-identical. This
+// is the M2 gate: over the whole fixture/example/e2e corpus, native `files` AND its
 // variant set must equal the TS engine, with monomorphization on and off.
 interface ShakeSession {
   parse: (inputJson: string) => string;
   parseMore: (inputJson: string) => string;
-  shake: (configJson: string, ownSize: (payload: string) => number | null) => string;
+  shake: (configJson: string) => string;
 }
 interface NativeAddon {
   ShakeSession: new () => ShakeSession;
@@ -56,21 +57,10 @@ const addon = loadNativeAddon<NativeAddon>();
 const MONO_ON: MonomorphizeOptions = { enabled: true, maxVariants: 8, minSavings: 0 };
 const MONO_OFF: MonomorphizeOptions = { enabled: false, maxVariants: 8, minSavings: 0 };
 
-/** The size proxy both engines use: compiled client-JS byte length, or `null` when
- * the source fails to compile (mirrors `mono.ts` / wasm-engine.ts `ownSize`). */
-function ownSize(id: string, source: string): number | null {
-  try {
-    return compile(source, { generate: 'client', dev: false, filename: id }).js.code.length;
-  } catch {
-    return null;
-  }
-}
-
-/** `ShakeSession.shake`'s single-arg `ownSize` form: `[id, source]` JSON in. */
-function ownSizePayload(payload: string): number | null {
-  const [id, source] = JSON.parse(payload) as [string, string];
-  return ownSize(id, source);
-}
+// The TS reference's size proxy, measured with `@rsvelte/compiler` — the JS-side
+// counterpart of the native engine's in-Rust `session::own_size`. Both compile the
+// same rsvelte rev, so the byte counts (and thus the gate decisions) match.
+const ownSize = tryLoadRsvelteOwnSize() ?? ((): number | null => null);
 
 /** `<childId>::v<n>` -> `<childId>?shaker_variant=<n>` (mirrors vite.ts). */
 function variantSpecifier(variantId: string): string {
@@ -81,7 +71,16 @@ function variantSpecifier(variantId: string): string {
 type Shaken = { files: Record<string, string>; variants: Record<string, string> };
 
 async function tsShake(entry: ComponentId, mono: MonomorphizeOptions): Promise<Shaken> {
-  const result = await svelteShakerWithMono(entry, fsResolve, fsReadFile, mono, variantSpecifier);
+  const result = await svelteShakerWithMono(
+    entry,
+    fsResolve,
+    fsReadFile,
+    mono,
+    variantSpecifier,
+    undefined,
+    undefined,
+    ownSize,
+  );
   const variants: Record<string, string> = {};
   for (const v of result.mono.variants.values()) variants[variantSpecifier(v.id)] = v.code;
   return { files: result.files, variants };
@@ -107,7 +106,7 @@ async function nativeShake(entry: ComponentId, mono: MonomorphizeOptions): Promi
   let last!: Shaken;
   const files = revertCascade(input.files, (forceBail) => {
     last = JSON.parse(
-      session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] }), ownSizePayload),
+      session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] })),
     ) as Shaken;
     return last.files;
   });
@@ -156,13 +155,13 @@ describe.skipIf(!addon)('native ShakeSession revert / parse-error semantics', ()
     };
 
     const bailed = JSON.parse(
-      session.shake(JSON.stringify({ ...base, forceBail: ['/Sub.svelte'] }), ownSizePayload),
+      session.shake(JSON.stringify({ ...base, forceBail: ['/Sub.svelte'] })),
     ) as Shaken;
     // Force-bailed Sub is untouched...
     expect(bailed.files['/Sub.svelte']).toBe(readFile('/Sub.svelte'));
     // ...and without the bail, Sub folds (the dead `{#if}` arm is removed), so the
     // two differ — confirming the bail actually suppressed a real fold.
-    const folded = JSON.parse(session.shake(JSON.stringify(base), ownSizePayload)) as Shaken;
+    const folded = JSON.parse(session.shake(JSON.stringify(base))) as Shaken;
     expect(folded.files['/Sub.svelte']).not.toBe(bailed.files['/Sub.svelte']);
     expect(folded.files['/Sub.svelte']).not.toContain('hasIcon');
   });
@@ -216,7 +215,7 @@ describe.skipIf(!addon)('native ShakeSession incremental parseMore (chatty crawl
       // Single-shot parse.
       const one = new addon!.ShakeSession();
       one.parse(JSON.stringify({ files }));
-      const single = JSON.parse(one.shake(JSON.stringify(config), ownSizePayload)) as Shaken;
+      const single = JSON.parse(one.shake(JSON.stringify(config))) as Shaken;
       // Incremental: split the SAME program-order list; the second round re-includes
       // the first file to exercise the dedup skip. Order of retained files is
       // preserved, so the shake must be byte-identical.
@@ -224,7 +223,7 @@ describe.skipIf(!addon)('native ShakeSession incremental parseMore (chatty crawl
       const inc = new addon!.ShakeSession();
       inc.parse(JSON.stringify({ files: files.slice(0, mid) }));
       inc.parseMore(JSON.stringify({ files: [files[0]!, ...files.slice(mid)] }));
-      const incremental = JSON.parse(inc.shake(JSON.stringify(config), ownSizePayload)) as Shaken;
+      const incremental = JSON.parse(inc.shake(JSON.stringify(config))) as Shaken;
       const label = entry.split('/fixtures/')[1] ?? entry.split('/packages/')[1] ?? entry;
       expect(incremental.files, label).toEqual(single.files);
     }

@@ -10,6 +10,15 @@
  *
  * Synchronous; requires Node >= 22.12.
  */
+/**
+ * The addon ABI generation. The JS loader (`tryLoadNativeEngine`) checks this and
+ * rejects a version-skewed prebuilt binary (→ falls back to WASM/JS) rather than
+ * mis-calling it: e.g. the 0.2.x addon's `shake` took an `ownSize` callback, while
+ * 0.3.x computes the size proxy in Rust and `shake` takes one argument. Bumped on any
+ * breaking change to the exported method signatures.
+ */
+export declare function engineApiVersion(): number;
+
 export declare function scan(inputJson: string): string;
 
 /**
@@ -70,13 +79,12 @@ export declare class ShakeSession {
    * mono?: { enabled: boolean; maxVariants: number; minSavings: number }; forceBail?:
    * string[] }`. Returns `{ files: { [id]: code }; variants: { [specifier]: code } }` JSON.
    *
-   * `ownSize` is the compiled-byte proxy the mono net-win gate calls. It receives a
-   * SINGLE JSON string argument — `[id, source]` — and returns that source's compiled
-   * size (svelte compile length) or `null` on failure. The single-arg form is a
-   * deliberate workaround for a napi multi-arg marshaling bug; wrap a normal
-   * `(id, source) => number | null` sizer as `(p) => size(...JSON.parse(p))`.
+   * The monomorphization net-win gate's compiled-byte size proxy is computed IN RUST by
+   * rsvelte (`session::own_size`, mirroring `@rsvelte/compiler`'s `compile_client`), so
+   * unlike the WASM engine there is NO JS compiler callback — the native path runs the
+   * whole gate in-process.
    */
-  shake(configJson: string, ownSize: (payload: string) => number | null): string;
+  shake(configJson: string): string;
 }
 
 /**

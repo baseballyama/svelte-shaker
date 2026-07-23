@@ -1,6 +1,6 @@
 {
   "name": "svelte-shaker-engine-scan-native",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Native (napi) engine for svelte-shaker: parses with rsvelte and runs the whole-program shake (a long-lived ShakeSession) in-process, so no AST crosses the JS boundary.",
   "license": "MIT",
   "repository": {

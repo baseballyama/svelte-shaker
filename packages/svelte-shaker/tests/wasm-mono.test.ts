@@ -1,19 +1,19 @@
 import { join, resolve as resolvePath } from 'node:path';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-import { compile } from 'svelte/compiler';
 import { buildAnalyzeInput, svelteShakerWithMono, type ComponentId } from '../src/index';
 import { parseSvelte } from '../src/parse';
+import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 
 // ----------------------------------------------------------------------
 // monomorphization in Rust (docs/RUST-MIGRATION.md): `shake_program_with_mono` is the Rust→WASM
 // port of `svelteShakerWithMono` (mono.ts + the transform.ts call-site rewrite).
-// The only thing crossing back to JS is the `ownSize` size proxy (svelte compile),
-// so feeding BOTH engines the same compiler makes the result byte-identical. This
-// is the gate: for every fixture, Rust's `files` AND its variant set must match the
-// TS engine exactly — a byte match means the Rust monomorphization is sound (the TS output is the
-// audited, differential-SSR-tested reference).
+// The only thing crossing back to JS is the `ownSize` size proxy (rsvelte's client
+// codegen via `@rsvelte/compiler`), so feeding BOTH engines the same proxy makes the
+// result byte-identical. This is the gate: for every fixture, Rust's `files` AND its
+// variant set must match the TS engine exactly — a byte match means the Rust
+// monomorphization is sound (the TS output is the audited, differential-SSR-tested reference).
 // ----------------------------------------------------------------------
 
 const require = createRequire(import.meta.url);
@@ -28,15 +28,9 @@ const wasm = require('../engine-rs/pkg/svelte_shaker_engine.js') as {
 
 const MONO = { enabled: true, maxVariants: 8, minSavings: 0 };
 
-/** The size proxy both engines use: compiled client-JS byte length, or `null`
- * when the source fails to compile (mirrors `mono.ts` `ownSize`). */
-function ownSize(id: string, source: string): number | null {
-  try {
-    return compile(source, { generate: 'client', dev: false, filename: id }).js.code.length;
-  } catch {
-    return null;
-  }
-}
+// The size proxy both engines use: rsvelte's client-compiled byte length, the same
+// proxy the native engine computes in-process (so all three engines agree).
+const ownSize = tryLoadRsvelteOwnSize() ?? ((): number | null => null);
 
 /** `<childId>::v<n>` -> `<childId>?shaker_variant=<n>` (mirrors vite.ts). */
 function variantSpecifier(variantId: string): string {
@@ -48,7 +42,16 @@ async function tsMono(entry: ComponentId): Promise<{
   files: Record<string, string>;
   variants: Record<string, string>;
 }> {
-  const result = await svelteShakerWithMono(entry, fsResolve, fsReadFile, MONO, variantSpecifier);
+  const result = await svelteShakerWithMono(
+    entry,
+    fsResolve,
+    fsReadFile,
+    MONO,
+    variantSpecifier,
+    undefined,
+    undefined,
+    ownSize,
+  );
   const variants: Record<string, string> = {};
   for (const v of result.mono.variants.values()) variants[variantSpecifier(v.id)] = v.code;
   return { files: result.files, variants };
@@ -74,6 +77,7 @@ const FIXTURES = resolvePath(__dirname, 'fixtures');
 describe('Rust (WASM) monomorphization matches the TS engine', () => {
   for (const name of [
     'mono-correlated', // monomorphization genuinely fires: variants emitted, owner rewritten
+    'mono-japanese', // like mono-correlated but with non-ASCII text — exercises the UTF-16 size proxy
     'basic1', // no monomorphization candidate: variants empty, files == base shake
     'cascade',
     'narrow-variant',
