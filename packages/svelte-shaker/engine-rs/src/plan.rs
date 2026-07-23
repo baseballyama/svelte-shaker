@@ -249,15 +249,37 @@ pub(crate) fn stamp_module_escapes(models: &mut [Model], input: &Value) {
 }
 
 pub(crate) fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -> HashMap<String, Vec<CallSite>> {
-    let mut usage: HashMap<String, Vec<CallSite>> = HashMap::new();
-    for model in models {
+    // Each owner's (child_id, call_site) pairs are independent; compute them per model
+    // (fanned across cores on native), then group. `par_iter().collect()` keeps the
+    // per-model order, and grouping walks models in order, so each child profile's
+    // call-site order is identical to the sequential build (it feeds mono's
+    // first-caller keying, so the order must not drift).
+    let one = |model: &Model| -> Vec<(String, CallSite)> {
         let empty = Vec::new();
         let spans = dead.get(&model.id).unwrap_or(&empty);
-        for (child_id, node) in &model.child_calls {
-            if !spans.is_empty() && in_spans(node, spans) {
-                continue; // folded-away call site: excluded from the child's profile
-            }
-            usage.entry(child_id.clone()).or_default().push(read_call_site(node, Some(model.id.clone())));
+        model
+            .child_calls
+            .iter()
+            .filter_map(|(child_id, node)| {
+                if !spans.is_empty() && in_spans(node, spans) {
+                    None // folded-away call site: excluded from the child's profile
+                } else {
+                    Some((child_id.clone(), read_call_site(node, Some(model.id.clone()))))
+                }
+            })
+            .collect()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let per_model: Vec<Vec<(String, CallSite)>> = {
+        use rayon::prelude::*;
+        models.par_iter().map(one).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let per_model: Vec<Vec<(String, CallSite)>> = models.iter().map(one).collect();
+    let mut usage: HashMap<String, Vec<CallSite>> = HashMap::new();
+    for pairs in per_model {
+        for (child_id, site) in pairs {
+            usage.entry(child_id).or_default().push(site);
         }
     }
     usage
@@ -268,8 +290,9 @@ pub(crate) fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -
 /// props by their local binding). Computed once per owner per round — no O(n²).
 /// Mirrors the memoized `ownerEnv` in analyze.ts's buildPlans.
 fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
-    let mut envs = OwnerEnvs::new();
-    for model in models {
+    // Per-owner and independent; the result is an id-keyed map, so fanning it across
+    // cores (native) is a pure speedup with no order dependence.
+    let one = |model: &Model| -> Option<(String, OwnerEnv)> {
         // A bailed owner still forwards its own SCRIPT CONSTANTS unchanged — its
         // bail only makes ITS props unobservable, but it keeps rendering its call
         // sites (docs §4.2), so `script_const_env` (a static source fact)
@@ -287,10 +310,20 @@ fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
         };
         let fold = merge_script_consts(&model.script_const_env, folded_props);
         if !fold.is_empty() || !narrow.is_empty() {
-            envs.insert(model.id.clone(), OwnerEnv { fold, narrow });
+            Some((model.id.clone(), OwnerEnv { fold, narrow }))
+        } else {
+            None
         }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        models.par_iter().filter_map(one).collect()
     }
-    envs
+    #[cfg(target_arch = "wasm32")]
+    {
+        models.iter().filter_map(one).collect()
+    }
 }
 
 /// Merge an owner's static script constants ([`Model::script_const_env`]) with its
