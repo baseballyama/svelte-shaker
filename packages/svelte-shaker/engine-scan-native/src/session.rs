@@ -94,10 +94,12 @@ impl ShakeSession {
             .map_err(|e| napi::Error::from_reason(format!("session.parse: input: {e}")))?;
         let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
 
-        self.files.clear();
-        self.files.reserve(files.len());
-        let mut facts_out = Vec::with_capacity(files.len());
-        for f in files {
+        // Parse + serialize each file on a worker thread, then reassemble in input
+        // order (par_iter().collect() preserves it — required: the shake iterates
+        // `self.files` in program order). Each file's `Root` and its serialize arena
+        // stay on one thread; `SERIALIZE_ARENA` is a thread_local set/restored per
+        // `with_serialize_arena` call, so the fan-out shares no mutable state.
+        let build = |f: &Value| -> (StoredFile, Value) {
             let id = f.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
             let code = f.get("code").and_then(Value::as_str).unwrap_or_default().to_string();
             // One parse feeds BOTH the retained shake AST and the Round-1 facts.
@@ -106,18 +108,28 @@ impl ShakeSession {
                     let (ast, facts) = with_serialize_arena(&root.arena, || {
                         (root_to_ast_value(&root, &code), facts_from_root(&id, &root))
                     });
-                    facts_out.push(facts.into_json());
-                    self.files.push(StoredFile { id, code, ast });
+                    (StoredFile { id, code, ast }, facts.into_json())
                 }
                 Err(_) => {
-                    facts_out.push(json!({
-                        "id": id, "imports": [], "renderedTags": [], "memberTags": [], "parseError": true
-                    }));
                     // A file the engine cannot parse contributes nothing to the shake
                     // (its AST is Null → the engine skips it, sound under-shake).
-                    self.files.push(StoredFile { id, code, ast: Value::Null });
+                    let facts = json!({
+                        "id": id.clone(), "imports": [], "renderedTags": [], "memberTags": [], "parseError": true
+                    });
+                    (StoredFile { id, code, ast: Value::Null }, facts)
                 }
             }
+        };
+        let results: Vec<(StoredFile, Value)> = {
+            use rayon::prelude::*;
+            files.par_iter().map(build).collect()
+        };
+        self.files.clear();
+        self.files.reserve(results.len());
+        let mut facts_out = Vec::with_capacity(results.len());
+        for (stored, facts) in results {
+            self.files.push(stored);
+            facts_out.push(facts);
         }
 
         serde_json::to_string(&json!({ "files": facts_out }))
