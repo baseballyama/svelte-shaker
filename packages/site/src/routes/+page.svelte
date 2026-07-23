@@ -99,6 +99,13 @@ plugins: [shaker(&#123; entries: [<span class="s">'src'</span>] &#125;), svelte(
           their call sites stop counting. Replaces the default — spread
           <code>DEFAULT_DEV_ONLY</code> to extend.
         </dd>
+        <dt><code>exclude</code></dt>
+        <dd>
+          <span class="def">[]</span> Build-output dirs the scans must not walk —
+          <code>build.outDir</code> is always excluded; add generated output the
+          plugin can't infer (e.g. an adapter's <code>build/</code>). Generated
+          output only, never source — call sites inside stop counting.
+        </dd>
         <dt><code>monomorphize</code></dt>
         <dd>
           <span class="def">on</span> Per-call-site specialization behind a
