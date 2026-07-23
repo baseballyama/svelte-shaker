@@ -41,19 +41,43 @@ interface NativeEngine {
   ShakeSession: new () => ShakeSession;
 }
 
+/** Whether a loaded module exposes the `ShakeSession` API this engine drives —
+ * `parse` + `parseMore` + `shake` on the prototype. Guards against an OLDER published
+ * `svelte-shaker-engine-scan-native` (e.g. one predating `parseMore`) being resolved:
+ * an API-incompatible binary is rejected so the caller falls back to WASM/JS rather
+ * than crashing on a missing method. */
+function hasSessionApi(mod: Partial<NativeEngine>): mod is NativeEngine {
+  const ctor = mod.ShakeSession as (new () => ShakeSession) | undefined;
+  const proto = ctor?.prototype as Partial<ShakeSession> | undefined;
+  return (
+    typeof ctor === 'function' &&
+    typeof proto?.parse === 'function' &&
+    typeof proto?.parseMore === 'function' &&
+    typeof proto?.shake === 'function'
+  );
+}
+
 /**
- * Load the native Rust (napi) engine, or `null` if no prebuilt binary exists for this
- * install (then the caller falls back to the WASM / JS engine). The loader
- * (`engine-scan-native/index.cjs`) resolves a published per-platform `.node` or a
- * local `cargo build` output; a missing binary throws, which we swallow.
+ * Load the native Rust (napi) engine, or `null` if it can't be loaded (then the caller
+ * falls back to the WASM / JS engine). Two locations are tried in order:
+ *  - the published `svelte-shaker-engine-scan-native` package (an
+ *    `optionalDependency` — installed only when a prebuilt binary exists for this
+ *    platform); this is the layout an npm consumer gets.
+ *  - `../engine-scan-native/index.cjs` — the in-repo package, used from source in
+ *    this package's own tests / dev (where the npm package isn't a dependency).
+ * Either loader resolves the platform `.node`; a missing binary throws (swallowed).
+ * A resolved-but-API-incompatible module (an older publish) is rejected so a version
+ * skew degrades to a fallback engine, never a crash.
  */
 export function tryLoadNativeEngine(): NativeEngine | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('../engine-scan-native/index.cjs') as Partial<NativeEngine>;
-    if (typeof mod.ShakeSession === 'function') return { ShakeSession: mod.ShakeSession };
-  } catch {
-    // No native binary for this platform/install.
+  for (const spec of ['svelte-shaker-engine-scan-native', '../engine-scan-native/index.cjs']) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require(spec) as Partial<NativeEngine>;
+      if (hasSessionApi(mod)) return { ShakeSession: mod.ShakeSession };
+    } catch {
+      // Not resolvable here — try the next location.
+    }
   }
   return null;
 }
