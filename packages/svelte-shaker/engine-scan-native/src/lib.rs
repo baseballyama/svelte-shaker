@@ -120,10 +120,12 @@ pub fn parse_files(input_json: String) -> napi::Result<String> {
         .map_err(|e| napi::Error::from_reason(format!("parse_files: serialize: {e}")))
 }
 
-/// M4 slice (a) parity pin (temporary): return every `<Component>` the IR walk finds
-/// in `ast_json` (svelte JSON) as `[{ name, start, end }]`, so a JS test can assert it
-/// equals the engine's current Value-walk over the same AST across the fixture corpus.
-/// Removed once `build_model` consumes the IR and the wasm-shake corpus is the pin.
+/// Focused IR parity pin: return every `<Component>` the IR walk finds in `ast_json`
+/// (svelte JSON) as `[{ name, start, end }]`, so `tests/ir-parity.test.ts` can assert it
+/// equals the engine's Value walk over the same AST across the fixture corpus. A
+/// native-only shim — it exercises the Value→IR converter + IR walk directly without
+/// touching the committed wasm. The full-shake corpus tests cover the IR end-to-end;
+/// this keeps a direct, minimal check on the template `<Component>` read specifically.
 #[napi]
 pub fn ir_component_tags(ast_json: String) -> napi::Result<String> {
     let ast: Value = serde_json::from_str(&ast_json)

@@ -1,11 +1,16 @@
-//! The engine's internal template IR (docs/RUST-MIGRATION.md M4).
+//! The engine's internal template IR (docs/RUST-MIGRATION.md M4; docs/ARCHITECTURE.md §6.4).
 //!
-//! One in-memory representation the whole engine consumes, fed by two frontends:
-//! `Value → IR` (the wasm path — JSON produced by the JS-side parse) and, behind a
-//! non-wasm feature, `rsvelte Root → IR` (the native path). The engine has a single
-//! implementation over this IR; only the two converters differ. This replaces the
-//! per-round walking + cloning of a `serde_json::Value` template (the dominant shake
-//! cost) with a typed, owned tree.
+//! A typed, owned view of the template STRUCTURE, built by [`from_value`] from the
+//! svelte/compiler-shaped JSON `Value` the engine consumes. BOTH engines build it the
+//! same way — there is no direct `rsvelte Root → IR` converter: the wasm path gets the
+//! `Value` from the JS-side parse, and the native path serializes rsvelte's `Root` to
+//! the SAME `Value` form (`engine-scan-native/src/session.rs` `root_to_ast_value`) and
+//! then calls `from_value`. (The M4 plan to add a rsvelte→IR frontend and move the
+//! whole engine onto the IR was not pursued; only the template-structure walks below
+//! use it.) It replaces the per-fixpoint-round re-walking of the `Value` template in
+//! the dead-branch scan (`compute_dead_spans_ir`) and `build_model`'s binder / escape
+//! reads with a fast typed walk; the rest of the engine (shake_body, css, eval) still
+//! reads the `Value`.
 //!
 //! Scope (deliberately bounded — see the M4 inventory): the IR types the TEMPLATE
 //! structure — the part that is large and re-walked every fixpoint round. The two
@@ -165,13 +170,13 @@ pub struct IfBlock {
     pub test: Value,
     pub consequent: Fragment,
     pub alternate: Option<Fragment>,
-    /// TEMPORARY BRIDGE (removed in slice c): the raw `{#if}` node Value. slice (b)
-    /// makes the fixpoint FIND if-blocks via the fast typed walk, but the dead-branch
-    /// decision (`decide_chain`) is still the Value implementation — it collects the
-    /// `{:else if}` chain, reads arm spans, and returns the KEPT fragment Value that
-    /// `shake_body`'s `fold_if_blocks` re-emits. `decide_chain` and `fold_if_blocks`
-    /// share that Value output, so both are typed together in slice (c), at which point
-    /// this field (and `Root.ast`) go away.
+    /// The raw `{#if}` node Value — LOAD-BEARING, not a migration leftover. The typed
+    /// walk FINDs if-blocks fast (the per-round hot path), but the dead-branch DECISION
+    /// (`decide_chain`) stays on Value: it evaluates the embedded-JS `{#if}` test,
+    /// collects the `{:else if}` chain, reads arm spans, and returns the KEPT fragment
+    /// Value that `shake_body`'s `fold_if_blocks` re-emits. That is by design — the
+    /// hybrid IR types only the template STRUCTURE and keeps embedded JS as Value — so
+    /// `decide_chain` needs the node's Value form here.
     pub raw: Value,
 }
 
@@ -261,8 +266,10 @@ pub struct Root {
     pub instance: Value,
     /// The module `<script>` node Value (`ast.module`), or Null.
     pub module: Value,
-    /// The raw AST Value, retained during the migration so not-yet-ported phases can
-    /// still read it and the differential pin can compare. Removed in the final slice.
+    /// The whole component's raw AST Value (svelte/compiler JSON). Held because the
+    /// engine's Value-based phases read it directly — `shake_body`'s fold/strip passes,
+    /// `css.rs`, and the fold analysis all walk this `Value` (the IR types only the
+    /// template structure, §module docs). Not a migration leftover.
     pub ast: Value,
 }
 

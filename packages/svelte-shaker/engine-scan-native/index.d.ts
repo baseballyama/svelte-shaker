@@ -38,10 +38,10 @@ export declare function scanProfile(inputJson: string): string;
 export declare function parseFiles(inputJson: string): string;
 
 /**
- * M4 slice (a) parity pin (TEMPORARY): `[{ name, start, end }]` for every
- * `<Component>` the internal template IR walk finds in `astJson` (svelte JSON) — so a
- * test can assert it equals the engine's current Value walk. Removed once build_model
- * consumes the IR.
+ * Focused IR parity pin: `[{ name, start, end }]` for every `<Component>` the internal
+ * template IR walk finds in `astJson` (svelte JSON) — so `ir-parity.test.ts` can assert
+ * it equals the engine's Value walk. A native-only shim that exercises the IR walk
+ * directly without touching the committed wasm.
  */
 export declare function irComponentTags(astJson: string): string;
 

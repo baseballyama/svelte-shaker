@@ -149,9 +149,10 @@ pub(crate) fn build_plan(
 pub(crate) struct Model {
     pub(crate) id: String,
     pub(crate) ast: Value,
-    /// The typed template IR (M4). The fixpoint's dead-branch scan reads it instead
-    /// of re-walking `ast` each round. During the migration it coexists with `ast`;
-    /// both `ast` and this become just the IR once slices b/c finish (slice c).
+    /// The typed template IR (M4), built once from `ast`. The fixpoint's dead-branch
+    /// scan reads it instead of re-walking `ast` each round. It coexists with `ast` by
+    /// design: the IR types only the template STRUCTURE, while the engine's other phases
+    /// (shake_body, css, fold) read `ast` as `Value` (see `ir.rs` module docs).
     pub(crate) ir: crate::ir::Root,
     pub(crate) imports: HashMap<String, String>, // tag name -> childId (all edge kinds), for call-site edits
     pub(crate) props_info: Option<PropsInfo>,
