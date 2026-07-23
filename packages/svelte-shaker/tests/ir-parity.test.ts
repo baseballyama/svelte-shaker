@@ -1,33 +1,20 @@
-import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parseSvelte } from '../src/parse';
+import { loadNativeAddon } from './native-addon';
 
-// M4 slice (a) parity pin: the engine's internal template IR must find EXACTLY the
-// same `<Component>` call sites (tag name + span) as the current Value walk that
-// backs `child_calls` — the load-bearing template read of `build_model`. This
+// IR parity pin: the engine's internal template IR must find EXACTLY the same
+// `<Component>` call sites (tag name + span) as the Value walk that backs `child_calls`
+// — the load-bearing template read of `build_model` (which consumes the IR). This
 // exercises the Value→IR converter + the IR walk end-to-end on every golden fixture
-// (plus example/e2e), before `build_model` is switched to consume the IR. A napi
-// shim (`irComponentTags`) runs the IR walk so the committed wasm is untouched.
-const require = createRequire(import.meta.url);
-const addonPath = fileURLToPath(new URL('../engine-scan-native/index.cjs', import.meta.url));
-const dylib = fileURLToPath(
-  new URL(
-    `../engine-scan-native/target/debug/${
-      process.platform === 'darwin'
-        ? 'libsvelte_shaker_engine_scan_native.dylib'
-        : process.platform === 'win32'
-          ? 'svelte_shaker_engine_scan_native.dll'
-          : 'libsvelte_shaker_engine_scan_native.so'
-    }`,
-    import.meta.url,
-  ),
-);
+// (plus example/e2e) as a focused check; the full-shake corpus tests cover the IR
+// through the whole shake. A napi shim (`irComponentTags`) runs the IR walk so the
+// committed wasm is untouched.
 interface Addon {
   irComponentTags: (astJson: string) => string;
 }
-const addon: Addon | null = existsSync(dylib) ? (require(addonPath) as Addon) : null;
+const addon = loadNativeAddon<Addon>();
 
 type Tag = { name: string; start: number; end: number };
 

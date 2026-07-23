@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import { existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve as resolvePath } from 'node:path';
@@ -14,6 +13,7 @@ import {
 } from '../src/index';
 import { revertCascade } from '../src/revert-cascade';
 import { fsReadFile, fsResolve } from '../src/scan';
+import { loadNativeAddon } from './native-addon';
 
 /** An in-memory `.svelte` graph, so a test can pin exact sources (incl. an invalid one). */
 function memGraph(files: Record<string, string>): { resolve: Resolve; readFile: ReadFile } {
@@ -43,21 +43,6 @@ function memGraph(files: Record<string, string>): { resolve: Resolve; readFile: 
 // feeding both engines the same compiler makes the result byte-identical. This is
 // the M2 gate: over the whole fixture/example/e2e corpus, native `files` AND its
 // variant set must equal the TS engine, with monomorphization on and off.
-const require = createRequire(import.meta.url);
-const addonPath = fileURLToPath(new URL('../engine-scan-native/index.cjs', import.meta.url));
-const dylib = fileURLToPath(
-  new URL(
-    `../engine-scan-native/target/debug/${
-      process.platform === 'darwin'
-        ? 'libsvelte_shaker_engine_scan_native.dylib'
-        : process.platform === 'win32'
-          ? 'svelte_shaker_engine_scan_native.dll'
-          : 'libsvelte_shaker_engine_scan_native.so'
-    }`,
-    import.meta.url,
-  ),
-);
-
 interface ShakeSession {
   parse: (inputJson: string) => string;
   parseMore: (inputJson: string) => string;
@@ -66,7 +51,7 @@ interface ShakeSession {
 interface NativeAddon {
   ShakeSession: new () => ShakeSession;
 }
-const addon: NativeAddon | null = existsSync(dylib) ? (require(addonPath) as NativeAddon) : null;
+const addon = loadNativeAddon<NativeAddon>();
 
 const MONO_ON: MonomorphizeOptions = { enabled: true, maxVariants: 8, minSavings: 0 };
 const MONO_OFF: MonomorphizeOptions = { enabled: false, maxVariants: 8, minSavings: 0 };

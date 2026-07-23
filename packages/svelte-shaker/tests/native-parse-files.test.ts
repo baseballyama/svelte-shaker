@@ -1,9 +1,9 @@
-import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { importSources, memberComponentTags, renderedComponentTagNames } from '../src/analyze';
 import { parseSvelte } from '../src/parse';
+import { loadNativeAddon } from './native-addon';
 
 // The native `parseFiles` (chatty-protocol Round 1) must return the SAME per-file
 // facts the JS crawl extracts — import specifiers + rendered component tag names —
@@ -11,20 +11,6 @@ import { parseSvelte } from '../src/parse';
 // This differential pins native rsvelte extraction to the JS `importSources` /
 // `renderedComponentTagNames` / `memberComponentTags`, byte-for-byte, over inline
 // edge cases AND the whole fixture/example/e2e corpus.
-const require = createRequire(import.meta.url);
-const addonPath = fileURLToPath(new URL('../engine-scan-native/index.cjs', import.meta.url));
-const dylib = fileURLToPath(
-  new URL(
-    `../engine-scan-native/target/debug/${
-      process.platform === 'darwin'
-        ? 'libsvelte_shaker_engine_scan_native.dylib'
-        : process.platform === 'win32'
-          ? 'svelte_shaker_engine_scan_native.dll'
-          : 'libsvelte_shaker_engine_scan_native.so'
-    }`,
-    import.meta.url,
-  ),
-);
 
 interface Import {
   local: string;
@@ -40,11 +26,9 @@ interface Facts {
 interface NativeScanner {
   parseFiles: (inputJson: string) => string;
 }
-// Skip (do not fail) when the addon has not been built — same guard as the other
-// native tests; CI builds it first.
-const addon: NativeScanner | null = existsSync(dylib)
-  ? (require(addonPath) as NativeScanner)
-  : null;
+// Skip (do not fail) when the addon can't be loaded — CI builds it first, so a skip
+// there would be a bug (see `loadNativeAddon`).
+const addon = loadNativeAddon<NativeScanner>();
 
 /** The JS reference: parse with svelte/compiler, then run the three extractors. */
 function jsFacts(id: string, code: string): Facts {
