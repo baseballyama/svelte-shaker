@@ -24,7 +24,7 @@ use napi_derive::napi;
 use rsvelte_core::ast::arena::with_serialize_arena;
 use rsvelte_core::{parse, ParseOptions};
 use serde_json::{json, Map, Value};
-use svelte_shaker_engine::{shake_program_with_mono_value, MonoOptions};
+use svelte_shaker_engine::{shake_program_with_mono_value, MonoOptions, ShakeFile};
 
 use crate::parse_files::facts_from_root;
 use crate::utf16::{convert_positions_to_utf16, Utf8ToUtf16};
@@ -139,20 +139,18 @@ impl ShakeSession {
             .map_err(|e| napi::Error::from_reason(format!("session.shake: config: {e}")))?;
         let opts = MonoOptions::from_value(config.get("mono").unwrap_or(&Value::Null));
 
-        // Build the engine program input ONCE (the ASTs are cloned a single time);
-        // only `forceBail` changes between cascade passes.
-        let files_arr: Vec<Value> = self
-            .files
-            .iter()
-            .map(|f| json!({ "id": f.id, "ast": f.ast, "code": f.code }))
-            .collect();
+        // Borrow the retained ASTs into the core's `files` slice — no full-program AST
+        // clone at the boundary; the engine clones each AST once, into its Model. The
+        // engine config (`edges`/`entries`/`escaped`/`forceBail`) carries no ASTs, so
+        // rebuilding it per cascade pass is cheap.
+        let files: Vec<ShakeFile> =
+            self.files.iter().map(|f| ShakeFile { id: &f.id, ast: &f.ast, code: &f.code }).collect();
         let take_array = |key: &str| config.get(key).cloned().unwrap_or_else(|| Value::Array(vec![]));
-        let mut input_map = Map::new();
-        input_map.insert("files".into(), Value::Array(files_arr));
-        input_map.insert("edges".into(), take_array("edges"));
-        input_map.insert("entries".into(), take_array("entries"));
-        input_map.insert("escaped".into(), take_array("escaped"));
-        let mut input = Value::Object(input_map);
+        let mut cfg_map = Map::new();
+        cfg_map.insert("edges".into(), take_array("edges"));
+        cfg_map.insert("entries".into(), take_array("entries"));
+        cfg_map.insert("escaped".into(), take_array("escaped"));
+        let mut engine_config = Value::Object(cfg_map);
 
         // Seed force-bail with any ids the JS outer validation already rejected.
         let mut force_bail: Vec<String> = config
@@ -175,26 +173,26 @@ impl ShakeSession {
             own_size.call(payload).ok()
         };
 
-        // One shake pass at the given force-bail set. `input` (holding the retained
-        // ASTs) is mutated in place — only `forceBail` changes between passes — and
-        // handed to the core by reference, so the ASTs are never re-cloned.
-        let emit = |input: &mut Value,
+        // One shake pass at the given force-bail set. Only `forceBail` changes between
+        // passes; the borrowed `files` and the rest of the config are reused as-is, so
+        // the ASTs are never re-cloned at the boundary.
+        let emit = |engine_config: &mut Value,
                     force_bail: &[String],
                     cb: &mut dyn FnMut(&str, &str) -> Option<f64>|
          -> Value {
-            input["forceBail"] =
+            engine_config["forceBail"] =
                 Value::Array(force_bail.iter().map(|s| Value::String(s.clone())).collect());
-            shake_program_with_mono_value(input, &opts, cb)
+            shake_program_with_mono_value(&files, engine_config, &opts, cb)
         };
 
-        let mut last = emit(&mut input, &force_bail, &mut own_size_cb);
+        let mut last = emit(&mut engine_config, &force_bail, &mut own_size_cb);
         for _ in 0..MAX_REVERT_ITERATIONS {
             let failed = self.unparseable(&last);
             if failed.is_empty() {
                 return self.finish(last);
             }
             force_bail.extend(failed);
-            last = emit(&mut input, &force_bail, &mut own_size_cb);
+            last = emit(&mut engine_config, &force_bail, &mut own_size_cb);
         }
         if self.unparseable(&last).is_empty() {
             return self.finish(last);

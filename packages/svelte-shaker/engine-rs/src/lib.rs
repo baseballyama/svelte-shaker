@@ -298,51 +298,76 @@ pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &
             .ok()
             .and_then(|v| v.as_f64())
     };
-    shake_program_with_mono_value(&input, &opts, &mut js_size).to_string()
+    // Borrow the parsed ASTs out of `input` (which owns them for this call) into the
+    // core's `files` slice; `input` itself carries the edges/entries/… config.
+    let null = Value::Null;
+    let files: Vec<ShakeFile> = input
+        .get("files")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|f| {
+            Some(ShakeFile {
+                id: f.get("id").and_then(Value::as_str)?,
+                ast: f.get("ast").unwrap_or(&null),
+                code: f.get("code").and_then(Value::as_str).unwrap_or(""),
+            })
+        })
+        .collect();
+    shake_program_with_mono_value(&files, &input, &opts, &mut js_size).to_string()
 }
 
-/// Environment-free core of [`shake_program_with_mono`]: the program input is
-/// already parsed and `own_size(id, source)` is a raw per-module size callback (the
+/// One file handed to the shake core: its id, its parsed AST, and its source, all
+/// BORROWED. Passing the retained ASTs by reference (rather than folding them into a
+/// cloned input `Value`) is what lets the native session skip a full-program AST
+/// clone at the boundary — the engine clones each AST exactly once, into its `Model`.
+pub struct ShakeFile<'a> {
+    pub id: &'a str,
+    pub ast: &'a Value,
+    pub code: &'a str,
+}
+
+/// Environment-free core of [`shake_program_with_mono`]: `files` are the parsed ASTs
+/// (borrowed), `config` is `{ edges, entries?, escaped?, forceBail? }` (everything
+/// but the ASTs), and `own_size(id, source)` is a raw per-module size callback (the
 /// wasm boundary adapts the JS function; the native engine passes a napi callback).
 /// No js_sys here, so the Shell boundary holds. Returns `{ files, variants }`.
 pub fn shake_program_with_mono_value(
-    input: &Value,
+    files: &[ShakeFile],
+    config: &Value,
     opts: &MonoOptions,
     own_size: &mut dyn FnMut(&str, &str) -> Option<f64>,
 ) -> Value {
     let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
-    for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+    for e in config.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(from) = e.get("from").and_then(Value::as_str) {
             edges_by_from.entry(from.to_string()).or_default().push(e.clone());
         }
     }
-    let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
     // Per-file build is pure and independent; the resulting Vec order is preserved by
     // par_iter().collect(), so mono variant ids (keyed by first caller in program
-    // order) stay identical. PROTOTYPE: measuring the parallel speedup.
-    let build_one = |f: &Value| -> Option<(Model, String, String)> {
-        let id = f.get("id").and_then(Value::as_str)?.to_string();
-        let ast = f.get("ast").cloned().unwrap_or(Value::Null);
-        let code = f.get("code").and_then(Value::as_str).unwrap_or("").to_string();
+    // order) stay identical. On native we fan it across cores; wasm stays sequential.
+    let build_one = |f: &ShakeFile| -> (Model, String, String) {
         let empty = Vec::new();
-        let edges = edges_by_from.get(&id).unwrap_or(&empty);
-        let model = build_model_full(&id, ast, edges);
-        Some((model, id, code))
+        let edges = edges_by_from.get(f.id).unwrap_or(&empty);
+        let model = build_model_full(f.id, f.ast.clone(), edges);
+        (model, f.id.to_string(), f.code.to_string())
     };
     #[cfg(not(target_arch = "wasm32"))]
     let built: Vec<(Model, String, String)> = {
         use rayon::prelude::*;
-        files.par_iter().filter_map(build_one).collect()
+        files.par_iter().map(build_one).collect()
     };
     #[cfg(target_arch = "wasm32")]
-    let built: Vec<(Model, String, String)> = files.iter().filter_map(build_one).collect();
+    let built: Vec<(Model, String, String)> = files.iter().map(build_one).collect();
     let mut models: Vec<Model> = Vec::with_capacity(built.len());
     let mut code_by_id: HashMap<String, String> = HashMap::with_capacity(built.len());
     for (model, id, code) in built {
         code_by_id.insert(id, code);
         models.push(model);
     }
-    let entries: Vec<String> = input
+    let entries: Vec<String> = config
         .get("entries")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
@@ -350,7 +375,7 @@ pub fn shake_program_with_mono_value(
 
     // Revert cascade (see `shake_program`): force-bail components the JS caller
     // flagged as unparseable so they are neither folded nor specialized.
-    let force_bail: HashSet<String> = input
+    let force_bail: HashSet<String> = config
         .get("forceBail")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
@@ -371,7 +396,7 @@ pub fn shake_program_with_mono_value(
         }
     }
     // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2).
-    stamp_module_escapes(&mut models, input);
+    stamp_module_escapes(&mut models, config);
 
     let plans = run_fixpoint(&models);
 
