@@ -316,18 +316,31 @@ pub fn shake_program_with_mono_value(
             edges_by_from.entry(from.to_string()).or_default().push(e.clone());
         }
     }
-    let mut models: Vec<Model> = Vec::new();
-    let mut code_by_id: HashMap<String, String> = HashMap::new();
-    for f in input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
-        let id = match f.get("id").and_then(Value::as_str) {
-            Some(i) => i.to_string(),
-            None => continue,
-        };
+    let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    // Per-file build is pure and independent; the resulting Vec order is preserved by
+    // par_iter().collect(), so mono variant ids (keyed by first caller in program
+    // order) stay identical. PROTOTYPE: measuring the parallel speedup.
+    let build_one = |f: &Value| -> Option<(Model, String, String)> {
+        let id = f.get("id").and_then(Value::as_str)?.to_string();
         let ast = f.get("ast").cloned().unwrap_or(Value::Null);
-        code_by_id.insert(id.clone(), f.get("code").and_then(Value::as_str).unwrap_or("").to_string());
+        let code = f.get("code").and_then(Value::as_str).unwrap_or("").to_string();
         let empty = Vec::new();
         let edges = edges_by_from.get(&id).unwrap_or(&empty);
-        models.push(build_model_full(&id, ast, edges));
+        let model = build_model_full(&id, ast, edges);
+        Some((model, id, code))
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let built: Vec<(Model, String, String)> = {
+        use rayon::prelude::*;
+        files.par_iter().filter_map(build_one).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let built: Vec<(Model, String, String)> = files.iter().filter_map(build_one).collect();
+    let mut models: Vec<Model> = Vec::with_capacity(built.len());
+    let mut code_by_id: HashMap<String, String> = HashMap::with_capacity(built.len());
+    for (model, id, code) in built {
+        code_by_id.insert(id, code);
+        models.push(model);
     }
     let entries: Vec<String> = input
         .get("entries")

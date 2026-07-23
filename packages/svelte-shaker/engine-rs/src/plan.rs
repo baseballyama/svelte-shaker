@@ -315,28 +315,46 @@ pub(crate) fn merge_script_consts(script_consts: &HashMap<String, Literal>, fold
 
 pub(crate) fn build_plans(models: &[Model], usage: &HashMap<String, Vec<CallSite>>, prev: &Plans) -> Plans {
     let owner_envs = owner_envs_for(models, prev);
-    models.iter().map(|m| (m.id.clone(), build_plan(m, usage.get(&m.id), &owner_envs))).collect()
+    let build = |m: &Model| (m.id.clone(), build_plan(m, usage.get(&m.id), &owner_envs));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        models.par_iter().map(build).collect()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        models.iter().map(build).collect()
+    }
 }
 
 pub(crate) fn dead_spans_for_plans(models: &[Model], plans: &Plans) -> HashMap<String, Vec<Span>> {
-    let mut out = HashMap::new();
-    for model in models {
+    // Dead spans are derived from the TEMPLATE, which references props by their
+    // LOCAL binding name — so the fold/narrow envs (keyed by external prop name)
+    // must be remapped here.  This MUST match the transform's own remap exactly,
+    // or the fixpoint and the edit could disagree on what folds (unsound).
+    let one = |model: &Model| -> Option<(String, Vec<Span>)> {
         let plan = &plans[&model.id];
         if plan.bail {
-            continue;
+            return None;
         }
-        // Dead spans are derived from the TEMPLATE, which references props by their
-        // LOCAL binding name — so the fold/narrow envs (keyed by external prop name)
-        // must be remapped here.  This MUST match the transform's own remap exactly,
-        // or the fixpoint and the edit could disagree on what folds (unsound).
         let env = remap_to_local_names(&plan.const_env(), model);
         let set_env = remap_to_local_names(&plan.set_env(), model);
         let spans = compute_dead_spans_ir(&model.ir.fragment, &env, &set_env);
-        if !spans.is_empty() {
-            out.insert(model.id.clone(), spans);
+        if spans.is_empty() {
+            None
+        } else {
+            Some((model.id.clone(), spans))
         }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        models.par_iter().filter_map(one).collect()
     }
-    out
+    #[cfg(target_arch = "wasm32")]
+    {
+        models.iter().filter_map(one).collect()
+    }
 }
 
 pub(crate) fn plans_equal(a: &Plans, b: &Plans) -> bool {
