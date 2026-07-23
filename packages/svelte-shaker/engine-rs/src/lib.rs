@@ -420,16 +420,26 @@ pub fn shake_program_with_mono_value(
     // Base phases (identical to shake_program): reverse-removal collection, fold
     // bodies + drop props, strip dropped-prop attributes, then the reverse removals.
     let models_by_id: HashMap<&str, &Model> = models.iter().map(|m| (m.id.as_str(), m)).collect();
-    let mut reverse: HashMap<String, Vec<ReverseOp>> = HashMap::new();
-    for model in &models {
+    // Per-owner and independent (reads the shared models/plans, writes an id-keyed map);
+    // fanned across cores on native.
+    let reverse_one = |model: &Model| -> Option<(String, Vec<ReverseOp>)> {
         if plans[&model.id].bail {
-            continue;
+            return None;
         }
         let ops = collect_reverse_removals(model, &models_by_id, &plans);
-        if !ops.is_empty() {
-            reverse.insert(model.id.clone(), ops);
+        if ops.is_empty() {
+            None
+        } else {
+            Some((model.id.clone(), ops))
         }
-    }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut reverse: HashMap<String, Vec<ReverseOp>> = {
+        use rayon::prelude::*;
+        models.par_iter().filter_map(reverse_one).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let mut reverse: HashMap<String, Vec<ReverseOp>> = models.iter().filter_map(reverse_one).collect();
 
     // Unread declared props (docs §PR7): same wiring as `shake_program`.
     let unread = collect_unread(&models, &models_by_id, &plans);
@@ -439,10 +449,11 @@ pub fn shake_program_with_mono_value(
     let unread_drops = unread.drops;
     let empty_drops: HashSet<String> = HashSet::new();
 
-    let mut edits_map: HashMap<String, MagicEdit> = HashMap::new();
-    let mut dropped: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::new();
-    for model in &models {
+    // Phase 1 folds each body into its OWN MagicEdit and returns its dropped props —
+    // per-model and independent (all shared reads are immutable), so fan it across
+    // cores on native. The outputs are id-keyed maps, so assembling them afterwards is
+    // order-independent.
+    let phase1_one = |model: &Model| -> (String, HashSet<String>, Vec<Span>, MagicEdit) {
         let plan = &plans[&model.id];
         let mut edits = MagicEdit::new(code_by_id.get(&model.id).map(String::as_str).unwrap_or(""));
         let mut dead: Vec<Span> = Vec::new();
@@ -453,9 +464,22 @@ pub fn shake_program_with_mono_value(
         } else {
             shake_body(model, &plan.const_env(), &plan.set_env(), &mut edits, &mut dead, &seed, extra)
         };
-        dropped.insert(model.id.clone(), d);
-        edited_spans.insert(model.id.clone(), dead);
-        edits_map.insert(model.id.clone(), edits);
+        (model.id.clone(), d, dead, edits)
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let phase1: Vec<(String, HashSet<String>, Vec<Span>, MagicEdit)> = {
+        use rayon::prelude::*;
+        models.par_iter().map(phase1_one).collect()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let phase1: Vec<(String, HashSet<String>, Vec<Span>, MagicEdit)> = models.iter().map(phase1_one).collect();
+    let mut edits_map: HashMap<String, MagicEdit> = HashMap::with_capacity(phase1.len());
+    let mut dropped: HashMap<String, HashSet<String>> = HashMap::with_capacity(phase1.len());
+    let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::with_capacity(phase1.len());
+    for (id, d, dead, edits) in phase1 {
+        dropped.insert(id.clone(), d);
+        edited_spans.insert(id.clone(), dead);
+        edits_map.insert(id, edits);
     }
     for model in &models {
         let plan = &plans[&model.id];
