@@ -209,9 +209,15 @@ impl ShakeSession {
             .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
 
-        // The size callback runs synchronously on the JS thread (the shake — unlike
-        // the parse — does no rayon fan-out, so the callback is never off-thread). A
-        // JS throw or a null return both map to `None`, matching the wasm `ownSize`.
+        // The size callback MUST run on the JS thread. The shake DOES fan out across
+        // rayon workers (build_model, the fixpoint passes, phase 1, …), but `own_size`
+        // is called only from the SEQUENTIAL monomorphization gate (`net_win`), never
+        // inside a parallel closure. This isn't just convention: a napi `Function` is
+        // `!Send`, so it cannot be captured into a `rayon` closure — the compiler
+        // rejects any attempt to call it off-thread. If monomorphization is ever
+        // parallelized, that guard breaks and a call from a non-JS thread would crash,
+        // so `own_size` would have to be marshaled to the JS thread first. A JS throw or
+        // a null return both map to `None`, matching the wasm `ownSize`.
         // (id, source) is passed as ONE JSON `[id, source]` payload the JS wrapper
         // splits: napi 3.11's multi-arg `Function::call` mis-marshals a 2-tuple (once
         // the JS callback reads the args, the return read is corrupted and yields
