@@ -107,30 +107,74 @@ impl Literal {
     }
 }
 
+/// JS `ToNumber(String)` (ECMA-262 §7.1.4.1) for the cases the constant
+/// evaluator needs. Trimmed empty is `0`; the non-decimal integer literals
+/// (`0x`/`0o`/`0b`, no sign permitted) are folded per the `StringNumericLiteral`
+/// grammar; everything else defers to the decimal parser. Unparseable input is
+/// `NaN`, never a panic.
 fn js_string_to_number(s: &str) -> f64 {
     let t = s.trim();
     if t.is_empty() {
         return 0.0;
     }
-    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        return i64::from_str_radix(hex, 16).map(|v| v as f64).unwrap_or(f64::NAN);
+    // `StringNumericLiteral` allows binary/octal/hex integer literals with no
+    // sign. `i64::from_str_radix` used to (a) reject `0b`/`0o` entirely and (b)
+    // overflow to NaN past `i64::MAX`, both diverging from JS — e.g.
+    // `Number("0b101") === 5` and `Number("0xffffffffffffffff") === 18446744073709552000`.
+    for (lower, upper, radix) in [("0x", "0X", 16u32), ("0o", "0O", 8), ("0b", "0B", 2)] {
+        if let Some(digits) = t.strip_prefix(lower).or_else(|| t.strip_prefix(upper)) {
+            return parse_radix_to_f64(digits, radix);
+        }
     }
     match t {
         "Infinity" | "+Infinity" => f64::INFINITY,
         "-Infinity" => f64::NEG_INFINITY,
+        // Rust's f64 parser accepts `inf`/`infinity`/`nan` (case-insensitive),
+        // which JS's ToNumber rejects. A decimal `StringNumericLiteral` uses only
+        // digits, `.`, sign, and the exponent marker `e`/`E`, so any other ASCII
+        // letter means NaN — guard before parsing so those words don't leak in.
+        _ if t.bytes().any(|b| b.is_ascii_alphabetic() && b != b'e' && b != b'E') => f64::NAN,
         _ => t.parse::<f64>().unwrap_or(f64::NAN),
     }
 }
 
+/// Fold the digits of a non-decimal integer literal into an f64, matching JS's
+/// `MV(StringNumericLiteral)` rounded to nearest. A u128 accumulation gives a
+/// single correctly-rounded cast for every literal that fits in 128 bits (well
+/// past the 64-bit range where `i64` overflowed); only pathologically long
+/// literals fall back to the running f64 fold. Any non-digit -> `NaN`, and empty
+/// digits (a bare `0x`) -> `NaN`, both as JS does.
+fn parse_radix_to_f64(digits: &str, radix: u32) -> f64 {
+    if digits.is_empty() {
+        return f64::NAN;
+    }
+    let mut int_acc: Option<u128> = Some(0);
+    let mut float_acc = 0.0f64;
+    for c in digits.chars() {
+        let Some(d) = c.to_digit(radix) else {
+            return f64::NAN;
+        };
+        float_acc = float_acc * f64::from(radix) + f64::from(d);
+        int_acc = int_acc.and_then(|v| v.checked_mul(u128::from(radix))?.checked_add(u128::from(d)));
+    }
+    match int_acc {
+        Some(v) => v as f64,
+        None => float_acc,
+    }
+}
+
+/// JS `Number::toString` (radix 10, ECMA-262 §7.1.12.1). Deferred to `ryu-js`:
+/// `format!("{n}")` diverges from the spec at the fixed/exponential cutoffs
+/// (`1e21 -> "1e+21"`, `1e-7 -> "1e-7"`), which — because this feeds both the
+/// folded source text and the CSS/text DOM string — would let a shaken component
+/// render differently than the unshaken one.
 fn js_number_to_string(n: f64) -> String {
     if n.is_nan() {
         "NaN".to_string()
     } else if n.is_infinite() {
         if n > 0.0 { "Infinity".to_string() } else { "-Infinity".to_string() }
     } else {
-        // Rust's `{}` for f64 already prints integers without a trailing `.0`
-        // (e.g. `2.0 -> "2"`), matching JS Number#toString for the common cases.
-        format!("{n}")
+        ryu_js::Buffer::new().format_finite(n).to_string()
     }
 }
 
@@ -561,6 +605,57 @@ mod tests {
         // `(variant as const) === 'danger'` narrows like the bare `variant`.
         let e = bin("===", ts_as(ident("variant")), lit_str("danger"));
         assert_eq!(bool_of(evaluate_with_sets(&e, &Env::new(), &variant)), Some(false));
+    }
+
+    #[test]
+    fn number_to_string_matches_js_tostring() {
+        // Each RHS is exactly what Node prints for `String(n)` / `n.toString()`,
+        // including the fixed<->exponential cutoffs `format!("{n}")` gets wrong.
+        let cases: &[(f64, &str)] = &[
+            (1e21, "1e+21"),
+            (1e20, "100000000000000000000"),
+            (1e-6, "0.000001"),
+            (1e-7, "1e-7"),
+            (0.0000001, "1e-7"),
+            (123456789012345680000.0, "123456789012345680000"),
+            (100.0, "100"),
+            (2.0, "2"),
+            (2.5, "2.5"),
+            (-0.0, "0"),
+            (0.1 + 0.2, "0.30000000000000004"),
+            (-1.5e300, "-1.5e+300"),
+            (1234567890123456789012345.0, "1.2345678901234568e+24"),
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "Infinity"),
+            (f64::NEG_INFINITY, "-Infinity"),
+        ];
+        for &(n, want) in cases {
+            assert_eq!(js_number_to_string(n), want, "js_number_to_string({n})");
+            // The DOM-string path (CSS possible-class, text interpolation) must
+            // agree with the source-text path for numbers.
+            assert_eq!(Literal::Num(n).to_dom_string(), want);
+        }
+    }
+
+    #[test]
+    fn string_to_number_matches_js_tonumber() {
+        // RHS values are what Node's `Number(s)` returns.
+        assert_eq!(js_string_to_number("0b101"), 5.0);
+        assert_eq!(js_string_to_number("0B11"), 3.0);
+        assert_eq!(js_string_to_number("0o17"), 15.0);
+        assert_eq!(js_string_to_number("0O17"), 15.0);
+        assert_eq!(js_string_to_number("0x1f"), 31.0);
+        // Past i64::MAX: i64::from_str_radix would have overflowed to NaN.
+        assert_eq!(js_string_to_number("0xffffffffffffffff"), 18446744073709552000.0);
+        assert_eq!(js_string_to_number("0x10000000000000000"), 18446744073709552000.0);
+        assert_eq!(js_string_to_number(" 0x1f "), 31.0);
+        assert_eq!(js_string_to_number(""), 0.0);
+        assert_eq!(js_string_to_number("1e3"), 1000.0);
+        assert_eq!(js_string_to_number("-Infinity"), f64::NEG_INFINITY);
+        // NaN cases (Rust's lenient parser / bad literals must not leak through).
+        for bad in ["0x", "0b", "-0x1", "+0x1", "1_000", "inf", "infinity", "nan", "0xg"] {
+            assert!(js_string_to_number(bad).is_nan(), "Number({bad:?}) should be NaN");
+        }
     }
 
     #[test]

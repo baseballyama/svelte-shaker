@@ -133,6 +133,50 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     expect(native.files).toEqual(ts.files);
     expect(native.variants).toEqual({});
   });
+
+  it('folds exponent-boundary numbers with JS `Number#toString`, matching the TS engine', async () => {
+    // The native engine turns a folded number back into source via the same
+    // `js_number_to_string` as the WASM engine; `format!("{n}")` diverged from JS
+    // at the fixed<->exponential cutoffs (`1e21`, `1e-7`). Kept in-memory (not a
+    // fixture) so the fresh, locally-built addon is exercised rather than the
+    // separately-published binary, which lags this engine change.
+    const { resolve, readFile } = memGraph({
+      '/App.svelte': `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub big={1e21} small={1e-7} plain={1e20} />`,
+      '/Sub.svelte':
+        `<script>\n  let { big, small, plain } = $props();\n</script>\n` +
+        `<p>{big.toLocaleString()} {small.toLocaleString()} {plain.toLocaleString()}</p>`,
+    });
+
+    const tsResult = await svelteShakerWithMono(
+      '/App.svelte',
+      resolve,
+      readFile,
+      MONO_OFF,
+      variantSpecifier,
+    );
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const session = new addon!.ShakeSession();
+    session.parse(JSON.stringify({ files: input.files.map((f) => ({ id: f.id, code: f.code })) }));
+    const config = {
+      edges: input.edges,
+      entries: input.entries,
+      escaped: input.escaped ?? [],
+      mono: MONO_OFF,
+    };
+    let native!: Shaken;
+    const files = revertCascade(input.files, (forceBail) => {
+      native = JSON.parse(
+        session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] }), ownSizePayload),
+      ) as Shaken;
+      return native.files;
+    });
+
+    expect(files).toEqual(tsResult.files);
+    expect(files['/Sub.svelte']).toContain('(1e+21)');
+    expect(files['/Sub.svelte']).toContain('(1e-7)');
+    expect(files['/Sub.svelte']).not.toContain('1000000000000000000000'); // the old `format!` bug
+  });
 });
 
 describe.skipIf(!addon)('native ShakeSession revert / parse-error semantics', () => {
