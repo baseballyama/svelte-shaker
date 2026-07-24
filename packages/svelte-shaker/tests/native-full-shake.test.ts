@@ -167,7 +167,7 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     let native!: Shaken;
     const files = revertCascade(input.files, (forceBail) => {
       native = JSON.parse(
-        session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] }), ownSizePayload),
+        session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] })),
       ) as Shaken;
       return native.files;
     });
