@@ -765,17 +765,18 @@ function isTextFreeParent(element: string | null): boolean {
 /** Does the component opt into preserved whitespace via `<svelte:options>`? */
 function hasPreserveWhitespaceOption(fragment: AnyNode): boolean {
   let preserve = false;
-  walk<null>(fragment, null, {
-    SvelteOptions(node) {
-      for (const a of node.attributes ?? []) {
-        if (a.type !== 'Attribute' || a.name !== 'preserveWhitespace') continue;
-        // `preserveWhitespace` (boolean shorthand) or `={true}` opts in; only an
-        // explicit `={false}` opts out.  Any other (invalid) form is treated as
-        // opting in, since svelte:options requires a static value.
-        preserve = !isExplicitFalse(a.value);
-      }
-    },
-  });
+  // `<svelte:options>` is only legal at the top level of the component, so scan the
+  // fragment's direct children rather than walking the whole tree.
+  for (const node of fragment.nodes ?? []) {
+    if (node.type !== 'SvelteOptions') continue;
+    for (const a of node.attributes ?? []) {
+      if (a.type !== 'Attribute' || a.name !== 'preserveWhitespace') continue;
+      // `preserveWhitespace` (boolean shorthand) or `={true}` opts in; only an
+      // explicit `={false}` opts out.  Any other (invalid) form is treated as
+      // opting in, since svelte:options requires a static value.
+      preserve = !isExplicitFalse(a.value);
+    }
+  }
   return preserve;
 }
 

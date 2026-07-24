@@ -9,6 +9,7 @@ import type { ComponentId } from './ir.js';
 import type { Resolve, ReadFile } from './analyze.js';
 import { compileDevOnly, type DevOnlyFilter } from './dev-only.js';
 import { excludeNothing, type ExcludeFilter } from './exclude.js';
+import { walkDir } from './walk-dir.js';
 
 // The escape-scan machinery lives in `./escape-scan.js` (internal); only the single
 // entry helper is part of the public `svelte-shaker/node` surface.
@@ -53,29 +54,6 @@ export function collectSvelteFiles(
   exclude: ExcludeFilter = excludeNothing,
 ): ComponentId[] {
   const out: ComponentId[] = [];
-  collectSvelteFilesInto(dir, devOnly, exclude, out);
+  walkDir(dir, exclude, (name, full) => name.endsWith('.svelte') && !devOnly(full), out);
   return out;
-}
-
-/** Recursive worker: the compiled `devOnly` / `exclude` predicates are threaded, never recompiled. */
-function collectSvelteFilesInto(
-  dir: string,
-  devOnly: DevOnlyFilter,
-  exclude: ExcludeFilter,
-  out: ComponentId[],
-): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (exclude(full)) continue; // a build-output tree — pruned from the scan
-      collectSvelteFilesInto(full, devOnly, exclude, out);
-    } else if (entry.isFile() && entry.name.endsWith('.svelte') && !devOnly(full)) out.push(full);
-  }
 }

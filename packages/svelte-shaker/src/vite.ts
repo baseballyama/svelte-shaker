@@ -11,7 +11,7 @@ import {
   type EscapeScanResult,
 } from './escape-scan.js';
 import { compileDevOnly } from './dev-only.js';
-import { compileExclude, type ExcludeFilter } from './exclude.js';
+import { compileExclude, excludeNothing, type ExcludeFilter } from './exclude.js';
 
 // Re-export so a user can extend the default dev-only list: `devOnly: [...DEFAULT_DEV_ONLY, '…']`.
 export { DEFAULT_DEV_ONLY } from './dev-only.js';
@@ -414,8 +414,10 @@ export function shaker(options: ShakerOptions = {}): Plugin {
   let root = process.cwd();
   // Build-output dirs pruned from both scans (docs §8.1.1): the resolved
   // `build.outDir` (when safe) plus the user's `exclude`.  Compiled in
-  // `configResolved`, once `build.outDir` is known.
-  let exclude: ExcludeFilter = compileExclude(root, options.exclude);
+  // `configResolved` (which always runs before `buildStart`/`configureServer`, the
+  // only readers), once `build.outDir` and the real `root` are known — so this
+  // initializer is a placeholder that is always overwritten before use.
+  let exclude: ExcludeFilter = excludeNothing;
   // Vite's logger, captured in `configResolved`; until then fall back to console
   // so the size report still surfaces if `buildStart` somehow runs first.
   let log: (msg: string) => void = (msg) => console.info(`[svelte-shaker] ${msg}`);
@@ -550,7 +552,11 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       const isDevOnly = compileDevOnly(root, options.devOnly);
       // The engine's entry components, collected from the entry DIRS: `entries`
       // names the roots to crawl from, these are the `.svelte` files under them.
-      const entryComponents = dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly, exclude));
+      // Dedup: nested entries (`['src', 'src/lib']`) would otherwise collect a
+      // `.svelte` under both.  A Set keeps each file once, in first-seen order.
+      const entryComponents = [
+        ...new Set(dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly, exclude))),
+      ];
       const read = (id: ComponentId) => fs.readFileSync(id, 'utf-8');
       const underDirs = (file: string): boolean =>
         dirs.some((d) => file === d || file.startsWith(d + path.sep));
@@ -668,7 +674,11 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       const isDevOnly = compileDevOnly(root, options.devOnly);
       // The engine's entry components, collected from the entry DIRS: `entries`
       // names the roots to crawl from, these are the `.svelte` files under them.
-      const entryComponents = dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly, exclude));
+      // Dedup: nested entries (`['src', 'src/lib']`) would otherwise collect a
+      // `.svelte` under both.  A Set keeps each file once, in first-seen order.
+      const entryComponents = [
+        ...new Set(dirs.flatMap((d) => collectSvelteFiles(d, isDevOnly, exclude))),
+      ];
       if (entryComponents.length === 0) {
         shaken = {};
         variantSources = new Map();
