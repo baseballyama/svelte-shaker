@@ -115,6 +115,7 @@
   }
   nav a {
     color: var(--ink-dim);
+    white-space: nowrap;
   }
   nav a:hover {
     color: var(--ink);
@@ -122,6 +123,17 @@
   }
   nav .gh {
     color: var(--accent);
+  }
+
+  /* Below this, the four nav links + theme button no longer fit on one line
+     at their default gap — let them wrap as whole words instead of relying
+     on the browser to break mid-word. */
+  @media (max-width: 480px) {
+    nav {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px 14px;
+    }
   }
 
   .site-foot {

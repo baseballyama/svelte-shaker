@@ -51,6 +51,9 @@
 </script>
 
 <div class="code-edit" class:ready>
+  <!-- `html` only ever comes from `highlightSvelte`, which feeds shiki plain
+       source text and gets back HTML with that text already entity-escaped —
+       never raw user-supplied markup, so `{@html}` here is safe. -->
   <div class="overlay" bind:this={overlay} aria-hidden="true">{@html html}</div>
   <textarea
     bind:this={ta}
