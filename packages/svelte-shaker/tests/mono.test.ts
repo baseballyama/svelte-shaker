@@ -418,7 +418,6 @@ async function bundle(pre: unknown[]): Promise<string> {
     // branch is gone and size the shipped bundle; vite 8 no longer forces
     // NODE_ENV=production inside build(), so under vitest (NODE_ENV=test) Svelte
     // would otherwise compile in dev mode and inflate the output.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plugins: [...pre, svelte({ compilerOptions: { runes: true, dev: false } })] as any,
   })) as Rollup.RollupOutput;
   return result.output.map((c) => ('code' in c ? c.code : '')).join('\n');

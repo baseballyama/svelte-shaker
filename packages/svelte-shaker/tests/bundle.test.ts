@@ -68,7 +68,6 @@ async function buildBytes(root: string, pre: unknown[]): Promise<number> {
     // no longer forces NODE_ENV=production inside build(), so under vitest
     // (NODE_ENV=test) Svelte would otherwise compile in dev mode and inflate the
     // byte counts this suite is the ground truth for.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plugins: [...pre, svelte({ compilerOptions: { runes: true, dev: false } })] as any,
   })) as Rollup.RollupOutput;
   return totalBytes(out);
@@ -235,7 +234,6 @@ async function buildCode(root: string, pre: unknown[]): Promise<string> {
       rollupOptions: { input: join(root, 'main.ts') },
     },
     // Force production compilation — see the note in `buildBytes`.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plugins: [...pre, svelte({ compilerOptions: { runes: true, dev: false } })] as any,
   })) as Rollup.RollupOutput;
   return out.output.map((c) => ('code' in c ? c.code : '')).join('\n');

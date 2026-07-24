@@ -34,8 +34,8 @@ export type ResolveSync = (source: string, importer: ComponentId) => ComponentId
 export type ReadFileSync = (id: ComponentId) => string;
 
 /**
- * The set of input names a child component can ever OBSERVE at runtime (docs
- * §PR4 reverse analysis).  In runes there is no `$$props`/`$$restProps`, so a
+ * The set of input names a child component can ever OBSERVE at runtime (reverse
+ * analysis).  In runes there is no `$$props`/`$$restProps`, so a
  * component reads an input only through its `$props()` destructure:
  *  - `{ kind: 'names' }` — a clean, rest-free ObjectPattern `$props()` (or no
  *    `$props()` at all, giving the empty set): the child can observe EXACTLY
@@ -91,15 +91,16 @@ export interface FileModel {
   propsPattern?: AnyNode | undefined;
   hasRestProp: boolean;
   /**
-   * The inputs this component can observe (docs §PR4).  Drives the reverse pass:
+   * The inputs this component can observe.  Drives the reverse pass:
    * a call site of THIS component may drop an input outside {@link
    * ReachableInputs}.  Computed syntactically from the `$props()` shape.
    */
   reachableInputs: ReachableInputs;
   /**
-   * EXTERNAL names of props this component DECLARES but never READS (docs §PR7):
-   * destructured out of a clean `$props()` yet with zero value-position reference
-   * to their local binding anywhere in the instance script or template.  Such a
+   * EXTERNAL names of props this component DECLARES but never READS (unread
+   * declared props): destructured out of a clean `$props()` yet with zero
+   * value-position reference to their local binding anywhere in the instance
+   * script or template.  Such a
    * prop is invisible to the child, so its call-site attribute is dead and — when
    * safe — the declaration can be dropped.  Source-only (independent of the call
    * sites), so it is computed ONCE here, never inside the fixpoint; the transform
@@ -1099,7 +1100,7 @@ function buildModelFromInput(
 }
 
 /**
- * EXTERNAL names of props DECLARED but never READ (docs §PR7).  A declared prop
+ * EXTERNAL names of props DECLARED but never READ.  A declared prop
  * `p` (local binding `l`) is unread when NO value-position reference to `l`
  * survives anywhere in the instance script or template — reusing the escape
  * scan's own `isValueUse` + `isTypeOnlyNode` prune, so TS type positions (erased
@@ -1949,7 +1950,6 @@ function literalAttrValue(value: unknown): { known: true; value: Literal } | { k
   return { known: true, value: text };
 }
 
-/** Decide what to fold for one component from its global usage. */
 /**
  * Whether a declared prop name is unsafe to fold/narrow/drop because it is also
  * bound elsewhere: shadowed by a local `let`/`function` or a template binder
@@ -1967,6 +1967,7 @@ export function isFoldBlockedName(model: FileModel, name: string): boolean {
   );
 }
 
+/** Decide what to fold for one component from its global usage. */
 function buildPlan(model: FileModel, u: Usage | undefined, ownerEnv: OwnerEnv): ComponentPlan {
   const plan = emptyPlan(model.id);
 
@@ -2380,8 +2381,8 @@ function parseModuleBody(code: string, id: ComponentId): AnyNode[] | null {
 }
 
 /**
- * Derive the child's {@link ReachableInputs} from its `$props()` shape (docs
- * §PR4).  `props`/`hasRestProp` come from {@link findPropsDeclaration}, which
+ * Derive the child's {@link ReachableInputs} from its `$props()` shape.
+ * `props`/`hasRestProp` come from {@link findPropsDeclaration}, which
  * matches only a clean top-level ObjectPattern `$props()`; we additionally count
  * ALL `$props()` calls so that a second call, a non-ObjectPattern binding, or a
  * call outside a declarator falls back to ALL (any input might be observed).

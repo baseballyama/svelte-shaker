@@ -33,7 +33,6 @@ let ready = false;
 /** Require `@rsvelte/compiler` and initialize its wasm once. Throws if the
  * package can't be resolved or the wasm can't be instantiated. */
 function loadCompiler(): RsvelteCompiler {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const compiler = require('@rsvelte/compiler') as RsvelteCompiler;
   if (!ready) {
     // A `wasm-pack --target web` module: init once with the wasm bytes (Node has

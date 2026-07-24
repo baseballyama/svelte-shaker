@@ -86,7 +86,6 @@ export function hasSessionApi(mod: Partial<NativeEngine>): mod is NativeEngine {
 export function tryLoadNativeEngine(): NativeEngine | null {
   for (const spec of ['svelte-shaker-engine-scan-native', '../engine-scan-native/index.cjs']) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(spec) as Partial<NativeEngine>;
       if (hasSessionApi(mod))
         return { ShakeSession: mod.ShakeSession, engineApiVersion: mod.engineApiVersion };

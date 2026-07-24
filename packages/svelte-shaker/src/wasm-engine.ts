@@ -40,7 +40,6 @@ interface WasmEngine {
 export function tryLoadWasmEngine(): WasmEngine | null {
   for (const spec of ['./svelte_shaker_engine.js', '../engine-rs/pkg/svelte_shaker_engine.js']) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(spec) as Partial<WasmEngine>;
       if (
         typeof mod.shake_program === 'function' &&

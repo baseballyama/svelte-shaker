@@ -116,7 +116,6 @@ async function bundle(root: string, pre: unknown[]): Promise<string> {
       target: 'esnext',
       rollupOptions: { input: join(root, 'main.ts') },
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plugins: [...pre, svelte({ compilerOptions: { runes: true } })] as any,
   })) as Rollup.RollupOutput;
   return result.output.map((c) => ('code' in c ? c.code : '')).join('\n');
@@ -184,7 +183,6 @@ async function bundleWithOutDir(
       target: 'esnext',
       rollupOptions: { input: join(root, 'main.ts') },
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plugins: [shaker({ entries: ['.'] }), svelte({ compilerOptions: { runes: true } })] as any,
   })) as Rollup.RollupOutput;
   const code = result.output.map((c) => ('code' in c ? c.code : '')).join('\n');

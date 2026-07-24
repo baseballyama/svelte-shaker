@@ -58,7 +58,7 @@ function runBasePhases(
   /** Regions phase 1 edited per component — phase 2 must not edit inside them. */
   const editedSpans = new Map<ComponentId, Span[]>();
 
-  // Phase 0 — reverse analysis (docs §PR4): per owner, the call-site attributes /
+  // Phase 0 — reverse analysis: per owner, the call-site attributes /
   // `{#snippet}` blocks / body content supplying an input the child can never
   // read.  Computed BEFORE phase 1 so its regions can be handed to phase 1 as
   // protected — phase 1 makes no fold/substitution edit inside a span phase 2.5
@@ -71,7 +71,7 @@ function runBasePhases(
     if (ops.length > 0) reverse.set(model.id, ops);
   }
 
-  // Phase 0b — unread declared props (docs §PR7): the call-site attributes (a)
+  // Phase 0b — unread declared props: the call-site attributes (a)
   // and declaration drops (b) for props a child DECLARES but never reads.  Its
   // attribute removals share the reverse pass's protect/apply machinery (they
   // never target the same attribute — declared vs undeclared), so merge them per
@@ -117,7 +117,7 @@ function runBasePhases(
       ownerEnv,
     );
   }
-  // Phase 2.5 — reverse (docs §PR4) + unread declared (docs §PR7): delete the
+  // Phase 2.5 — reverse + unread declared: delete the
   // inputs the child can never read / never declares.  Runs after phase 1/2 and
   // skips any call site folded away in phase 1.  These removals never target the
   // same attribute phase 2 does: phase 2 removes attributes for props the child
@@ -130,7 +130,7 @@ function runBasePhases(
 }
 
 /**
- * Merge the reverse (§PR4) and unread-declared (§PR7) removals per owner into one
+ * Merge the reverse and unread-declared removals per owner into one
  * list, so they share the protect / apply passes.  The two never target the same
  * attribute (one names an UNDECLARED prop, the other a DECLARED-but-unread one),
  * and {@link applyReverseRemovals} already sorts + de-nests the merged list.
@@ -312,9 +312,9 @@ function transformBody(
   model: FileModel,
   plan: ComponentPlan,
   s: MagicString,
-  /** Reverse/unread-removal regions (docs §PR4/§PR7) the body pass must not edit inside. */
+  /** Reverse/unread-removal regions the body pass must not edit inside. */
   seedDead?: Span[],
-  /** EXTERNAL prop names to also drop from the `$props()` signature (unread, §PR7). */
+  /** EXTERNAL prop names to also drop from the `$props()` signature (unread declared props). */
   extraDrops?: Set<string>,
 ): { dropped: Set<string>; dead: Span[] } {
   const dead: Span[] = [];
@@ -335,7 +335,7 @@ function transformBody(
  * Slim one component's body against the given fold (`env`) and narrow (`setEnv`)
  * environments, editing `s` in place, and return the set of props that left the
  * `$props()` signature.  Factored out of {@link transformBody} so monomorphization
- * monomorphization (see `mono.ts`) can re-run the SAME pipeline with an augmented
+ * (see `mono.ts`) can re-run the SAME pipeline with an augmented
  * `env` (a call site's extra literal props) on a fresh MagicString — guaranteeing
  * a specialized residual is produced by exactly the audited unused-prop fold / constant fold / value-set narrowing machinery,
  * never a parallel code path.  `cssPlan` carries the value sets CSS removal reads
@@ -357,7 +357,7 @@ export function shakeBody(
    */
   outDead?: Span[],
   /**
-   * Reverse-removal regions (docs §PR4) to treat as already-dead: the fold and
+   * Reverse-removal regions to treat as already-dead: the fold and
    * substitution passes below skip anything inside them, so no edit lands in a
    * span the reverse phase then deletes whole (which would overlap in
    * MagicString).  Only the base transform passes it; mono edits fresh strings.
@@ -365,7 +365,7 @@ export function shakeBody(
   seedDead?: Span[],
   /**
    * EXTERNAL prop names to also drop from the `$props()` signature — the unread
-   * declared props (docs §PR7).  Folded into the SAME {@link dropProps} call as
+   * declared props.  Folded into the SAME {@link dropProps} call as
    * the const-fold drops so consecutive dropped properties tile cleanly, but NOT
    * returned: unlike a folded prop, an unread prop's call-site attributes are
    * removed by the reverse/unread phase (spread-aware), not phase 2.
@@ -377,14 +377,14 @@ export function shakeBody(
   // reference substitution, folded-prop drops) have no purchase and we skip them.
   // But CSS removal does NOT depend on the fold env: when the reverse/unread pass
   // still deletes a region (`seedDead`), an unbounded class source hiding in it
-  // (`class={dynamic}`, `{...rest}`) vanishes with the region (docs §PR8), so the
+  // (`class={dynamic}`, `{...rest}`) vanishes with the region (docs §3), so the
   // component can become bounded and a now-unreachable rule removable.  Run
   // {@link shakeCss} with `seedDead` as the pruned set and EMPTY envs — sound
   // because the removal condition (a bounded possible-class set + rules whose class
   // is outside it + no `:global`) never reads the fold env; an empty env only makes
   // more interpolations unbounded, i.e. strictly more conservative.
   if (env.size === 0 && setEnv.size === 0) {
-    // …but an unread-prop drop (docs §PR7) still edits the signature, even with
+    // …but an unread-prop drop still edits the signature, even with
     // nothing to fold.  Apply it and return no folded props (phase 2 does nothing).
     if (extraDrops && extraDrops.size > 0) dropProps(model, extraDrops, s);
     // With no reverse/unread region there is nothing to prune, so keep the original
@@ -414,7 +414,7 @@ export function shakeBody(
   // `pruned` is the subset of dead regions that genuinely VANISH from the output
   // (deleted `{#if}` arms + reverse/unread removals), as opposed to `dead`, which
   // also holds collapse spans whose kept arm is re-emitted verbatim.  Only the
-  // vanished regions may be excluded from the CSS possible-class set (§PR8): a
+  // vanished regions may be excluded from the CSS possible-class set (§3): a
   // node inside a re-emitted kept arm still renders, so its class still counts.
   const pruned: Span[] = seedDead ? [...seedDead] : [];
   foldIfBlocks(model.ast.fragment, localEnv, localSetEnv, code, s, dead, pruned);
@@ -439,7 +439,7 @@ export function shakeBody(
   }
 
   // (3) Drop the folded (constFold) props from the `$props()` signature, together
-  // with any unread declared props (docs §PR7) — one {@link dropProps} call so
+  // with any unread declared props — one {@link dropProps} call so
   // consecutive dropped properties tile cleanly.  Narrowed props stay (still
   // used/dynamic).  Only the folded set is RETURNED: phase 2 removes call-site
   // attributes for folded props, while unread props are handled spread-aware by
@@ -494,7 +494,7 @@ function foldIfBlocks(
   code: string,
   s: MagicString,
   dead: Span[],
-  /** Accumulates only the genuinely-removed spans, for CSS pruning (§PR8). */
+  /** Accumulates only the genuinely-removed spans, for CSS pruning (§3). */
   pruned: Span[],
 ): void {
   walk<{ parent: AnyNode | null; preserve: boolean; element: string | null }>(
@@ -557,7 +557,7 @@ function applyChain(
   code: string,
   s: MagicString,
   dead: Span[],
-  /** Genuinely-removed spans for CSS pruning (§PR8). */
+  /** Genuinely-removed spans for CSS pruning (§3). */
   pruned: Span[],
   ctx: ChainContext,
 ): void {

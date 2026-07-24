@@ -159,7 +159,7 @@ pub(crate) fn template_bindings(ast: &Value) -> (Vec<String>, Vec<String>, Vec<S
     (shadowed, debug, written)
 }
 
-/// IR-consuming `template_bindings` (M4 slice a). The instance-script pass stays a
+/// IR-consuming `template_bindings`. The instance-script pass stays a
 /// Value walk (JS analysis is out of the IR's scope). The TEMPLATE pass walks the
 /// typed IR for the template binders / `{@debug}`, and delegates every embedded
 /// expression Value to the same `collect_written` / `add_pattern_names`, so writes
@@ -779,7 +779,7 @@ fn expression_escapes(
     });
 }
 
-/// IR-consuming `escaped_components` (M4 slice a). The TEMPLATE half walks the typed
+/// IR-consuming `escaped_components`. The TEMPLATE half walks the typed
 /// IR and runs `expression_escapes` on every embedded expression Value (block/tag
 /// expressions + attribute values), so the escaping Identifiers — which only ever
 /// live in embedded JS — are found through the Value delegation (the fallback

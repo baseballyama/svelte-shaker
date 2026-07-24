@@ -5,12 +5,10 @@
 //! same way — there is no direct `rsvelte Root → IR` converter: the wasm path gets the
 //! `Value` from the JS-side parse, and the native path serializes rsvelte's `Root` to
 //! the SAME `Value` form (`engine-scan-native/src/session.rs` `root_to_ast_value`) and
-//! then calls `from_value`. (The M4 plan to add a rsvelte→IR frontend and move the
-//! whole engine onto the IR was not pursued; only the template-structure walks below
-//! use it.) It replaces the per-fixpoint-round re-walking of the `Value` template in
-//! the dead-branch scan (`compute_dead_spans_ir`) and `build_model`'s binder / escape
-//! reads with a fast typed walk; the rest of the engine (shake_body, css, eval) still
-//! reads the `Value`.
+//! then calls `from_value`. It replaces the per-fixpoint-round re-walking of the
+//! `Value` template in the dead-branch scan (`compute_dead_spans_ir`) and
+//! `build_model`'s binder / escape reads with a fast typed walk; the rest of the
+//! engine (shake_body, css, eval) still reads the `Value`.
 //!
 //! Scope (deliberately bounded — see the M4 inventory): the IR types the TEMPLATE
 //! structure — the part that is large and re-walked every fixpoint round. The two

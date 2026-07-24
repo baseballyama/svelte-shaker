@@ -722,12 +722,6 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       // the gate specializes nothing — sound (never bloat), just unoptimized.
       const loadOwnSize = (): OwnSize => tryLoadRsvelteOwnSize() ?? (() => null);
 
-      // Decide the engine.  The native Rust engine now implements every pass
-      // INCLUDING monomorphization (it calls back to JS only for the compiled-size
-      // proxy), so it
-      // is the default: `'auto'` uses it whenever it can be loaded and falls back
-      // to JS otherwise, `'rust'` forces it (throwing if it can't load), `'js'`
-      // forces the JS engine.  Both engines produce byte-identical output.
       // Decide the engine. The native (napi) Rust engine parses with rsvelte IN
       // PROCESS and keeps the ASTs Rust-side, so no whole-program AST crosses a
       // boundary — it is the fastest and has no size ceiling. The WASM engine is the
@@ -798,7 +792,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       }
 
       if (wasm) {
-        // Native Rust engine — byte-identical to the JS engine, including
+        // WASM Rust engine — byte-identical to the JS engine, including
         // monomorphization.
         if (mono.enabled) {
           const result = await svelteShakerWasmWithMono(

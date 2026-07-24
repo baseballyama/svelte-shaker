@@ -39,7 +39,6 @@ async function startServer(dev: false | DevMode): Promise<ViteDevServer> {
     configFile: false,
     server: { middlewareMode: true, hmr: false, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plugins: [shaker({ entries: ['.'], dev }), svelte({ compilerOptions: { runes: true } })] as any,
   });
   return server;
@@ -74,7 +73,6 @@ describe('vite-plugin-svelte-shaker (dev server)', () => {
       configFile: false,
       server: { middlewareMode: true, hmr: false, watch: null },
       optimizeDeps: { noDiscovery: true, include: [] },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       plugins: [sh, svelte({ compilerOptions: { runes: true } })] as any,
     });
     const s = server;
@@ -96,7 +94,6 @@ describe('vite-plugin-svelte-shaker (dev server)', () => {
       read: async () => readFileSync(appPath, 'utf-8'),
       server: s,
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const widened = (await (sh as any).handleHotUpdate(ctx)) as Array<{ file?: string | null }>;
 
     // The widened HMR set must include Sub — the child whose output changed even
