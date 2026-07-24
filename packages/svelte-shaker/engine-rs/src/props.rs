@@ -312,6 +312,11 @@ pub(crate) fn synthesized_body_props(component: &Value) -> Vec<String> {
     names
 }
 
+/// The `(name, value, expr)` entries a statically-known object-literal spread
+/// contributes: `value` is `Some(lit)` for a literal (so it folds) or `None` for a
+/// non-literal value (key known, value dynamic) whose node is carried in `expr`.
+pub(crate) type SpreadEntries = Vec<(String, Option<Literal>, Value)>;
+
 /// The `[name, value, expr]` entries a spread contributes IF it is a
 /// statically-known object literal whose complete key set we can see. `None` =>
 /// an opaque spread (an identifier/call `{...rest}`, or an object literal carrying
@@ -320,7 +325,7 @@ pub(crate) fn synthesized_body_props(component: &Value) -> Vec<String> {
 /// non-literal value (key known, value dynamic) — in which case `expr` carries the
 /// value node so the fixpoint can retry it against the owner env. Mirrors
 /// `knownSpreadEntries` in analyze.ts.
-pub(crate) fn known_spread_entries(attr: &Value) -> Option<Vec<(String, Option<Literal>, Value)>> {
+pub(crate) fn known_spread_entries(attr: &Value) -> Option<SpreadEntries> {
     let obj = get(attr, "expression");
     if type_of(obj) != Some("ObjectExpression") {
         return None;
@@ -386,20 +391,27 @@ pub(crate) fn read_call_site(component: &Value, owner: Option<String>) -> CallSi
     let attrs = arr(component, "attributes");
     // Only spreads we cannot expand are opaque; a known object literal is expanded
     // into explicit writes below, so `after_last_spread` is measured against the
-    // last *unknown* spread (mirrors readCallSite).
+    // last *unknown* spread (mirrors readCallSite). Evaluating a spread clones every
+    // non-literal value node, so cache each spread's result on the first pass and
+    // reuse it below rather than evaluating it a second time.
+    let mut spread_entries: HashMap<usize, Option<SpreadEntries>> = HashMap::new();
     let mut last_spread: i64 = -1;
     for (i, a) in attrs.iter().enumerate() {
-        if type_of(a) == Some("SpreadAttribute") && known_spread_entries(a).is_none() {
-            last_spread = i as i64;
+        if type_of(a) == Some("SpreadAttribute") {
+            let entries = known_spread_entries(a);
+            if entries.is_none() {
+                last_spread = i as i64;
+            }
+            spread_entries.insert(i, entries);
         }
     }
     let mut explicit: HashMap<String, ExplicitProp> = HashMap::new();
-    for (i, attr) in attrs.iter().enumerate() {
-        let i = i as i64;
+    for (pos, attr) in attrs.iter().enumerate() {
+        let i = pos as i64;
         if type_of(attr) == Some("SpreadAttribute") {
             // A known object-literal spread expands to one explicit write per key;
             // an unknown spread is opaque (handled via had_spread/after_last_spread).
-            if let Some(entries) = known_spread_entries(attr) {
+            if let Some(Some(entries)) = spread_entries.remove(&pos) {
                 for (name, val, expr) in entries {
                     let prop = match val {
                         Some(v) => ExplicitProp {

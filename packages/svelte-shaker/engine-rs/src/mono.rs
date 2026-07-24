@@ -100,6 +100,40 @@ pub(crate) fn render_residual(child: &Model, plan: &ComponentPlan, code: &str, e
     edits.render()
 }
 
+/// A collision-free canonical key for a specialization shape, so two live sites that
+/// freeze the SAME props to the SAME literals render the child once instead of per
+/// site.  Order-independent (sorted by name) and length-prefixed / bit-tagged so no
+/// two distinct shapes can share a key: string segments carry their length, floats
+/// their exact bits (NaN / -0 stay distinct), and each literal kind its own tag.
+fn shape_key(shape: &[(String, Literal)]) -> String {
+    let mut sorted: Vec<&(String, Literal)> = shape.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut key = String::new();
+    for (name, lit) in sorted {
+        key.push_str(&name.len().to_string());
+        key.push(':');
+        key.push_str(name);
+        match lit {
+            Literal::Str(s) => {
+                key.push('s');
+                key.push_str(&s.len().to_string());
+                key.push(':');
+                key.push_str(s);
+            }
+            Literal::Num(n) => {
+                key.push('d');
+                key.push_str(&n.to_bits().to_string());
+                key.push(';');
+            }
+            Literal::Bool(true) => key.push('T'),
+            Literal::Bool(false) => key.push('F'),
+            Literal::Null => key.push('N'),
+            Literal::Undefined => key.push('U'),
+        }
+    }
+    key
+}
+
 /// The live child component ids a residual renders, WITHOUT re-parsing it: a
 /// `<Child/>` survives iff its node is not inside a dead `{#if}` span for this
 /// fold environment.  Equivalent to mono.ts `liveChildIds(residual)` (the
@@ -317,6 +351,11 @@ pub(crate) fn monomorphize(
     let mut child_order: Vec<String> = Vec::new();
     let mut live_sites: HashMap<String, Vec<MonoCandidate>> = HashMap::new();
     let mut ineligible: HashSet<String> = HashSet::new();
+    // A child's residual depends only on (child, plan, shape); child/plan are fixed
+    // per id, so memoize by (child_id, shape_key) — K identical-shape sites then
+    // render (a whole-source `shake_body`) once, not K times. Cache only, no behavior
+    // change: a miss recomputes the identical string.
+    let mut residual_cache: HashMap<String, HashMap<String, String>> = HashMap::new();
     for owner in models {
         let empty = Vec::new();
         let dead = dead_spans.get(&owner.id).unwrap_or(&empty);
@@ -342,12 +381,23 @@ pub(crate) fn monomorphize(
                 ineligible.insert(child_id.clone());
                 continue;
             }
-            let code = render_residual(
-                child,
-                child_plan,
-                code_by_id.get(child_id).map(String::as_str).unwrap_or(""),
-                &shape,
-            );
+            let key = shape_key(&shape);
+            let code = match residual_cache.get(child_id).and_then(|m| m.get(&key)) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let rendered = render_residual(
+                        child,
+                        child_plan,
+                        code_by_id.get(child_id).map(String::as_str).unwrap_or(""),
+                        &shape,
+                    );
+                    residual_cache
+                        .entry(child_id.clone())
+                        .or_default()
+                        .insert(key, rendered.clone());
+                    rendered
+                }
+            };
             if base_source.get(child_id).map(|b| b == &code).unwrap_or(false) {
                 ineligible.insert(child_id.clone());
                 continue;

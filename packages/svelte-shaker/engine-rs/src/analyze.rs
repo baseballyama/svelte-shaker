@@ -643,9 +643,9 @@ pub(crate) fn imported_locals(ast: &Value) -> HashSet<String> {
 /// outgoing edges.  Every edge kind (`default-svelte`, `barrel`, `namespace`) is
 /// attributable: its `local` is the exact tag a call site renders — a bare name
 /// (`Child`) or a dotted member (`ns.Child`) — so all of them feed the value sets.
-pub(crate) fn edge_imports(edges: &Value) -> HashMap<String, String> {
+pub(crate) fn edge_imports(edges: &[&Value]) -> HashMap<String, String> {
     let mut imports = HashMap::new();
-    for e in edges.as_array().map(Vec::as_slice).unwrap_or(&[]) {
+    for e in edges {
         if let (Some(l), Some(t)) = (
             e.get("local").and_then(Value::as_str),
             e.get("to").and_then(Value::as_str),
