@@ -5,6 +5,7 @@
     ":dependencyDashboard",
     ":semanticCommits",
     ":maintainLockFilesWeekly",
+    "helpers:pinGitHubActionDigests",
     "schedule:earlyMondays"
   ],
   "labels": ["dependencies"],

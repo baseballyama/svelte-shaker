@@ -53,11 +53,12 @@ jobs:
             target: x86_64-pc-windows-msvc
             napi: win32-x64
     runs-on: ${{ matrix.host }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: packages/svelte-shaker/engine-scan-native
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # cargo unconditionally updates a git dependency's submodules, and rsvelte
       # has private SSH ecosystem-test submodules (`submodules/{vize,corsa-bind}`)
@@ -115,7 +116,7 @@ jobs:
           echo "binary: $bin -> $out"
           cp "$bin" "$out"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: bindings-${{ matrix.target }}
           path: packages/svelte-shaker/engine-scan-native/*.node
@@ -128,14 +129,15 @@ jobs:
     permissions:
       contents: read
       id-token: write # OIDC for npm provenance + trusted publishing (no NPM_TOKEN)
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: packages/svelte-shaker/engine-scan-native
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Do NOT set `registry-url` — it writes an (empty) `_authToken` into .npmrc and
       # forces token auth, blocking OIDC.
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24.18.0
       - name: Ensure OIDC-capable npm
@@ -145,7 +147,7 @@ jobs:
 
       # Collect every platform's `.node` next to index.cjs (the loader picks the
       # matching one at require time) and publish the single bundled package.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: packages/svelte-shaker/engine-scan-native/artifacts
       - name: Gather binaries
