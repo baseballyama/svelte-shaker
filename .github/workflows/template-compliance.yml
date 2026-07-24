@@ -33,9 +33,10 @@ jobs:
   check-issue:
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check issue template compliance
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -160,9 +161,10 @@ jobs:
   check-pr:
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check PR template compliance
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const { owner, repo } = context.repo;

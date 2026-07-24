@@ -45,12 +45,13 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
 
       # Node 24: `changeset publish` shells out to `npm publish`, and OIDC
       # Trusted Publishers require npm CLI >= 11.5.1, which ships with Node 24.
@@ -60,7 +61,7 @@ jobs:
       # Do NOT set `registry-url` here — it would have setup-node write
       # `_authToken=${NODE_AUTH_TOKEN}` into .npmrc and force token auth,
       # blocking the OIDC code path.
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24.18.0
           cache: pnpm
@@ -77,7 +78,7 @@ jobs:
 
       - name: Create Release PR or publish to npm
         id: changesets
-        uses: changesets/action@v1
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         with:
           # `pnpm changeset version` consumes pending changesets and writes the
           # version bump + CHANGELOG. `pnpm release` runs `changeset publish`.
