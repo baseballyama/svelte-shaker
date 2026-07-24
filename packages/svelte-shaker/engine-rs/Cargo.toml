@@ -12,6 +12,12 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen = "0.2.126"
 js-sys = "0.3.103"
 serde_json = "1.0.150"
+# ECMAScript-compliant f64 -> string (Number::toString, ECMA-262 §7.1.12.1).
+# `format!("{n}")` diverges from JS at the fixed/exponential cutoffs (e.g. 1e21,
+# 1e-7), which would make a folded number render differently than the unshaken
+# component. ryu-js implements the spec algorithm; it is pure Rust and builds for
+# both the wasm and native targets. Same crate oxc/Boa use for this.
+ryu-js = "1.0.3"
 
 # Native callers (e.g. the engine-scan-native napi addon) fan out the
 # embarrassingly-parallel per-file model build across cores. wasm has no thread
