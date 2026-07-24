@@ -278,6 +278,22 @@ function stampModuleEscapes(
 }
 
 /**
+ * Union every component leaked as a value across the program (docs §4.1 escape) —
+ * e.g. `<svelte:component this={X}>` — and stamp {@link ESCAPE_REASON} on each, so
+ * `buildPlan` bails it and the fixpoint never folds it.  The single injection point
+ * both the whole-program shake ({@link analyzeInput}) and {@link findNeverPassedProps}
+ * share, so an escaped component's unobservable prop profile is bailed identically.
+ */
+function stampEscapes(models: Map<ComponentId, FileModel>): void {
+  const escaped = new Set<ComponentId>();
+  for (const model of models.values()) for (const id of model.escapedComponents) escaped.add(id);
+  for (const id of escaped) {
+    const model = models.get(id);
+    if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
+  }
+}
+
+/**
  * Crawl the component graph from `entries` and compute a plan per component,
  * iterating to a whole-program fixpoint (docs §2.1).
  *
@@ -313,15 +329,10 @@ export function analyzeInput(input: AnalyzeInput, parseCache?: ParseCache): Anal
 
   // Escape bail (docs §4.1): any component leaked as a value somewhere in the
   // program (e.g. `<svelte:component this={X}>`) has an unobservable prop
-  // profile, so it must be left completely untouched.  We union escapes across
-  // every file and stamp a bail reason on each escaped component's model BEFORE
-  // planning, so `buildPlan` bails it and the fixpoint never folds it.
-  const escaped = new Set<ComponentId>();
-  for (const model of models.values()) for (const id of model.escapedComponents) escaped.add(id);
-  for (const id of escaped) {
-    const model = models.get(id);
-    if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
-  }
+  // profile, so it must be left completely untouched.  Stamp every escaped
+  // component BEFORE planning, so `buildPlan` bails it and the fixpoint never
+  // folds it.
+  stampEscapes(models);
   // Components with consumers outside the `.svelte` graph (a call site in a
   // non-`.svelte` module or a user `preserve`, docs §4.2) join the same
   // whole-component escape bail.
@@ -891,12 +902,7 @@ export function findNeverPassedProps(input: AnalyzeInput): Map<ComponentId, Unpa
   const models = buildModels(input);
   // Stamp escape bails up front (same union as `analyzeInput`) so escaped
   // components are skipped below.
-  const escaped = new Set<ComponentId>();
-  for (const model of models.values()) for (const id of model.escapedComponents) escaped.add(id);
-  for (const id of escaped) {
-    const model = models.get(id);
-    if (model && !model.bailReasons.includes(ESCAPE_REASON)) model.bailReasons.push(ESCAPE_REASON);
-  }
+  stampEscapes(models);
   // Consumers outside the `.svelte` graph (non-`.svelte` module call sites or
   // `preserve`) escape too, so a prop they pass is never mis-reported as
   // never-passed (docs §4.2).
@@ -913,13 +919,18 @@ export function findNeverPassedProps(input: AnalyzeInput): Map<ComponentId, Unpa
     const sites = usage.get(model.id)?.sites ?? [];
     if (sites.length === 0) continue;
 
+    // Any spread at a live site could set any prop, so nothing here is provably
+    // never-passed — skip the whole component in one test.
+    if (sites.some((s) => s.hadSpread)) continue;
+    // With no spread, a prop is passed iff some site names it explicitly.  Build the
+    // union of explicitly-written names ONCE (O(props + sites)), not per-prop.
+    const explicitlyPassed = new Set<string>();
+    for (const site of sites) for (const name of site.explicit.keys()) explicitlyPassed.add(name);
+
     const unpassed: UnpassedProp[] = [];
     for (const decl of model.props) {
-      const maybePassed = sites.some((s) => s.explicit.has(decl.name) || s.hadSpread);
-      if (maybePassed) continue;
-      const prop = decl.property as AnyNode;
-      if (typeof prop.start !== 'number' || typeof prop.end !== 'number') continue;
-      unpassed.push({ name: decl.name, start: prop.start, end: prop.end });
+      if (explicitlyPassed.has(decl.name)) continue;
+      unpassed.push({ name: decl.name, start: decl.property.start, end: decl.property.end });
     }
     if (unpassed.length > 0) out.set(model.id, unpassed);
   }
@@ -2123,20 +2134,12 @@ export function* importSources(instance: AnyNode): Generator<ImportInfo> {
         yield {
           value,
           local,
-          imported: importedName(spec) ?? local,
+          // `import { Child as ChildB }` — `imported` is the source's export name,
+          // falling back to `local` for shorthand `import { X }`.
+          imported: specName(spec.imported) ?? local,
         };
     }
   }
-}
-
-/** The exported name an `ImportSpecifier` pulls in (`imported`, falling back to
- * `local` for shorthand `import { X }`). */
-function importedName(spec: AnyNode): string | undefined {
-  const imported = spec.imported;
-  if (imported?.type === 'Identifier' && imported.name) return imported.name;
-  // Some parsers expose a string-literal `imported` (`import { "x" as y }`).
-  if (imported?.type === 'Literal' && typeof imported.value === 'string') return imported.value;
-  return undefined;
 }
 
 /** The local/exported name strings of an Export/Import specifier. */
@@ -2362,7 +2365,7 @@ function followLocalImport(
       if (spec.type === 'ImportDefaultSpecifier') return { value, imported: 'default' };
       if (spec.type === 'ImportNamespaceSpecifier') return { value, imported: '*' };
       if (spec.type === 'ImportSpecifier')
-        return { value, imported: importedName(spec) ?? localName };
+        return { value, imported: specName(spec.imported) ?? localName };
     }
   }
   return null;
