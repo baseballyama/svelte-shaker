@@ -133,7 +133,7 @@ export interface ComponentPlan {
    */
   constFold: Map<string, Literal>;
   /**
-   * value-set narrowing value-set narrowing (docs §3): props whose reachable value set is a
+   * value-set narrowing (docs §3): props whose reachable value set is a
    * known set of >= 2 distinct literals (no `dynamic`/`top` contribution).  We
    * delete branches the prop can provably never reach (e.g. a `variant ===
    * 'danger'` arm when `variant ∈ {'primary','secondary'}`), but — unlike

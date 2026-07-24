@@ -16,7 +16,6 @@ import type { ComponentPlan, Literal, PropValueSet } from '../src/ir';
 // ----------------------------------------------------------------------
 
 const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-require-imports
 const wasm = require('../engine-rs/pkg/svelte_shaker_engine.js') as {
   analyze_program: (inputJson: string) => string;
 };

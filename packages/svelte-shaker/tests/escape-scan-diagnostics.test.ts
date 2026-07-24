@@ -208,7 +208,6 @@ async function bundleWith(warnings: string[], pre: unknown[]): Promise<void> {
       // broken.tsx just sits on disk for the FS scan to hit; main.ts is the entry.
       rollupOptions: { input: join(BASE, 'main.ts') },
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plugins: [...pre, svelte({ compilerOptions: { runes: true } })] as any,
   }).catch(() => {
     // A missing rollup input entry can still error; the warnings we assert on are

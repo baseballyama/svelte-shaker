@@ -16,9 +16,9 @@ mod ast;
 mod css;
 mod dead_code;
 mod eval;
-// docs/RUST-MIGRATION.md M4 — the engine's internal template IR (WIP: the phase ports
-// land in subsequent slices). `pub` so the native crate can drive the slice-(a) parity
-// pin (IR-walk vs Value-walk) through a napi shim without touching the committed wasm.
+// The engine's internal template IR (docs/ARCHITECTURE.md §6.5). `pub` so the native
+// crate can drive the IR-walk vs Value-walk parity pin through a napi shim without
+// touching the committed wasm.
 pub mod ir;
 mod mono;
 mod plan;

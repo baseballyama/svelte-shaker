@@ -4,7 +4,7 @@ import type { FileModel, PropDecl } from './analyze.js';
 import { isSideEffectFreeValue, attrOp, type ReverseOp } from './reverse.js';
 
 // ----------------------------------------------------------------------
-// Unread declared props (docs §PR7).  Where the reverse pass (§PR4) removes
+// Unread declared props.  Where the reverse pass removes
 // call-site inputs a child NEVER DECLARES, this removes inputs a child DECLARES
 // but never READS ({@link FileModel.unreadDeclaredProps}).  Two independent,
 // each-sound transforms:
@@ -24,7 +24,7 @@ import { isSideEffectFreeValue, attrOp, type ReverseOp } from './reverse.js';
 //       passes the prop (a)-removably.
 //
 // The removals share the reverse pass's protect / seedDead / editedSpans
-// machinery in the transform, so a §PR4 removal and a §PR7 removal never collide
+// machinery in the transform, so a reverse removal and an unread removal never collide
 // (one names a prop the child does not declare, the other one it does).
 // ----------------------------------------------------------------------
 
@@ -53,8 +53,8 @@ export function collectUnread(
   // const-fold / narrow machinery already owns (a folded prop is dropped and has
   // its attributes removed by the existing phases — handling it here too would
   // double-edit).  What remains is exactly the props with a `top`/`dynamic` value
-  // set, where §PR7 adds value the folder cannot: the child ignores them, so they
-  // go even though their value is not a single known constant.
+  // set, where the unread-declared pass adds value the folder cannot: the child
+  // ignores them, so they go even though their value is not a single known constant.
   const effective = new Map<ComponentId, Set<string>>();
   for (const [id, model] of models) {
     if (model.unreadDeclaredProps.size === 0) continue;

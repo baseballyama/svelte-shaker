@@ -24,7 +24,6 @@ import { fsReadFile, fsResolve } from '../src/scan';
 const require = createRequire(import.meta.url);
 // `wasm-pack --target nodejs` output: a CommonJS module that loads the wasm
 // synchronously, so it's a plain require with no init dance.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-require-imports
 const wasm = require('../engine-rs/pkg/svelte_shaker_engine.js') as {
   analyze_component: (astJson: string, edgesJson: string) => string;
 };

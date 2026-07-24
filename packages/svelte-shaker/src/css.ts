@@ -248,7 +248,7 @@ function isElementLike(type: string): boolean {
  * the possible set (so no selector in the list can match any element this
  * component can render).  Anything else is KEPT.  Returns the number removed.
  *
- * `dead` (§PR8) are the spans the transform deletes; class sources inside them
+ * `dead` (§3) are the spans the transform deletes; class sources inside them
  * never render and are excluded from the possible set (see {@link computePossibleClasses}).
  */
 export function shakeCss(

@@ -5,7 +5,7 @@ import type { FileModel } from './analyze.js';
 import { inSpans, type Span } from './dead.js';
 
 // ----------------------------------------------------------------------
-// Reverse analysis (docs §PR4): drop the call-site inputs a child component can
+// Reverse analysis: drop the call-site inputs a child component can
 // NEVER read.  Where the rest of the engine reasons call-site -> child (what
 // value does the child receive?), this reasons child -> call-site: an input the
 // child does not declare (and cannot capture via `...rest`) is invisible to it,
@@ -73,7 +73,7 @@ function collectSiteRemovals(
 ): void {
   const attrs = node.attributes ?? [];
   // A spread may set ANY prop — including `children` — so nothing at this site is
-  // provably unread (docs §PR4: spread があるサイトでは本体除去もしない).
+  // provably unread (spread があるサイトでは本体除去もしない).
   if (attrs.some((a) => a.type === 'SpreadAttribute')) return;
 
   // (a) Undeclared attributes whose value is side-effect-free.  `bind:` is a
@@ -109,7 +109,7 @@ function collectSiteRemovals(
 
 /**
  * A call-site attribute value is safe to delete only if evaluating it has no
- * observable side effect (docs §PR4).  Conservative allow-list: a boolean
+ * observable side effect.  Conservative allow-list: a boolean
  * shorthand, a static text value, or a single expression that is a literal or a
  * BARE identifier read (`x={foo}`, including `x={undefined}`).  Anything else — a
  * call, member access (a getter), template/logical/conditional expression, or a

@@ -271,7 +271,7 @@ pub(crate) fn compute_dead_spans(fragment: &Value, env: &Env, set_env: &SetEnv) 
     dead
 }
 
-/// IR-consuming `compute_dead_spans` (M4 slice b). The FIND — the per-fixpoint-round
+/// IR-consuming `compute_dead_spans`. The FIND — the per-fixpoint-round
 /// cost — runs over the typed IR (the fast walk that replaces the Value fragment
 /// re-walk); the per-`{#if}` `decide_chain` stays the Value implementation via the IR
 /// IfBlock's `raw` bridge. That split is deliberate and permanent: the hybrid IR types

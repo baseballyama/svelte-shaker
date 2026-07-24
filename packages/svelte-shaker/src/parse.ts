@@ -102,6 +102,9 @@ export interface Root extends AnyNode {
 }
 
 export function parseSvelte(code: string, filename: string): Root {
+  // svelte/compiler's own AST type doesn't line up with this project's looser
+  // `AnyNode`-based `Root` — the double cast is a boundary adapter between the
+  // two type systems, not an unsound escape.
   return parse(code, { modern: true, filename }) as unknown as Root;
 }
 
@@ -241,5 +244,8 @@ export type Visitors<S> = Record<string, (node: AnyNode, ctx: WalkCtx<S>) => voi
 
 /** `zimmerframe.walk`, narrowed to our loose node type. */
 export function walk<S>(root: AnyNode, state: S, visitors: Visitors<S>): void {
+  // zimmerframe's `walk` is generically typed against its own node shape, which
+  // this project's looser `AnyNode` doesn't satisfy — the double cast is a
+  // boundary adapter between the two type systems, not an unsound escape.
   (zfWalk as unknown as (r: AnyNode, s: S, v: Visitors<S>) => void)(root, state, visitors);
 }

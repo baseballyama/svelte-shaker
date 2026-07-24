@@ -2,7 +2,7 @@
 // Per-call-site monomorphization (docs/ARCHITECTURE.md §3 "monomorphization", §11, §13.2).
 //
 // OPT-IN, BAIL-SAFE, and — the property this module guarantees — NEVER BLOATING.
-// Where constant fold folds a prop only when it is the SAME constant across the whole app,
+// Where constant fold collapses a prop only when it is the SAME constant across the whole app,
 // and value-set narrowing narrows a multi-valued prop without folding it, monomorphization specializes a call
 // site: `<Btn variant="primary"/>` could get a private copy of `Btn` in which
 // `variant` is the constant `'primary'`, so every non-primary branch and CSS rule

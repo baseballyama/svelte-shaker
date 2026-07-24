@@ -8,7 +8,6 @@ import { parseSvelte } from '../src/parse';
 // `findNeverPassedProps` on the same svelte AST — logic-vs-logic, the foundation
 // for the native (napi) scan path.
 const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-require-imports
 const wasm = require('../engine-rs/pkg/svelte_shaker_engine.js') as {
   find_never_passed_props_json: (inputJson: string) => string;
 };
