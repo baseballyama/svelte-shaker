@@ -232,6 +232,34 @@ export function parseCached(
   return ast;
 }
 
+// ---- shared source-text helpers --------------------------------------
+
+/** True for the ASCII whitespace this engine skips over in source text. */
+export function isSpace(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+}
+
+/**
+ * Normalize an `Attribute`'s `value` into its parts.  Svelte gives an attribute
+ * value three shapes — `true` (boolean shorthand), a single node, or a node
+ * array (text/expression concatenation); every consumer wants the array form.
+ * Mirrors the Rust engine's `ast.rs::attr_value_parts`.
+ */
+export function attrValueParts(value: unknown): AnyNode[] {
+  return (Array.isArray(value) ? value : [value]) as AnyNode[];
+}
+
+/**
+ * The `[start, end)` span to delete for an attribute, eating one preceding
+ * space/tab so the tag stays tidy.  Shared by the call-site attribute removals
+ * (transform + monomorphization rewrite) and the reverse pass's `attrOp`.
+ */
+export function attrSpanWithSpace(code: string, attr: AnyNode): [number, number] {
+  const start =
+    code[attr.start - 1] === ' ' || code[attr.start - 1] === '\t' ? attr.start - 1 : attr.start;
+  return [start, attr.end];
+}
+
 // ---- typed zimmerframe facade ----------------------------------------
 
 export interface WalkCtx<S> {

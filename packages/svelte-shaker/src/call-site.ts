@@ -5,7 +5,7 @@
  * every site into a {@link PropValueSet}, resolving forwarded expressions against
  * the owner's fold env (interprocedural pass-through, docs §13.1).
  */
-import type { AnyNode } from './parse.js';
+import { attrValueParts, type AnyNode } from './parse.js';
 import type { ComponentId, Literal, PropValueSet } from './ir.js';
 import { evaluate, literalValue, setVar, unwrapTsAssertions } from './eval.js';
 import type { PropDecl } from './model.js';
@@ -149,7 +149,7 @@ export function readCallSite(component: AnyNode, owner?: ComponentId): CallSite 
  */
 function singleExprValue(value: unknown): AnyNode | undefined {
   if (value === true || value == null) return undefined;
-  const parts = (Array.isArray(value) ? value : [value]) as AnyNode[];
+  const parts = attrValueParts(value);
   if (parts.length === 1 && parts[0]!.type === 'ExpressionTag') {
     return (parts[0]!.expression as AnyNode | undefined) ?? undefined;
   }
@@ -258,7 +258,7 @@ function literalAttrValue(value: unknown): { known: true; value: Literal } | { k
   if (value === true) return { known: true, value: true }; // boolean shorthand
   if (value == null) return { known: false };
 
-  const parts = (Array.isArray(value) ? value : [value]) as AnyNode[];
+  const parts = attrValueParts(value);
   if (parts.length === 1) {
     const part = parts[0]!;
     if (part.type === 'Text')

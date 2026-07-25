@@ -18,7 +18,7 @@
 // ----------------------------------------------------------------------
 
 import type MagicString from 'magic-string';
-import { walk, type AnyNode } from './parse.js';
+import { walk, attrValueParts, isSpace, type AnyNode } from './parse.js';
 import type { ComponentPlan, Literal } from './ir.js';
 import type { FileModel } from './model.js';
 import type { Span } from './dead.js';
@@ -152,7 +152,7 @@ function classTokensFromAttr(
   if (value === true) return UNBOUNDED;
   if (value == null) return new Set();
 
-  const parts = (Array.isArray(value) ? value : [value]) as AnyNode[];
+  const parts = attrValueParts(value);
 
   // Each part yields a set of possible string fragments; the attribute's
   // possible full strings are the cartesian product (concatenated in order).
@@ -340,6 +340,6 @@ function removeRule(code: string, rule: AnyNode, siblings: AnyNode[], s: MagicSt
   // and the blank line/indentation that preceded it.
   let start = rule.start;
   const floor = prev ? prev.end : 0;
-  while (start > floor && /\s/.test(code[start - 1]!)) start -= 1;
+  while (start > floor && isSpace(code[start - 1]!)) start -= 1;
   s.remove(start, rule.end);
 }

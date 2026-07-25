@@ -1,5 +1,5 @@
 import type MagicString from 'magic-string';
-import { walk, type AnyNode } from './parse.js';
+import { walk, attrValueParts, attrSpanWithSpace, type AnyNode } from './parse.js';
 import type { ComponentId, ComponentPlan } from './ir.js';
 import type { FileModel } from './model.js';
 import { inSpans, type Span } from './dead.js';
@@ -114,11 +114,16 @@ function collectSiteRemovals(
  * BARE identifier read (`x={foo}`, including `x={undefined}`).  Anything else — a
  * call, member access (a getter), template/logical/conditional expression, or a
  * function expression — is kept, since it could run code or read a getter.
+ *
+ * Deliberately a DIFFERENT predicate from transform.ts's `isSideEffectFree`: this
+ * pass drops an input the child never reads, so a bare identifier read is safe
+ * here; that pass drops a folded prop and instead requires a proven constant.
+ * The allow-lists and the `null` case differ, so the two are not merged.
  */
 export function isSideEffectFreeValue(value: unknown): boolean {
   if (value === true) return true; // boolean shorthand `x`
   if (value == null) return false;
-  const parts = (Array.isArray(value) ? value : [value]) as AnyNode[];
+  const parts = attrValueParts(value);
   if (parts.length === 0) return false;
   if (parts.length > 1) return parts.every((p) => p.type === 'Text'); // static concat only
   const part = parts[0]!;
@@ -134,9 +139,7 @@ export function isSideEffectFreeValue(value: unknown): boolean {
 
 /** Removal of an attribute plus one leading space/tab, keeping the tag tidy. */
 export function attrOp(component: AnyNode, attr: AnyNode, code: string): ReverseOp {
-  let start = attr.start;
-  if (code[start - 1] === ' ' || code[start - 1] === '\t') start -= 1;
-  return { component, remove: [start, attr.end], protect: [attr.start, attr.end] };
+  return { component, remove: attrSpanWithSpace(code, attr), protect: [attr.start, attr.end] };
 }
 
 /** Removal of a whole node (body node or `{#snippet}` block) by its own span. */
