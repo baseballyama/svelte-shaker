@@ -123,6 +123,49 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     expect(viaRust['/Child.svelte']).not.toContain('36?: number');
   });
 
+  it('drops overlapping inline `$props()` type members (matches the fixed TS engine)', async () => {
+    // Dropping the LAST inline type member whose predecessor is also dropped makes
+    // `remove_type_member` emit two OVERLAPPING removes (`[a.start, b.start)` +
+    // `[a.end, b.end)`). magic-string (TS) unions them so both members go; the Rust
+    // `MagicEdit` used to drop only the later one, leaving `urgent?: boolean` behind.
+    // `label` stays (dynamic) so the `$props()` line survives and the path runs.
+    const files: Record<string, string> = {
+      '/App.svelte': `<script lang="ts">\n  import Child from './Child.svelte';\n  let n = Math.random();\n</script>\n<Child label={n} />`,
+      '/Child.svelte':
+        `<script lang="ts">\n  let { label, urgent = false, variant = 'info' }: ` +
+        `{ label?: number; urgent?: boolean; variant?: string } = $props();\n</script>\n` +
+        `{#if urgent}<strong>!</strong>{/if}\n<p class="alert alert-{variant}">{label}</p>`,
+    };
+    const resolve = (source: string, importer: string): string | null => {
+      if (!source.startsWith('.')) return null;
+      const base = importer.slice(0, importer.lastIndexOf('/'));
+      const parts: string[] = [];
+      for (const seg of `${base}/${source}`.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return `/${parts.join('/')}`;
+    };
+    const readFile = (id: string): string => files[id]!;
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const programInput = {
+      files: input.files.map((f) => ({ id: f.id, ast: parseSvelte(f.code, f.id), code: f.code })),
+      edges: input.edges,
+      entries: input.entries,
+    };
+    const viaRust = JSON.parse(wasm.shake_program(JSON.stringify(programInput))) as Record<
+      string,
+      string
+    >;
+    const viaTs = await svelteShaker('/App.svelte', resolve, readFile);
+    expect(viaRust).toEqual(viaTs);
+    expect(viaRust['/Child.svelte']).toContain('label?: number');
+    expect(viaRust['/Child.svelte']).not.toContain('urgent?: boolean');
+    expect(viaRust['/Child.svelte']).not.toContain('variant?: string');
+  });
+
   it('TS assertions fold in the Rust engine identically to TS (issue #150)', async () => {
     // svelte/compiler keeps `'chips' as const` / `8 as const` as TS assertion nodes,
     // so the Rust engine sees them too. Its evaluator (call-site value) and its
