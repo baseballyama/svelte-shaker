@@ -20,7 +20,7 @@
 import type MagicString from 'magic-string';
 import { walk, type AnyNode } from './parse.js';
 import type { ComponentPlan, Literal } from './ir.js';
-import type { FileModel } from './analyze.js';
+import type { FileModel } from './model.js';
 import type { Span } from './dead.js';
 import { evaluate, setVar } from './eval.js';
 

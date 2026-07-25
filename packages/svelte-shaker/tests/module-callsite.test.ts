@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { svelteShaker } from '../src/index';
-import { buildAnalyzeInput, findNeverPassedProps } from '../src/analyze';
-import type { ReadFile, Resolve } from '../src/analyze';
+import { findNeverPassedProps } from '../src/analyze';
+import { buildAnalyzeInput } from '../src/crawl';
+import type { ReadFile, Resolve } from '../src/crawl';
 import { renderHtml } from './diff';
 
 // A component consumed BOTH from a `.svelte` template (which omits `p`) AND from a

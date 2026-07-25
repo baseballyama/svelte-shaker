@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { buildAnalyzeInput, type ReadFile, type Resolve } from './analyze.js';
+import { buildAnalyzeInput, type ReadFile, type Resolve } from './crawl.js';
 import { parseCached, type Parse, type ParseCache } from './parse.js';
 import { type MonomorphizeOptions, type OwnSize } from './mono.js';
 import { revertCascade } from './revert-cascade.js';

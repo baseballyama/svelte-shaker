@@ -1,4 +1,5 @@
-import { analyzeInput, buildAnalyzeInput, type ReadFile, type Resolve } from './analyze.js';
+import { analyzeInput } from './analyze.js';
+import { buildAnalyzeInput, type ReadFile, type Resolve } from './crawl.js';
 import { transformAll } from './transform.js';
 import type { Parse, ParseCache } from './parse.js';
 import type { ComponentId, EditResult } from './ir.js';

@@ -58,13 +58,9 @@
 import MagicString from 'magic-string';
 import { inSpans } from './dead.js';
 import { shakeBody } from './transform.js';
-import {
-  readCallSite,
-  deadSpansForPlans,
-  isFoldBlockedName,
-  type FileModel,
-  type PropDecl,
-} from './analyze.js';
+import { deadSpansForPlans, isFoldBlockedName } from './analyze.js';
+import { readCallSite } from './call-site.js';
+import type { FileModel, PropDecl } from './model.js';
 import { parseSvelte, walk, type AnyNode, type Root } from './parse.js';
 import { isFoldableValue, type ComponentId, type ComponentPlan, type Literal } from './ir.js';
 

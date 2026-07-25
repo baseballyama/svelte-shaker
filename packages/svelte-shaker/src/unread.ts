@@ -1,6 +1,6 @@
 import { walk, type AnyNode } from './parse.js';
 import type { ComponentId, ComponentPlan } from './ir.js';
-import type { FileModel, PropDecl } from './analyze.js';
+import type { FileModel, PropDecl } from './model.js';
 import { isSideEffectFreeValue, attrOp, type ReverseOp } from './reverse.js';
 
 // ----------------------------------------------------------------------

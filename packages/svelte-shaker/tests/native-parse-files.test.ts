@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { importSources, memberComponentTags, renderedComponentTagNames } from '../src/analyze';
+import { importSources, memberComponentTags, renderedComponentTagNames } from '../src/crawl';
 import { parseSvelte } from '../src/parse';
 import { loadNativeAddon } from './native-addon';
 

@@ -5,7 +5,7 @@ import {
   type FactsProvider,
   type ReadFile,
   type Resolve,
-} from './analyze.js';
+} from './crawl.js';
 import { type MonomorphizeOptions } from './mono.js';
 import { revertCascade } from './revert-cascade.js';
 import type { ComponentId } from './ir.js';
