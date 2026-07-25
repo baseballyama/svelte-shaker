@@ -1,6 +1,7 @@
 import { parseSvelte } from './parse.js';
 import { type ComponentId, type ComponentPlan } from './ir.js';
-import { planFixpoint, type FileModel } from './analyze.js';
+import { planFixpoint } from './analyze.js';
+import type { FileModel } from './model.js';
 
 // The engine's last line of defense.  It aims to only ever emit valid,
 // behavior-preserving source, so a component whose slimmed output no longer

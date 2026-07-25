@@ -8,7 +8,7 @@
 import * as path from 'node:path';
 import { parseModuleProgram, walk, type AnyNode } from './parse.js';
 import type { ComponentId } from './ir.js';
-import type { Resolve, ReadFile } from './analyze.js';
+import type { Resolve, ReadFile } from './crawl.js';
 import { compileDevOnly, type DevOnlyFilter } from './dev-only.js';
 import { excludeNothing, type ExcludeFilter } from './exclude.js';
 import { walkDir } from './walk-dir.js';

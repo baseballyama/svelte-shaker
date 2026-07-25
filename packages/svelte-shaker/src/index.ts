@@ -1,10 +1,5 @@
-import {
-  analyze,
-  analyzeInput,
-  buildAnalyzeInput,
-  type ReadFile,
-  type Resolve,
-} from './analyze.js';
+import { analyze, analyzeInput } from './analyze.js';
+import { buildAnalyzeInput, type ReadFile, type Resolve } from './crawl.js';
 import { type Parse, type ParseCache } from './parse.js';
 import { transformAll, transformAllWithMono } from './transform.js';
 import {
@@ -25,9 +20,10 @@ export type {
   EdgeKind,
   EditResult,
 } from './ir.js';
-export type { Resolve, ReadFile } from './analyze.js';
+export type { Resolve, ReadFile } from './crawl.js';
 export type { Parse, Root } from './parse.js';
-export { analyze, buildAnalyzeInput } from './analyze.js';
+export { analyze } from './analyze.js';
+export { buildAnalyzeInput } from './crawl.js';
 export { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions, type OwnSize } from './mono.js';
 
 /**

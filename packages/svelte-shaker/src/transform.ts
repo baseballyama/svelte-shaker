@@ -1,7 +1,8 @@
 import MagicString from 'magic-string';
 import { walk, type AnyNode } from './parse.js';
 import type { ComponentId, ComponentPlan, Literal } from './ir.js';
-import { remapToLocalNames, type FileModel } from './analyze.js';
+import { remapToLocalNames } from './analyze.js';
+import type { FileModel } from './model.js';
 import { decideChain, inSpans, type Span } from './dead.js';
 import { collectReverseRemovals, applyReverseRemovals, type ReverseOp } from './reverse.js';
 import { collectUnread } from './unread.js';

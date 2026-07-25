@@ -1,7 +1,7 @@
 import type MagicString from 'magic-string';
 import { walk, type AnyNode } from './parse.js';
 import type { ComponentId, ComponentPlan } from './ir.js';
-import type { FileModel } from './analyze.js';
+import type { FileModel } from './model.js';
 import { inSpans, type Span } from './dead.js';
 
 // ----------------------------------------------------------------------
