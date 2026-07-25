@@ -265,6 +265,29 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     expect(child).not.toContain('pattern'); // both props dropped from the signature
   });
 
+  it('sees a write made through a TS assertion target (issue #183)', async () => {
+    // `count!++` / `count! += 1` are writes, so `count` is not a constant and
+    // nothing may fold. rsvelte used to serialize a TS-wrapped assignment target
+    // as `null`, hiding the write from `collect_written`, so the native engine
+    // folded `n` to `0` and the counter froze on screen — a soundness break the
+    // TS engine (svelte/compiler's AST) never had.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte':
+          `<script lang="ts">\n  import Child from './Child.svelte';\n  let count = $state(0);\n  let step = $state(1);\n` +
+          `  function inc() { count!++; step! += 1; }\n</script>\n` +
+          `<Child n={count} s={step} /><button onclick={inc}>+</button>`,
+        '/Child.svelte':
+          `<script lang="ts">\n  let { n, s } = $props();\n</script>\n<p>{n}/{s}</p>`,
+      },
+      '/App.svelte',
+    );
+    // Both props survive: neither call-site value is provably constant.
+    expect(files['/Child.svelte']).toContain('let { n, s } = $props();');
+    expect(files['/Child.svelte']).toContain('<p>{n}/{s}</p>');
+    expect(files['/App.svelte']).toContain('<Child n={count} s={step} />');
+  });
+
   it('matches the TS engine on an interprocedural pass-through (docs §13.1)', async () => {
     // App -> Mid -> Child: `variant` folds in Mid, so the forwarded
     // `<Child variant={variant}/>` must fold in Child too and its attribute be
