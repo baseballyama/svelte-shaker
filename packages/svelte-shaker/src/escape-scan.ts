@@ -5,13 +5,13 @@
 // surface: only `computeEscapedComponents` is re-exported there (`scan.ts`).  The
 // Vite Shell imports the rest of this module directly.
 // ----------------------------------------------------------------------
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseModuleProgram, walk, type AnyNode } from './parse.js';
 import type { ComponentId } from './ir.js';
 import type { Resolve, ReadFile } from './analyze.js';
 import { compileDevOnly, type DevOnlyFilter } from './dev-only.js';
 import { excludeNothing, type ExcludeFilter } from './exclude.js';
+import { walkDir } from './walk-dir.js';
 
 /**
  * The non-`.svelte` module extensions we scan for `.svelte` call sites (docs
@@ -49,20 +49,7 @@ function collectNonSvelteModules(
   exclude: ExcludeFilter,
   out: string[],
 ): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (exclude(full)) continue; // a build-output tree — pruned from the escape scan
-      collectNonSvelteModules(full, devOnly, exclude, out);
-    } else if (entry.isFile() && isScannableModule(entry.name) && !devOnly(full)) out.push(full);
-  }
+  walkDir(dir, exclude, (name, full) => isScannableModule(name) && !devOnly(full), out);
 }
 
 /**
@@ -122,26 +109,35 @@ async function collectModuleEscapes(
   resolve: Resolve,
   readFile: ReadFile,
 ): Promise<{ escaped: Set<ComponentId>; unscannable: Set<ComponentId> }> {
+  // Read + parse + resolve every module in PARALLEL — this scan can dominate the
+  // whole crawl (docs §8.1.1), and the old sequential `await readFile` / `await
+  // resolve` per module and per specifier was a strict N+1.  The per-module results
+  // are then merged in the ORIGINAL module order (and each module's escapes in
+  // specifier order), so the escaped set's insertion order — and thus the output —
+  // is identical regardless of which async task settles first.
+  const perModule = await Promise.all(
+    modules.map(async (id): Promise<{ escaped: ComponentId[]; unscannable: boolean }> => {
+      let code: string;
+      try {
+        code = await readFile(id);
+      } catch {
+        return { escaped: [], unscannable: true }; // present on disk at scan time but unreadable now
+      }
+      const specs = moduleImportSpecifiers(code, id);
+      if (specs === null) return { escaped: [], unscannable: true };
+      const resolved = await Promise.all(specs.map((spec) => resolve(spec, id)));
+      const escaped = resolved.filter((r): r is ComponentId => r !== null && r.endsWith('.svelte'));
+      return { escaped, unscannable: false };
+    }),
+  );
+
   const escaped = new Set<ComponentId>();
   const unscannable = new Set<ComponentId>();
-  for (const id of modules) {
-    let code: string;
-    try {
-      code = await readFile(id);
-    } catch {
-      unscannable.add(id); // present on disk at scan time but unreadable now
-      continue;
-    }
-    const specs = moduleImportSpecifiers(code, id);
-    if (specs === null) {
-      unscannable.add(id);
-      continue;
-    }
-    for (const spec of specs) {
-      const resolved = await resolve(spec, id);
-      if (resolved && resolved.endsWith('.svelte')) escaped.add(resolved);
-    }
-  }
+  modules.forEach((id, i) => {
+    const result = perModule[i]!;
+    if (result.unscannable) unscannable.add(id);
+    for (const e of result.escaped) escaped.add(e);
+  });
   return { escaped, unscannable };
 }
 
