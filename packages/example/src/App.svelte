@@ -2,6 +2,8 @@
   import svelteLogo from './assets/svelte.svg'
   import viteLogo from '/vite.svg'
   import Counter from './lib/Counter.svelte'
+  import Badge from './lib/Badge.svelte'
+  import Panel from './lib/Panel.svelte'
 </script>
 
 <main>
@@ -18,6 +20,13 @@
   <div class="card">
     <Counter />
   </div>
+
+  <p>
+    <Badge label="build" variant="info" />
+    <Badge label="tests" variant="info" />
+  </p>
+
+  <Panel title="Notes" />
 
   <p>
     Check out <a href="https://github.com/sveltejs/kit#readme" target="_blank" rel="noreferrer">SvelteKit</a>, the official Svelte app framework powered by Vite!
