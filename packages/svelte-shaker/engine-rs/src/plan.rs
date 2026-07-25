@@ -185,7 +185,7 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[&Value]) -> Model 
     // `template_bindings_ir` stays a Value walk; embedded template JS is delegated to
     // the same Value `collect_written`.
     let ir_root = crate::ir::from_value(&ast);
-    let (shadowed_vec, debug_vec, written_vec) = template_bindings_ir(&ir_root);
+    let (shadowed_vec, debug_vec, written_vec) = template_bindings_ir(&ast, &ir_root);
     let shadowed: HashSet<String> = shadowed_vec.into_iter().collect();
     let debug: HashSet<String> = debug_vec.into_iter().collect();
     let written: HashSet<String> = written_vec.into_iter().collect();
@@ -205,7 +205,7 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[&Value]) -> Model 
         }
     });
     let imported = imported_locals(&ast);
-    let escaped = escaped_components_ir(&ir_root, &imports, &imported, &namespace_locals(&ast));
+    let escaped = escaped_components_ir(&ast, &ir_root, &imports, &imported, &namespace_locals(&ast));
     Model {
         id: id.to_string(),
         ast,

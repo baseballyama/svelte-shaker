@@ -191,22 +191,37 @@ pub(crate) fn specializable_shape(node: &Value, child: &Model, plan: &ComponentP
     shape
 }
 
+/// The base (unspecialized) program as the net-win gate reads it: every module's
+/// residual `source` and its live `children_of` edges.
+#[derive(Clone, Copy)]
+pub(crate) struct BaseGraph<'a> {
+    pub(crate) source: &'a HashMap<String, String>,
+    pub(crate) children_of: &'a HashMap<String, Vec<String>>,
+}
+
+/// A candidate child's variants as the net-win gate reads them: each variant's
+/// (id `<childId>::v<n>`, residual code) — the id is the sizing filename — and its
+/// live child edges keyed by that variant id.
+#[derive(Clone, Copy)]
+pub(crate) struct VariantSet<'a> {
+    pub(crate) specs: &'a [(String, String)],
+    pub(crate) children: &'a HashMap<String, Vec<String>>,
+}
+
 /// The measured net-win gate (the optimized, diff-only form): specialize iff
 /// replacing the child with its variants strictly shrinks the module bytes
 /// reachable from `roots`.  Only the modules whose size differs between the base
 /// and spec scenarios are sized (the rest cancel for `min_savings == 0`).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn net_win(
     child_id: &str,
-    // (variant id `<childId>::v<n>`, residual code) — the id is the sizing filename.
-    variant_specs: &[(String, String)],
-    variant_children: &HashMap<String, Vec<String>>,
-    base_source: &HashMap<String, String>,
-    base_children_of: &HashMap<String, Vec<String>>,
+    variants: VariantSet,
+    base: BaseGraph,
     roots: &[String],
     own_size: &mut dyn FnMut(&str, &str) -> Option<f64>,
     min_savings: f64,
 ) -> bool {
+    let VariantSet { specs: variant_specs, children: variant_children } = variants;
+    let BaseGraph { source: base_source, children_of: base_children_of } = base;
     // BASE reachability (graph only).
     let mut base_reached: HashSet<String> = HashSet::new();
     let mut stack: Vec<String> = roots.to_vec();
@@ -470,10 +485,8 @@ pub(crate) fn monomorphize(
         }
         if !net_win(
             child_id,
-            &nw_variants,
-            &nw_children,
-            &base_source,
-            &base_children_of,
+            VariantSet { specs: &nw_variants, children: &nw_children },
+            BaseGraph { source: &base_source, children_of: &base_children_of },
             &roots,
             own_size,
             opts.min_savings,

@@ -254,21 +254,15 @@ pub struct NamedAttr {
     pub value: Value,
 }
 
-/// The whole component: its template fragment plus the instance / module scripts and
-/// `<style>`, all kept as Value (the engine's script/props/css analysis reads them
-/// unchanged). This is what `build_model` consumes instead of the raw AST Value.
+/// The typed template STRUCTURE of a component — just its top-level fragment. The
+/// engine's Value-based phases (`shake_body`'s fold/strip passes, `css.rs`, the prop /
+/// escape analysis) still read the raw AST `Value` directly, which the `Model` owns
+/// once; the IR deliberately holds ONLY the fragment (the part re-walked every
+/// fixpoint round) so nothing here duplicates that AST. Passes that also need the
+/// instance / module scripts take the AST `Value` as a separate argument.
 #[derive(Clone, Debug)]
 pub struct Root {
     pub fragment: Fragment,
-    /// The instance `<script>` node Value (`ast.instance`), or Null.
-    pub instance: Value,
-    /// The module `<script>` node Value (`ast.module`), or Null.
-    pub module: Value,
-    /// The whole component's raw AST Value (svelte/compiler JSON). Held because the
-    /// engine's Value-based phases read it directly — `shake_body`'s fold/strip passes,
-    /// `css.rs`, and the fold analysis all walk this `Value` (the IR types only the
-    /// template structure, §module docs). Not a migration leftover.
-    pub ast: Value,
 }
 
 // =============================================================================
@@ -322,14 +316,10 @@ fn expr_from(node: &Value, key: &str) -> Expr {
     Expr { span: span_of(node), expr: cloned(node, key) }
 }
 
-/// Convert a whole component AST (svelte/compiler JSON) into the IR.
+/// Convert a whole component AST (svelte/compiler JSON) into the IR. Only the template
+/// fragment is materialized; the scripts / `<style>` stay in the caller's AST `Value`.
 pub fn from_value(ast: &Value) -> Root {
-    Root {
-        fragment: fragment_from(ast.get("fragment")),
-        instance: ast.get("instance").cloned().unwrap_or(Value::Null),
-        module: ast.get("module").cloned().unwrap_or(Value::Null),
-        ast: ast.clone(),
-    }
+    Root { fragment: fragment_from(ast.get("fragment")) }
 }
 
 fn node_from(node: &Value) -> Node {
@@ -671,7 +661,7 @@ mod tests {
         };
         let (vs, vd, vw) = crate::analyze::template_bindings(&ast);
         let root = from_value(&ast);
-        let (is, id_, iw) = crate::analyze::template_bindings_ir(&root);
+        let (is, id_, iw) = crate::analyze::template_bindings_ir(&ast, &root);
         assert_eq!(sorted(is), sorted(vs), "shadowed");
         assert_eq!(sorted(id_), sorted(vd), "debug");
         assert_eq!(sorted(iw), sorted(vw), "written");
@@ -713,7 +703,7 @@ mod tests {
         let imported: HashSet<String> = ["C".to_string(), "D".to_string()].into();
         let ns: HashSet<String> = HashSet::new();
         let via_value = crate::analyze::escaped_components(&ast, &imports, &imported, &ns);
-        let via_ir = crate::analyze::escaped_components_ir(&from_value(&ast), &imports, &imported, &ns);
+        let via_ir = crate::analyze::escaped_components_ir(&ast, &from_value(&ast), &imports, &imported, &ns);
         assert_eq!(via_ir, via_value);
     }
 

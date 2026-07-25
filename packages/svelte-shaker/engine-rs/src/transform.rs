@@ -76,21 +76,36 @@ impl MagicEdit {
         // supersedes an earlier `substitute` overwrite of the prop key inside it).
         // So discard any edit overlapped by a LATER-inserted edit; the survivors
         // are then pairwise disjoint.
+        //
+        // Enumerate the overlapping pairs after sorting by start rather than testing
+        // every pair (the old O(n²)): for each edit scan forward only while the next
+        // start still falls inside its span — the starts are sorted, so the first
+        // out-of-range start means nothing further can overlap this edit, and we stop.
+        // Every overlapping pair is still visited (a pair overlaps only if the later
+        // start precedes the earlier end), and the LOWER-index edit of the pair — the
+        // one recorded first — is the loser. Disjoint edits (the common case) cost a
+        // single linear pass; only many mutually-overlapping edits stay quadratic.
         let n = self.edits.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|&i| self.edits[i].0);
         let mut superseded = vec![false; n];
-        for i in 0..n {
-            let (s1, e1, _) = &self.edits[i];
-            for later in &self.edits[i + 1..] {
-                let (s2, e2, _) = later;
-                if s1 < e2 && s2 < e1 {
-                    superseded[i] = true;
-                    break;
+        for (k, &i) in order.iter().enumerate() {
+            let (si, ei, _) = &self.edits[i];
+            let (si, ei) = (*si, *ei);
+            for &j in &order[k + 1..] {
+                let (sj, ej, _) = &self.edits[j];
+                if *sj >= ei {
+                    break; // sorted starts: no later edit can overlap edit `i`
+                }
+                if si < *ej {
+                    // The spans overlap; the earlier-recorded (lower-index) edit loses.
+                    superseded[i.min(j)] = true;
                 }
             }
         }
-        let mut active: Vec<&(usize, usize, Vec<u16>)> =
-            self.edits.iter().enumerate().filter(|(i, _)| !superseded[*i]).map(|(_, e)| e).collect();
-        active.sort_by_key(|e| e.0);
+        // `order` is already start-sorted, so the survivors come out in render order.
+        let active: Vec<&(usize, usize, Vec<u16>)> =
+            order.iter().filter(|&&i| !superseded[i]).map(|&i| &self.edits[i]).collect();
 
         // `appendLeft` insertions, stable-sorted by index (call order preserved on ties).
         let mut inserts: Vec<&(usize, Vec<u16>)> = self.inserts.iter().collect();
@@ -185,6 +200,29 @@ mod tests {
         s.prepend("<<");
         s.overwrite(0, 1, "A"); // 'a' -> 'A'
         assert_eq!(s.render(), "<<Abcdef");
+    }
+
+    #[test]
+    fn later_overlapping_edit_supersedes_earlier() {
+        // magic-string: the later-recorded overwrite of an overlapping range wins.
+        let mut s = MagicEdit::new("0123456789");
+        s.overwrite(2, 8, "X"); // earlier
+        s.overwrite(0, 10, "Y"); // later, contains the first -> supersedes it
+        assert_eq!(s.render(), "Y");
+    }
+
+    #[test]
+    fn superseded_edit_still_supersedes_a_lower_one_it_covers() {
+        // Order of record: A[0,10] (idx0), B[1,3] (idx1, inside A -> supersedes A),
+        // C[6,8] (idx2, also inside A but disjoint from B). A is superseded by both
+        // B and C; B and C survive as disjoint edits. A losing to B must NOT let C
+        // (recorded after A) escape being scoped correctly: the survivors are B, C.
+        let mut s = MagicEdit::new("0123456789");
+        s.overwrite(0, 10, "A"); // idx0
+        s.overwrite(1, 3, "B"); // idx1
+        s.overwrite(6, 8, "C"); // idx2
+        // Survivors B[1,3]="B", C[6,8]="C"; the gaps [0,1),[3,6),[8,10) stay verbatim.
+        assert_eq!(s.render(), "0B345C89");
     }
 
     #[test]

@@ -167,14 +167,14 @@ pub(crate) fn template_bindings(ast: &Value) -> (Vec<String>, Vec<String>, Vec<S
 /// (the fallback invariant). `bind:` and `let:` are reproduced explicitly since the
 /// IR carries them as typed attributes, not as walked nodes. Pinned byte-for-byte to
 /// `template_bindings` by the shake corpus.
-pub(crate) fn template_bindings_ir(root: &crate::ir::Root) -> (Vec<String>, Vec<String>, Vec<String>) {
+pub(crate) fn template_bindings_ir(ast: &Value, root: &crate::ir::Root) -> (Vec<String>, Vec<String>, Vec<String>) {
     use crate::ir;
     let mut shadowed = Vec::new();
     let mut debug = Vec::new();
     let mut written = Vec::new();
 
     // Instance script — identical to `template_bindings`.
-    walk(get(&root.ast, "instance"), &mut |node| {
+    walk(get(ast, "instance"), &mut |node| {
         if matches!(type_of(node), Some("VariableDeclarator") | Some("FunctionDeclaration")) {
             let id = get(node, "id");
             if str_eq(id, "type", "Identifier") {
@@ -786,6 +786,7 @@ fn expression_escapes(
 /// invariant). The instance-script half stays the identical Value walk. Pinned
 /// byte-for-byte to `escaped_components` by the shake corpus.
 pub(crate) fn escaped_components_ir(
+    ast: &Value,
     root: &crate::ir::Root,
     imports: &HashMap<String, String>,
     imported: &HashSet<String>,
@@ -807,7 +808,7 @@ pub(crate) fn escaped_components_ir(
 
     // Instance script: identical to `escaped_components`.
     let not_type = |n: &Value| !is_type_only_node(n);
-    walk_parented_pruned(get(&root.ast, "instance"), None, &not_type, &mut |node, parent| {
+    walk_parented_pruned(get(ast, "instance"), None, &not_type, &mut |node, parent| {
         if str_eq(node, "type", "Identifier") {
             if let Some(name) = node.get("name").and_then(Value::as_str) {
                 if (imports.contains_key(name) || namespace_locals.contains(name))
