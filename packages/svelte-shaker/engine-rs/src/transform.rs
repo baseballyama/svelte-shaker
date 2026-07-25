@@ -2,11 +2,12 @@
 //! transform.ts + css.ts. It edits the original `.svelte` source by surgical span
 //! removal/overwrite — the `magic-string` counterpart is `MagicEdit` below.
 
-/// A minimal `magic-string` equivalent: records non-overlapping span edits and
-/// renders the result. Offsets are **UTF-16 code units** (JS string indices, what
-/// the Svelte AST and magic-string use), so editing is correct for non-ASCII
-/// source — not just ASCII. Only the ops the always-on-folds transform needs are
-/// provided (remove / overwrite); inserts (appendLeft/prepend) are monomorphization-only.
+/// A minimal `magic-string` equivalent: records span edits (which MAY overlap) and
+/// renders them with magic-string's chunk semantics (see `render`). Offsets are
+/// **UTF-16 code units** (JS string indices, what the Svelte AST and magic-string
+/// use), so editing is correct for non-ASCII source — not just ASCII. Only the ops
+/// the always-on-folds transform needs are provided (remove / overwrite); inserts
+/// (appendLeft/prepend) are monomorphization-only.
 pub struct MagicEdit {
     source: Vec<u16>,
     /// `(start, end, replacement)`; `remove` is `overwrite` with an empty string.
@@ -71,41 +72,58 @@ impl MagicEdit {
     }
 
     pub fn render(&self) -> String {
-        // magic-string semantics: a later operation wins over an earlier one on an
-        // overlapping range (e.g. a `drop` that removes a whole `$props()` property
-        // supersedes an earlier `substitute` overwrite of the prop key inside it).
-        // So discard any edit overlapped by a LATER-inserted edit; the survivors
-        // are then pairwise disjoint.
-        //
-        // Enumerate the overlapping pairs after sorting by start rather than testing
-        // every pair (the old O(n²)): for each edit scan forward only while the next
-        // start still falls inside its span — the starts are sorted, so the first
-        // out-of-range start means nothing further can overlap this edit, and we stop.
-        // Every overlapping pair is still visited (a pair overlaps only if the later
-        // start precedes the earlier end), and the LOWER-index edit of the pair — the
-        // one recorded first — is the loser. Disjoint edits (the common case) cost a
-        // single linear pass; only many mutually-overlapping edits stay quadratic.
-        let n = self.edits.len();
-        let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by_key(|&i| self.edits[i].0);
-        let mut superseded = vec![false; n];
-        for (k, &i) in order.iter().enumerate() {
-            let (si, ei, _) = &self.edits[i];
-            let (si, ei) = (*si, *ei);
-            for &j in &order[k + 1..] {
-                let (sj, ej, _) = &self.edits[j];
-                if *sj >= ei {
-                    break; // sorted starts: no later edit can overlap edit `i`
-                }
-                if si < *ej {
-                    // The spans overlap; the earlier-recorded (lower-index) edit loses.
-                    superseded[i.min(j)] = true;
-                }
+        // Faithful magic-string chunk model. Split the source into ATOMIC segments at
+        // every edit boundary, then replay the edits in CALL ORDER: a `remove` empties
+        // every segment it covers; an `overwrite` empties them too but anchors its
+        // content on the first (magic-string keeps the replacement on the range's first
+        // chunk and empties the rest). This reproduces magic-string — hence the TS
+        // `magic-string` engine — byte-for-byte on the overlaps the engine produces:
+        //  - Two overlapping REMOVES UNION (magic-string splits the already-emptied
+        //    chunk and empties the remainder). `remove_type_member` emits exactly such a
+        //    pair when it drops the LAST type member whose predecessor is also dropped
+        //    (`[a.start, b.start)` then `[a.end, b.end)`); the old "later edit supersedes
+        //    the earlier" rule dropped the earlier remove whole, leaving the predecessor
+        //    member behind (a native/TS divergence).
+        //  - A later edit that fully re-covers an earlier one wins (a `drop` removing a
+        //    whole `$props()` property empties the segment holding an earlier
+        //    `substitute` overwrite of the key inside it — content gone), as magic-string does.
+        let len = self.source.len();
+        // Segment boundaries: 0, len, and every edit's clamped start/end.
+        let mut bounds: Vec<usize> = Vec::with_capacity(self.edits.len() * 2 + 2);
+        bounds.push(0);
+        bounds.push(len);
+        for (s, e, _) in &self.edits {
+            bounds.push((*s).min(len));
+            bounds.push((*e).min(len));
+        }
+        bounds.sort_unstable();
+        bounds.dedup();
+        let seg_count = bounds.len().saturating_sub(1);
+        // Per atomic segment: `None` = emit the original source slice; `Some(bytes)` =
+        // edited (empty for a removal, the replacement for an overwrite's first chunk).
+        let mut seg_out: Vec<Option<Vec<u16>>> = vec![None; seg_count];
+        for (s, e, content) in &self.edits {
+            let s = (*s).min(len);
+            let e = (*e).min(len);
+            if s >= e {
+                continue; // zero-width span: no chunk to edit (inserts carry appendLeft)
+            }
+            // The first covered segment starts exactly at `s` (a boundary), so its index
+            // is `s`'s position in the deduped, sorted `bounds`.
+            let lo = bounds.binary_search(&s).unwrap_or_else(|i| i);
+            let mut k = lo;
+            let mut first = true;
+            while k < seg_count && bounds[k] < e {
+                seg_out[k] = Some(if first && !content.is_empty() { content.clone() } else { Vec::new() });
+                first = false;
+                k += 1;
             }
         }
-        // `order` is already start-sorted, so the survivors come out in render order.
-        let active: Vec<&(usize, usize, Vec<u16>)> =
-            order.iter().filter(|&&i| !superseded[i]).map(|&i| &self.edits[i]).collect();
+        // Edited segments in source order; original (untouched) segments are filled from
+        // the source by the merge loop's gap emission below. Disjoint by construction.
+        let active: Vec<(usize, usize, &[u16])> = (0..seg_count)
+            .filter_map(|k| seg_out[k].as_ref().map(|b| (bounds[k], bounds[k + 1], b.as_slice())))
+            .collect();
 
         // `appendLeft` insertions, stable-sorted by index (call order preserved on ties).
         let mut inserts: Vec<&(usize, Vec<u16>)> = self.inserts.iter().collect();
@@ -135,14 +153,11 @@ impl MagicEdit {
                 }
                 out.extend_from_slice(content);
                 ii += 1;
-            } else if let Some((start, end, content)) = active.get(si).copied() {
+            } else if let Some(&(start, end, content)) = active.get(si) {
                 si += 1;
-                if *start < cursor {
-                    continue; // survivors are disjoint; this is a defensive backstop
-                }
-                out.extend_from_slice(&self.source[cursor..*start]);
+                out.extend_from_slice(&self.source[cursor..start]);
                 out.extend_from_slice(content);
-                cursor = *end;
+                cursor = end;
             } else {
                 break;
             }
@@ -212,17 +227,29 @@ mod tests {
     }
 
     #[test]
-    fn superseded_edit_still_supersedes_a_lower_one_it_covers() {
-        // Order of record: A[0,10] (idx0), B[1,3] (idx1, inside A -> supersedes A),
-        // C[6,8] (idx2, also inside A but disjoint from B). A is superseded by both
-        // B and C; B and C survive as disjoint edits. A losing to B must NOT let C
-        // (recorded after A) escape being scoped correctly: the survivors are B, C.
+    fn partially_overlapping_removes_union() {
+        // magic-string: two `remove`s that partially overlap UNION — it splits the
+        // already-emptied chunk and empties the remainder, so the removed region is
+        // `[min(start), max(end))`. This is exactly the pair `remove_type_member` emits
+        // when it drops the LAST type member whose predecessor is also dropped
+        // (`[a.start, b.start)` then `[a.end, b.end)`); the removed span must cover both
+        // members, not just the later one. Regression for the native-engine bug where
+        // the dropped predecessor member was left behind.
         let mut s = MagicEdit::new("0123456789");
-        s.overwrite(0, 10, "A"); // idx0
-        s.overwrite(1, 3, "B"); // idx1
-        s.overwrite(6, 8, "C"); // idx2
-        // Survivors B[1,3]="B", C[6,8]="C"; the gaps [0,1),[3,6),[8,10) stay verbatim.
-        assert_eq!(s.render(), "0B345C89");
+        s.remove(2, 6); // idx0: [2,6)
+        s.remove(4, 8); // idx1: [4,8), overlaps -> union [2,8)
+        assert_eq!(s.render(), "0189");
+    }
+
+    #[test]
+    fn later_remove_empties_an_earlier_overwrite_it_covers() {
+        // The real engine overlap (docs): a `drop` removing a whole `$props()` property
+        // empties the segment holding an earlier `substitute` overwrite of the key
+        // inside it — so the substituted content is gone, matching magic-string.
+        let mut s = MagicEdit::new("0123456789");
+        s.overwrite(3, 5, "XX"); // idx0: substitute inside the property
+        s.remove(2, 7); // idx1: drop the whole property, covering the overwrite
+        assert_eq!(s.render(), "01789");
     }
 
     #[test]

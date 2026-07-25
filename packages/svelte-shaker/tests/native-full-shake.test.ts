@@ -155,6 +155,54 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     expect(files['/Sub.svelte']).toContain('(1e-7)');
     expect(files['/Sub.svelte']).not.toContain('1000000000000000000000'); // the old `format!` bug
   });
+
+  it('drops every dropped prop from an inline `$props()` type, even overlapping members', async () => {
+    // `remove_type_member` emits `[a.start, b.start)` then `[a.end, b.end)` when it
+    // drops the LAST type member whose predecessor is also dropped — two OVERLAPPING
+    // removes. magic-string (the TS engine) unions them, so both members go; the
+    // native `MagicEdit` used to keep the earlier one, leaving `urgent?: boolean`
+    // behind and diverging from TS. `label` stays (dynamic), so the `$props()` line
+    // survives and the type-member path actually runs. In-memory (not a fixture) so
+    // the fresh local addon is exercised, not the published binary that lags this fix.
+    const { resolve, readFile } = memGraph({
+      '/App.svelte': `<script lang="ts">\n  import Sub from './Sub.svelte';\n  let n = Math.random();\n</script>\n<Sub label={n} />`,
+      '/Sub.svelte':
+        `<script lang="ts">\n  let { label, urgent = false, variant = 'info' }: ` +
+        `{ label?: number; urgent?: boolean; variant?: string } = $props();\n</script>\n` +
+        `{#if urgent}<strong>!</strong>{/if}\n<p class="alert alert-{variant}">{label}</p>`,
+    });
+
+    const tsResult = await svelteShakerWithMono(
+      '/App.svelte',
+      resolve,
+      readFile,
+      MONO_OFF,
+      variantSpecifier,
+    );
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const session = new addon!.ShakeSession();
+    session.parse(JSON.stringify({ files: input.files.map((f) => ({ id: f.id, code: f.code })) }));
+    const config = {
+      edges: input.edges,
+      entries: input.entries,
+      escaped: input.escaped ?? [],
+      mono: MONO_OFF,
+    };
+    let native!: Shaken;
+    const files = revertCascade(input.files, (forceBail) => {
+      native = JSON.parse(
+        session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] })),
+      ) as Shaken;
+      return native.files;
+    });
+
+    expect(files).toEqual(tsResult.files);
+    // The dropped members are gone; the kept one stays.
+    expect(files['/Sub.svelte']).toContain('label?: number');
+    expect(files['/Sub.svelte']).not.toContain('urgent?: boolean');
+    expect(files['/Sub.svelte']).not.toContain('variant?: string');
+  });
 });
 
 describe.skipIf(!addon)('native ShakeSession revert / parse-error semantics', () => {
