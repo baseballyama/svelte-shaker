@@ -120,10 +120,7 @@ pub(crate) fn attr_is_explicit_false(value: &Value) -> bool {
     if value == &Value::Bool(false) {
         return true;
     }
-    let parts: Vec<&Value> = match value {
-        Value::Array(a) => a.iter().collect(),
-        _ => vec![value],
-    };
+    let parts = attr_value_parts(value);
     parts.iter().any(|p| {
         type_of(p) == Some("ExpressionTag")
             && type_of(get(p, "expression")) == Some("Literal")
@@ -171,26 +168,31 @@ pub(crate) fn analyze_seam(siblings: &[Value], index: usize, span: Span, edits: 
     Some((l.map_or(span.0, |n| off(n, "start")), r.map_or(span.1, |n| off(n, "end"))))
 }
 
+/// Where an if-chain sits in the content model — threaded through the fold so a
+/// removed chain can preserve the rendered whitespace at its seam. Bundles the four
+/// arguments that always travel together: the `siblings` array the chain lives in and
+/// its `index` there, whether it is under preserved whitespace (`preserve`), and the
+/// content-model parent `element` the seam rules key off. `Copy`, so recursive
+/// descents cheaply derive a child context with struct-update syntax.
+#[derive(Clone, Copy)]
+pub(crate) struct SeamCtx<'a> {
+    pub(crate) siblings: Option<&'a [Value]>,
+    pub(crate) index: usize,
+    pub(crate) preserve: bool,
+    pub(crate) element: Option<&'a str>,
+}
+
 /// Delete a chain that renders nothing, compensating the seam (see transform.ts
 /// `removeChain`) so the rendered whitespace is unchanged.
-pub(crate) fn remove_chain(
-    removed: &[Span],
-    span: Span,
-    edits: &mut MagicEdit,
-    dead: &mut Vec<Span>,
-    siblings: Option<&[Value]>,
-    index: usize,
-    preserve: bool,
-    element: Option<&str>,
-) {
+pub(crate) fn remove_chain(removed: &[Span], span: Span, edits: &mut MagicEdit, dead: &mut Vec<Span>, seam: SeamCtx) {
     // Never compensate under preserved whitespace (plain deletion is byte-exact)
     // nor inside a text-free parent (`<tr>`, `<tbody>`, …), where Svelte rejects the
     // `{" "}` text child and the whitespace rendered nothing to begin with.
-    if !preserve && !is_text_free_parent(element) {
-        if let Some(sibs) = siblings {
-            if let Some(seam) = analyze_seam(sibs, index, span, edits, dead) {
-                edits.overwrite(seam.0 as usize, seam.1 as usize, "{\" \"}");
-                dead.push(seam);
+    if !seam.preserve && !is_text_free_parent(seam.element) {
+        if let Some(sibs) = seam.siblings {
+            if let Some(span) = analyze_seam(sibs, seam.index, span, edits, dead) {
+                edits.overwrite(span.0 as usize, span.1 as usize, "{\" \"}");
+                dead.push(span);
                 return;
             }
         }
@@ -201,7 +203,6 @@ pub(crate) fn remove_chain(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_chain(
     decision: &ChainDecision,
     env: &Env,
@@ -213,22 +214,19 @@ pub(crate) fn apply_chain(
     // what CSS may exclude even when the chain collapses to a re-emitted arm whose
     // span joins `dead`.  Mirrors the `pruned` accumulator in transform.ts.
     pruned: &mut Vec<Span>,
-    siblings: Option<&[Value]>,
-    index: usize,
-    preserve: bool,
-    element: Option<&str>,
+    seam: SeamCtx,
 ) {
     pruned.extend(decision.removed.iter().copied());
     if let Some(frag) = &decision.kept {
         let mut text = fragment_source(edits, frag, env);
         // Strip the kept arm's leading/trailing whitespace (block-fragment edges,
         // trimmed in the original) so splicing it inline does not gain a space.
-        if !preserve {
+        if !seam.preserve {
             text = text.trim().to_string();
         }
         // A kept arm that renders nothing behaves like a full removal.
-        if text.is_empty() && !preserve {
-            remove_chain(&[decision.span], decision.span, edits, dead, siblings, index, preserve, element);
+        if text.is_empty() && !seam.preserve {
+            remove_chain(&[decision.span], decision.span, edits, dead, seam);
             return;
         }
         edits.overwrite(decision.span.0 as usize, decision.span.1 as usize, &text);
@@ -236,7 +234,7 @@ pub(crate) fn apply_chain(
         return;
     }
     if is_full_removal(decision) {
-        remove_chain(&decision.removed, decision.span, edits, dead, siblings, index, preserve, element);
+        remove_chain(&decision.removed, decision.span, edits, dead, seam);
         return;
     }
     for (a, b) in &decision.removed {
@@ -248,7 +246,6 @@ pub(crate) fn apply_chain(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn fold_if_blocks<'a>(
     node: &'a Value,
     env: &Env,
@@ -257,15 +254,12 @@ pub(crate) fn fold_if_blocks<'a>(
     dead: &mut Vec<Span>,
     // Accumulates only the genuinely-removed spans, for CSS pruning (§PR8).
     pruned: &mut Vec<Span>,
-    siblings: Option<&'a [Value]>,
-    index: usize,
-    preserve: bool,
-    element: Option<&'a str>,
+    seam: SeamCtx<'a>,
 ) {
     match node {
         Value::Array(items) => {
             for (i, v) in items.iter().enumerate() {
-                fold_if_blocks(v, env, set_env, edits, dead, pruned, Some(items), i, preserve, element);
+                fold_if_blocks(v, env, set_env, edits, dead, pruned, SeamCtx { siblings: Some(items.as_slice()), index: i, ..seam });
             }
         }
         Value::Object(map) => {
@@ -274,20 +268,24 @@ pub(crate) fn fold_if_blocks<'a>(
                     return;
                 }
                 let decision = decide_chain(node, env, set_env);
-                apply_chain(&decision, env, edits, dead, pruned, siblings, index, preserve, element);
+                apply_chain(&decision, env, edits, dead, pruned, seam);
                 if decision.recurse {
                     // kept head: the `{#if}` is transparent to the content model, so its
                     // children stay in the same parent element.
                     for v in map.values() {
-                        fold_if_blocks(v, env, set_env, edits, dead, pruned, None, 0, preserve, element);
+                        fold_if_blocks(v, env, set_env, edits, dead, pruned, SeamCtx { siblings: None, index: 0, ..seam });
                     }
                 }
                 return;
             }
-            let child_preserve = preserve || is_preserve_element(node);
-            let child_element = child_parent_element(node, element);
+            let child = SeamCtx {
+                siblings: None,
+                index: 0,
+                preserve: seam.preserve || is_preserve_element(node),
+                element: child_parent_element(node, seam.element),
+            };
             for v in map.values() {
-                fold_if_blocks(v, env, set_env, edits, dead, pruned, None, 0, child_preserve, child_element);
+                fold_if_blocks(v, env, set_env, edits, dead, pruned, child);
             }
         }
         _ => {}
@@ -606,14 +604,7 @@ pub(crate) fn is_side_effect_free(value: &Value, owner_env: &Env) -> bool {
     if value == &Value::Bool(true) || value.is_null() {
         return true;
     }
-    let single;
-    let parts: &[Value] = match value.as_array() {
-        Some(a) => a,
-        None => {
-            single = [value.clone()];
-            &single
-        }
-    };
+    let parts = attr_value_parts(value);
     parts.iter().all(|part| match type_of(part) {
         Some("Text") => true,
         Some("ExpressionTag") => {
@@ -732,7 +723,8 @@ pub(crate) fn shake_body(
     // also holds collapse spans whose kept arm is re-emitted verbatim.  Only the
     // vanished regions may be excluded from the CSS possible-class set (§PR8).
     let mut pruned: Vec<Span> = seed_dead.to_vec();
-    fold_if_blocks(fragment, &local_env, &local_set_env, edits, &mut dead, &mut pruned, None, 0, has_preserve_whitespace_option(fragment), None);
+    let root_seam = SeamCtx { siblings: None, index: 0, preserve: has_preserve_whitespace_option(fragment), element: None };
+    fold_if_blocks(fragment, &local_env, &local_set_env, edits, &mut dead, &mut pruned, root_seam);
     if !local_env.is_empty() {
         fold_ternaries(fragment, &local_env, edits, &mut dead);
     }

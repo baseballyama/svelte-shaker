@@ -2,8 +2,22 @@
 //! value-use / non-reference predicates shared across the analysis and transform.
 
 use serde_json::Value;
+use std::borrow::Cow;
 
 const NULL: Value = Value::Null;
+
+/// The parts of an attribute `value` as a uniform slice. svelte stores it either as
+/// an ARRAY of `Text`/`ExpressionTag` nodes (`name="a{b}c"`) or — for a single
+/// interpolation, literal, or the boolean shorthand — as the bare node itself; this
+/// borrows the array in place and wraps a bare value in a one-element slice so callers
+/// iterate one way. Callers still handle the `true` (boolean shorthand) / `Null`
+/// cases first, since those carry call-site-specific meaning.
+pub(crate) fn attr_value_parts(value: &Value) -> Cow<'_, [Value]> {
+    match value {
+        Value::Array(a) => Cow::Borrowed(a.as_slice()),
+        _ => Cow::Owned(vec![value.clone()]),
+    }
+}
 
 /// `node[key] === val` for a string field, false if absent or non-string.
 pub(crate) fn str_eq(node: &Value, key: &str, val: &str) -> bool {
@@ -48,6 +62,20 @@ pub(crate) fn push_unique(out: &mut Vec<String>, name: &str) {
 
 /// Visit every object node in `root` (depth-first), calling `f` on each. The
 /// analog of a zimmerframe walk whose visitor descends unconditionally.
+///
+/// KEY-ORDER INVARIANT: an object's fields are visited in `serde_json::Map`
+/// iteration order — alphabetical (the default `BTreeMap`) in the wasm/host build,
+/// insertion order when a caller enables the `preserve_order` feature (the native
+/// scanner does). That order is NOT source order, so this walk must never be used by
+/// a pass that assumes template source order. It is sound for the passes that do use
+/// it because every order-sensitive result they produce is either dedup+sorted (the
+/// binder / escape name sets) or applied as disjoint spans (the fold edits), so the
+/// visit order cannot change the output. The one place that DOES need source order —
+/// `plan.rs`'s `child_calls`, whose collection order keys mono variant ids by first
+/// caller in program order — relies on the child components living directly in a
+/// `fragment.nodes` ARRAY (arrays ARE walked in order); a future pass that needs the
+/// source order of nodes reached THROUGH object fields must walk [`crate::ir::walk`]
+/// instead, whose typed template IR preserves source order by construction.
 pub(crate) fn walk(root: &Value, f: &mut impl FnMut(&Value)) {
     match root {
         Value::Object(map) => {

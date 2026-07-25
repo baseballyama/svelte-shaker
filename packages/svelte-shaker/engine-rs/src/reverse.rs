@@ -135,14 +135,7 @@ pub(crate) fn is_reverse_removable_value(value: &Value) -> bool {
     if value.is_null() {
         return false;
     }
-    let single;
-    let parts: &[Value] = match value.as_array() {
-        Some(a) => a,
-        None => {
-            single = [value.clone()];
-            &single
-        }
-    };
+    let parts = attr_value_parts(value);
     if parts.is_empty() {
         return false;
     }

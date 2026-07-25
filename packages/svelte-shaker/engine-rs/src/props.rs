@@ -234,14 +234,7 @@ pub(crate) fn literal_attr_value(value: &Value) -> Option<Literal> {
     if value.is_null() {
         return None;
     }
-    let single;
-    let parts: &[Value] = match value.as_array() {
-        Some(a) => a,
-        None => {
-            single = [value.clone()];
-            &single
-        }
-    };
+    let parts = attr_value_parts(value);
     if parts.len() == 1 {
         let part = &parts[0];
         if type_of(part) == Some("Text") {
@@ -260,7 +253,7 @@ pub(crate) fn literal_attr_value(value: &Value) -> Option<Literal> {
     }
     // Multiple parts: fold only when every part is static text.
     let mut text = String::new();
-    for part in parts {
+    for part in parts.iter() {
         if type_of(part) != Some("Text") {
             return None;
         }
@@ -371,14 +364,7 @@ fn single_expr_value(value: &Value) -> Value {
     if value == &Value::Bool(true) || value.is_null() {
         return Value::Null;
     }
-    let single;
-    let parts: &[Value] = match value.as_array() {
-        Some(a) => a,
-        None => {
-            single = [value.clone()];
-            &single
-        }
-    };
+    let parts = attr_value_parts(value);
     if parts.len() == 1 && type_of(&parts[0]) == Some("ExpressionTag") {
         return get(&parts[0], "expression").clone();
     }

@@ -62,16 +62,9 @@ pub(crate) fn class_tokens_from_attr(value: &Value, env: &Env, set_env: &SetEnv)
     if value.is_null() {
         return Some(HashSet::new());
     }
-    let single;
-    let parts: &[Value] = match value.as_array() {
-        Some(a) => a,
-        None => {
-            single = [value.clone()];
-            &single
-        }
-    };
+    let parts = attr_value_parts(value);
     let mut combos: Vec<String> = vec![String::new()];
-    for part in parts {
+    for part in parts.iter() {
         let frags = part_strings(part, env, set_env)?;
         let mut next = Vec::new();
         for base in &combos {
