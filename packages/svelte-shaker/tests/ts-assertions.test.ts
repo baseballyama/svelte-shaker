@@ -14,6 +14,7 @@ import type { ParseCache } from '../src/parse';
 import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { rsvelteParse } from './rsvelte-parse';
 import { assertCompiles, cleanTmp, renderGraphHtml } from './diff';
+import { memGraph } from './mem-graph';
 
 const MONO_ON = { enabled: true, maxVariants: 8, minSavings: 0 } as const;
 
@@ -41,27 +42,6 @@ afterAll(() => cleanTmp());
 // oracle).  The parity claim holds for today's rsvelte (which strips the node)
 // AND a future rsvelte that preserves it — the engine unwrap makes both true.
 // ----------------------------------------------------------------------
-
-/** Minimal in-memory module graph for the engine (POSIX-style absolute ids). */
-function memGraph(files: Record<string, string>): { resolve: Resolve; readFile: ReadFile } {
-  const resolve: Resolve = (source, importer) => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile: ReadFile = (id) => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
 
 /** Shake from `/App.svelte` driving the engine with the rsvelte parser (via the
  * ParseCache seam), instead of svelte/compiler. */

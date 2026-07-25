@@ -6,6 +6,7 @@ import {
   transformAll,
   type AnalyzeInput,
 } from '../src/index';
+import { memGraph } from './mem-graph';
 
 // ----------------------------------------------------------------------
 // M1 boundary regression (docs/RUST-MIGRATION.md §2).  The engine was split into
@@ -19,30 +20,6 @@ import {
 //  2. Running the engine on the (round-tripped) batched input is byte-for-byte
 //     identical to the convenience `svelteShaker` path.
 // ----------------------------------------------------------------------
-
-/** Minimal in-memory module graph (POSIX-style absolute ids). */
-function memGraph(files: Record<string, string>): {
-  resolve: (source: string, importer: string) => string | null;
-  readFile: (id: string) => string;
-} {
-  const resolve = (source: string, importer: string): string | null => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile = (id: string): string => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
 
 /** App -> Sub where Sub folds a never-passed prop (the basic1 shape) + a barrel
  * re-export, so the input exercises both `default-svelte` and `barrel` edges. */

@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { svelteShaker } from '../src/index';
 import { analyze } from '../src/analyze';
 import { assertCompiles, cleanTmp, renderGraphHtml } from './diff';
+import { memGraph } from './mem-graph';
 
 afterAll(() => cleanTmp());
 
@@ -13,30 +14,6 @@ afterAll(() => cleanTmp());
 // realistic-depth chain reaches the leaf.  Each probe still asserts the whole
 // program server-renders identical HTML (the soundness oracle).
 // ----------------------------------------------------------------------
-
-/** Minimal in-memory module graph for the engine (POSIX-style absolute ids). */
-function memGraph(files: Record<string, string>): {
-  resolve: (source: string, importer: string) => string | null;
-  readFile: (id: string) => string;
-} {
-  const resolve = (source: string, importer: string): string | null => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile = (id: string): string => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
 
 /** Render the whole `/App.svelte` graph (flat `/X.svelte` ids) to HTML. */
 async function graphHtml(files: Record<string, string>): Promise<string> {
