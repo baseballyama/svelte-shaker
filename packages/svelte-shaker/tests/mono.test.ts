@@ -10,6 +10,7 @@ import { monomorphize } from '../src/mono';
 import { svelteShakerWithMono, svelteShaker } from '../src/index';
 import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { assertCompiles, cleanTmp, renderGraphHtml } from './diff';
+import { memGraph } from './mem-graph';
 
 // The monomorphization net-win gate's size proxy — rsvelte's client codegen, the same
 // proxy the plugin injects and the native engine computes in-process. Without it the
@@ -36,30 +37,6 @@ afterAll(() => cleanTmp());
 // SAME observable HTML as the base component for the value occurring at its site;
 // declining to specialize (the conservative bail) is also always correct.
 // ----------------------------------------------------------------------
-
-/** Minimal in-memory module graph for the engine (POSIX-style absolute ids). */
-function memGraph(files: Record<string, string>): {
-  resolve: (source: string, importer: string) => string | null;
-  readFile: (id: string) => string;
-} {
-  const resolve = (source: string, importer: string): string | null => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile = (id: string): string => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
 
 const ON = { enabled: true, maxVariants: 8, minSavings: 0 } as const;
 

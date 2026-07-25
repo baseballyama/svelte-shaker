@@ -13,6 +13,7 @@ import type { ParseCache } from '../src/parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 import { rsvelteParse } from './rsvelte-parse';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
+import { memGraph } from './mem-graph';
 
 afterAll(() => cleanTmp());
 
@@ -30,26 +31,6 @@ afterAll(() => cleanTmp());
 // survived and the output byte-differed; 0.7 emits full TS type nodes, closing
 // that last divergence.)
 // ----------------------------------------------------------------------
-
-function memGraph(files: Record<string, string>): { resolve: Resolve; readFile: ReadFile } {
-  const resolve: Resolve = (source, importer) => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile: ReadFile = (id) => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
 
 /** Shake `entries` driving the engine with the rsvelte parser (via the ParseCache
  * seam), instead of svelte/compiler. */

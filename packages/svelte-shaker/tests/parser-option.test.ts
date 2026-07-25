@@ -1,12 +1,11 @@
 import { readdirSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { svelteShaker } from '../src/index';
 import { parseSvelte } from '../src/parse';
 import { tryLoadRsvelteParser } from '../src/rsvelte-parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
-import { afterAll } from 'vitest';
 
 afterAll(() => cleanTmp());
 

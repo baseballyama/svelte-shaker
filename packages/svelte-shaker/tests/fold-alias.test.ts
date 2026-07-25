@@ -5,35 +5,12 @@ import { svelteShaker } from '../src/index';
 import { fsResolve } from '../src/scan';
 import { analyze } from '../src/analyze';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
+import { memGraph } from './mem-graph';
 
 afterAll(() => cleanTmp());
 
 const FIXTURES = resolve(__dirname, 'fixtures');
 const readFile = (id: string) => readFileSync(id, 'utf-8');
-
-/** Minimal in-memory module graph for the engine (POSIX-style absolute ids). */
-function memGraph(files: Record<string, string>): {
-  resolve: (source: string, importer: string) => string | null;
-  readFile: (id: string) => string;
-} {
-  const res = (source: string, importer: string): string | null => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const read = (id: string): string => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve: res, readFile: read };
-}
 
 // ----------------------------------------------------------------------
 // Issue #37: aliased `$props()` destructuring (`prop: alias = default`).

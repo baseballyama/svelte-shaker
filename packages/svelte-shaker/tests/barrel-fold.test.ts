@@ -1,6 +1,7 @@
 import { describe, expect, it, afterAll } from 'vitest';
 import { svelteShaker, analyze } from '../src/index';
 import { renderHtml, assertCompiles, cleanTmp } from './diff';
+import { memGraph } from './mem-graph';
 
 // ----------------------------------------------------------------------
 // A component imported through a NAMED barrel re-export (the design-system /
@@ -19,30 +20,6 @@ import { renderHtml, assertCompiles, cleanTmp } from './diff';
 // test first).  Soundness is defended by the SSR oracle: the shaken child must
 // render byte-identical HTML for the values the app actually passes.
 // ----------------------------------------------------------------------
-
-/** Minimal in-memory module graph (POSIX-style absolute ids); mirrors batch.test.ts. */
-function memGraph(files: Record<string, string>): {
-  resolve: (source: string, importer: string) => string | null;
-  readFile: (id: string) => string;
-} {
-  const resolve = (source: string, importer: string): string | null => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile = (id: string): string => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
 
 /**
  * App renders the library component `<Lib msg="hi" />` and never passes

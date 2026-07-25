@@ -5,12 +5,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { compile } from 'svelte/compiler';
 import { render } from 'svelte/server';
-import { svelteShaker } from '../src/index';
+import { svelteShaker, type ReadFile } from '../src/index';
 import { analyze } from '../src/analyze';
 import { evaluateWithSets } from '../src/eval';
 import { parseSvelte, type AnyNode } from '../src/parse';
 import type { Literal } from '../src/ir';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
+import { memGraph } from './mem-graph';
 
 const TMP = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -29,33 +30,9 @@ afterAll(() => rmSync(TMP, { recursive: true, force: true }));
 // ORIGINAL vs SHAKEN server HTML for every prop value that actually occurs.
 // ----------------------------------------------------------------------
 
-/** Minimal in-memory module graph (POSIX-style absolute ids). */
-function memGraph(files: Record<string, string>): {
-  resolve: (source: string, importer: string) => string | null;
-  readFile: (id: string) => string;
-} {
-  const resolve = (source: string, importer: string): string | null => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile = (id: string): string => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
-
 async function shake(files: Record<string, string>): Promise<{
   out: Record<string, string>;
-  readFile: (id: string) => string;
+  readFile: ReadFile;
 }> {
   const { resolve, readFile } = memGraph(files);
   const out = await svelteShaker('/App.svelte', resolve, readFile);
@@ -65,11 +42,11 @@ async function shake(files: Record<string, string>): Promise<{
 /** Assert the shaken child compiles AND renders identically for every combo. */
 async function expectSound(
   out: Record<string, string>,
-  readFile: (id: string) => string,
+  readFile: ReadFile,
   childId: string,
   combos: Array<Record<string, unknown>>,
 ): Promise<string> {
-  const original = readFile(childId);
+  const original = await readFile(childId);
   const shaken = out[childId]!;
   const name = childId.slice(childId.lastIndexOf('/') + 1);
   assertCompiles(shaken, name);

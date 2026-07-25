@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { svelteShaker } from '../src/index';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
+import { memGraph } from './mem-graph';
 
 // ----------------------------------------------------------------------
 // Transform robustness on real-world component shapes that the golden fixtures
@@ -8,29 +9,6 @@ import { assertCompiles, cleanTmp, renderHtml } from './diff';
 // a MagicString "Cannot split a chunk that has already been edited") until fixed.
 // The SSR oracle (`renderHtml`) plus `assertCompiles` are the soundness guards.
 // ----------------------------------------------------------------------
-
-function memGraph(files: Record<string, string>): {
-  resolve: (source: string, importer: string) => string | null;
-  readFile: (id: string) => string;
-} {
-  const resolve = (source: string, importer: string): string | null => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile = (id: string): string => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
 
 afterAll(cleanTmp);
 

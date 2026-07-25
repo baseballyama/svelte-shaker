@@ -7,34 +7,12 @@ import {
   svelteShakerWithMono,
   type ComponentId,
   type MonomorphizeOptions,
-  type ReadFile,
-  type Resolve,
 } from '../src/index';
 import { revertCascade } from '../src/revert-cascade';
 import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 import { loadNativeAddon } from './native-addon';
-
-/** An in-memory `.svelte` graph, so a test can pin exact sources (incl. an invalid one). */
-function memGraph(files: Record<string, string>): { resolve: Resolve; readFile: ReadFile } {
-  const resolve: Resolve = (source, importer) => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile: ReadFile = (id) => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
+import { memGraph } from './mem-graph';
 
 // The native chatty full-shake (Round 2) must produce byte-for-byte the SAME output
 // as the TS `svelteShakerWithMono` — the audited, differential-SSR-tested reference.

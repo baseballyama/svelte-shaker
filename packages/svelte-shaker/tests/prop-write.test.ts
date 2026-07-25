@@ -4,6 +4,7 @@ import { svelteShaker } from '../src/index';
 import { shakeWithRevertCascade } from '../src/revert-cascade';
 import { transformAll } from '../src/transform';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
+import { memGraph } from './mem-graph';
 
 afterAll(() => cleanTmp());
 
@@ -19,30 +20,6 @@ afterAll(() => cleanTmp());
 // sound AND the call-site attribute survives (the prop was not folded away).
 // ----------------------------------------------------------------------
 
-/** Minimal in-memory module graph for the engine (POSIX-style absolute ids). */
-function memGraph(files: Record<string, string>): {
-  resolve: (source: string, importer: string) => string | null;
-  readFile: (id: string) => string;
-} {
-  const resolve = (source: string, importer: string): string | null => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile = (id: string): string => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
-
 /**
  * Shake `files` from `/App.svelte`, assert `/Child.svelte` compiles and renders
  * identical HTML before/after for each combo, and return the shaken App + Child.
@@ -52,7 +29,7 @@ async function shakeChild(
   combos: Array<Record<string, unknown>>,
 ): Promise<{ app: string; child: string }> {
   const { resolve, readFile } = memGraph(files);
-  const original = readFile('/Child.svelte');
+  const original = await readFile('/Child.svelte');
   const out = await svelteShaker('/App.svelte', resolve, readFile);
   const child = out['/Child.svelte']!;
   assertCompiles(child, 'Child.svelte');
@@ -162,7 +139,11 @@ describe('soundness probes: props written inside the component are not folded', 
     expect(out['/App.svelte']).not.toContain('label="a"');
     expect(child).not.toMatch(/let \{ label/);
     expect(child).toContain('<p>hit</p>');
-    const before = await renderHtml(readFile('/Child.svelte'), { label: 'a' }, 'Child.svelte');
+    const before = await renderHtml(
+      await readFile('/Child.svelte'),
+      { label: 'a' },
+      'Child.svelte',
+    );
     const after = await renderHtml(child, { label: 'a' }, 'Child.svelte');
     expect(after).toBe(before);
   });

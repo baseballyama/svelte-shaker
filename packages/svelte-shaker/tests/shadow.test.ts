@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { svelteShaker } from '../src/index';
 import { analyze } from '../src/analyze';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
+import { memGraph } from './mem-graph';
 
 afterAll(() => cleanTmp());
 
@@ -21,30 +22,6 @@ afterAll(() => cleanTmp());
 // analysis refuse to fold any such prop, so the transform never corrupts it.
 // ----------------------------------------------------------------------
 
-/** Minimal in-memory module graph for the engine (POSIX-style absolute ids). */
-function memGraph(files: Record<string, string>): {
-  resolve: (source: string, importer: string) => string | null;
-  readFile: (id: string) => string;
-} {
-  const resolve = (source: string, importer: string): string | null => {
-    if (!source.startsWith('.')) return null;
-    const base = importer.slice(0, importer.lastIndexOf('/'));
-    const parts: string[] = [];
-    for (const seg of `${base}/${source}`.split('/')) {
-      if (seg === '' || seg === '.') continue;
-      if (seg === '..') parts.pop();
-      else parts.push(seg);
-    }
-    return `/${parts.join('/')}`;
-  };
-  const readFile = (id: string): string => {
-    const code = files[id];
-    if (code === undefined) throw new Error(`no such file: ${id}`);
-    return code;
-  };
-  return { resolve, readFile };
-}
-
 /**
  * Shake `files` from `/App.svelte` and assert the named child compiles AND
  * renders identical HTML before/after for every prop combo in `combos`.
@@ -56,7 +33,7 @@ async function expectSoundChild(
   combos: Array<Record<string, unknown>>,
 ): Promise<string> {
   const { resolve, readFile } = memGraph(files);
-  const original = readFile(childId);
+  const original = await readFile(childId);
   const out = await svelteShaker('/App.svelte', resolve, readFile);
   const shaken = out[childId]!;
   const name = childId.slice(childId.lastIndexOf('/') + 1);
@@ -280,7 +257,7 @@ describe('soundness probes: dynamic component escape (docs §4.1)', () => {
 
     // D is untouched, so EVERY variant (including the escaped "danger") renders
     // identically before/after.
-    const dOriginal = readFile('/D.svelte');
+    const dOriginal = await readFile('/D.svelte');
     for (const variant of ['danger', 'primary', 'other'] as const) {
       const before = await renderHtml(dOriginal, { variant }, 'D.svelte');
       const after = await renderHtml(dShaken, { variant }, 'D.svelte');
@@ -289,7 +266,7 @@ describe('soundness probes: dynamic component escape (docs §4.1)', () => {
     expect(await renderHtml(dShaken, { variant: 'danger' }, 'D.svelte')).toContain('DANGER');
 
     // Plain folded soundly for the value that occurs.
-    const plainOriginal = readFile('/Plain.svelte');
+    const plainOriginal = await readFile('/Plain.svelte');
     expect(await renderHtml(plainShaken, { show: false }, 'Plain.svelte')).toBe(
       await renderHtml(plainOriginal, { show: false }, 'Plain.svelte'),
     );
@@ -309,7 +286,7 @@ describe('soundness probes: dynamic component escape (docs §4.1)', () => {
     const out = await svelteShaker('/App.svelte', resolve, readFile);
     const dShaken = out['/D.svelte']!;
     assertCompiles(dShaken, 'D.svelte');
-    const dOriginal = readFile('/D.svelte');
+    const dOriginal = await readFile('/D.svelte');
     for (const variant of ['danger', 'other'] as const) {
       const before = await renderHtml(dOriginal, { variant }, 'D.svelte');
       const after = await renderHtml(dShaken, { variant }, 'D.svelte');
