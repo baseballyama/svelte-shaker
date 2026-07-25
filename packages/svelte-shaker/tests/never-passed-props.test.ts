@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildAnalyzeInput, findNeverPassedProps } from '../src/index';
-import type { ReadFile, Resolve } from '../src/index';
+import { buildAnalyzeInput, findNeverPassedProps } from '../src/analyze';
+import type { ReadFile, Resolve } from '../src/analyze';
 
 const resolve: Resolve = (source, importer) =>
   source.startsWith('.') ? new URL(source, `file://${importer}`).pathname : null;

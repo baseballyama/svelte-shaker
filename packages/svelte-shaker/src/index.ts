@@ -25,28 +25,10 @@ export type {
   EdgeKind,
   EditResult,
 } from './ir.js';
-export type { Resolve, ReadFile, ResolveSync, ReadFileSync } from './analyze.js';
+export type { Resolve, ReadFile } from './analyze.js';
 export type { Parse, Root } from './parse.js';
-export {
-  analyze,
-  analyzeInput,
-  buildAnalyzeInput,
-  buildAnalyzeInputSync,
-  deadSpansForPlans,
-  findNeverPassedProps,
-} from './analyze.js';
-export type { UnpassedProp } from './analyze.js';
-export { DevShaker, type DevMode, type DevShakerChange } from './engine.js';
-export { transformAll, transformAllWithMono } from './transform.js';
-export {
-  monomorphize,
-  DEFAULT_MONO_OPTIONS,
-  type MonomorphizeOptions,
-  type MonomorphizeResult,
-  type OwnSize,
-  type Variant,
-  type CallSiteBinding,
-} from './mono.js';
+export { analyze, buildAnalyzeInput } from './analyze.js';
+export { DEFAULT_MONO_OPTIONS, type MonomorphizeOptions, type OwnSize } from './mono.js';
 
 /**
  * Whole-program shake: crawl the component graph from `entry`, decide what to

@@ -2,7 +2,7 @@
  * Scan a whole resolved program for never-passed props (typed path — the default).
  *
  * `inputJson` is the JSON of `{ files: { id: string; code: string }[]; edges:
- * ResolvedEdge[] }` — the output of svelte-shaker's `buildAnalyzeInputSync` crawl
+ * ResolvedEdge[] }` — the output of svelte-shaker's `buildAnalyzeInput` crawl
  * (resolution already done). Returns the JSON of `{ [fileId: string]: { name:
  * string; start: number; end: number }[] }` with UTF-16 offsets, keys sorted by
  * file id — the same shape as the WASM `find_never_passed_props_json` and the TS

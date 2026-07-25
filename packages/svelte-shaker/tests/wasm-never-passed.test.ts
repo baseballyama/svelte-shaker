@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-import { buildAnalyzeInput, findNeverPassedProps } from '../src/index';
-import type { ReadFile, Resolve } from '../src/index';
+import { buildAnalyzeInput, findNeverPassedProps } from '../src/analyze';
+import type { ReadFile, Resolve } from '../src/analyze';
 import { parseSvelte } from '../src/parse';
 
 // The Rust/WASM `find_never_passed_props_json` must match the TS

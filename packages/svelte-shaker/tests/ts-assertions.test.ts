@@ -1,15 +1,14 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import {
-  analyzeInput,
   buildAnalyzeInput,
   svelteShaker,
   svelteShakerWithMono,
-  transformAll,
   type ReadFile,
   type Resolve,
   type ShakeResult,
 } from '../src/index';
-import { analyze } from '../src/analyze';
+import { analyze, analyzeInput } from '../src/analyze';
+import { transformAll } from '../src/transform';
 import type { ParseCache } from '../src/parse';
 import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { rsvelteParse } from './rsvelte-parse';

@@ -2,8 +2,8 @@ import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildAnalyzeInput, findNeverPassedProps } from '../src/index';
-import type { ReadFile, Resolve, UnpassedProp } from '../src/index';
+import { buildAnalyzeInput, findNeverPassedProps } from '../src/analyze';
+import type { ReadFile, Resolve, UnpassedProp } from '../src/analyze';
 
 // The native (napi) scanner must match the TS `findNeverPassedProps` on the same
 // program — name AND span, byte-for-byte. The native path parses with rsvelte and

@@ -27,12 +27,6 @@ export type Resolve = (
 ) => Promise<ComponentId | null> | ComponentId | null;
 export type ReadFile = (id: ComponentId) => Promise<string> | string;
 
-/** Synchronous variants of {@link Resolve}/{@link ReadFile} for callers that
- * cannot await — e.g. an ESLint rule, which runs synchronously. Used by
- * {@link buildAnalyzeInputSync}. */
-export type ResolveSync = (source: string, importer: ComponentId) => ComponentId | null;
-export type ReadFileSync = (id: ComponentId) => string;
-
 /**
  * The set of input names a child component can ever OBSERVE at runtime (reverse
  * analysis).  In runes there is no `$$props`/`$$restProps`, so a
@@ -552,106 +546,6 @@ export async function buildAnalyzeInput(
     // Enqueue every child this file renders: direct `.svelte`, the barrel children
     // it renders (`barrelLocals` already holds only rendered locals), and the
     // namespace members it renders.
-    for (const childId of [...directChildren, ...barrelLocals.values(), ...nsChildren]) {
-      if (!seen.has(childId)) {
-        seen.add(childId);
-        queue.push(childId);
-      }
-    }
-  }
-
-  return { files, edges, entries: entryList, escaped };
-}
-
-/**
- * Synchronous twin of {@link buildAnalyzeInput} for callers that cannot await
- * (an ESLint rule runs synchronously). Byte-for-byte the same crawl with sync
- * `resolve`/`readFile`; the `tests/build-analyze-input-sync` differential test
- * pins it identical to the async path, so keep the two bodies in lockstep.
- */
-export function buildAnalyzeInputSync(
-  entries: ComponentId | ComponentId[],
-  resolve: ResolveSync,
-  readFile: ReadFileSync,
-  parseCache?: ParseCache,
-  parse?: Parse,
-  escaped: ComponentId[] = [],
-  factsProvider?: FactsProvider,
-): AnalyzeInput {
-  const getFacts: FactsProvider =
-    factsProvider ?? ((id, code) => jsCrawlFacts(id, code, parseCache, parse));
-  const entryList = Array.isArray(entries) ? [...entries] : [entries];
-  const files: InputFile[] = [];
-  const edges: ResolvedEdge[] = [];
-  const queue: ComponentId[] = [...entryList];
-  const seen = new Set<ComponentId>(queue);
-  const barrelCache: BarrelCache = new Map();
-
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    const code = readFile(id);
-    files.push({ id, code });
-
-    const facts = getFacts(id, code);
-    if (!facts) continue;
-
-    // See {@link buildAnalyzeInput}: resolve a barrel only for named imports
-    // actually rendered as a `<Local>` component here, to avoid reading+parsing
-    // modules behind value-only named imports.
-    const renderedTags = facts.renderedTags;
-
-    const barrelLocals = new Map<string, ComponentId>();
-    const namespaceSources = new Map<string, string>();
-    const directChildren: ComponentId[] = [];
-    for (const imp of facts.imports) {
-      if (imp.imported === '*') {
-        namespaceSources.set(imp.local, imp.value);
-        continue;
-      }
-      if (imp.imported === 'default' && isSvelte(imp.value)) {
-        const childId = resolve(imp.value, id);
-        if (childId) {
-          edges.push({ from: id, local: imp.local, to: childId, kind: 'default-svelte' });
-          directChildren.push(childId);
-        }
-        continue;
-      }
-      if (!renderedTags.has(imp.local)) continue;
-      const childId = resolveThroughBarrelSync(
-        imp.value,
-        imp.imported,
-        id,
-        resolve,
-        readFile,
-        barrelCache,
-      );
-      if (childId) {
-        edges.push({ from: id, local: imp.local, to: childId, kind: 'barrel' });
-        barrelLocals.set(imp.local, childId);
-      }
-    }
-
-    const nsChildren: ComponentId[] = [];
-    if (namespaceSources.size > 0) {
-      for (const tag of facts.memberTags) {
-        const dot = tag.indexOf('.');
-        const source = namespaceSources.get(tag.slice(0, dot));
-        if (source == null) continue;
-        const childId = resolveThroughBarrelSync(
-          source,
-          tag.slice(dot + 1),
-          id,
-          resolve,
-          readFile,
-          barrelCache,
-        );
-        if (childId) {
-          edges.push({ from: id, local: tag, to: childId, kind: 'namespace' });
-          nsChildren.push(childId);
-        }
-      }
-    }
-
     for (const childId of [...directChildren, ...barrelLocals.values(), ...nsChildren]) {
       if (!seen.has(childId)) {
         seen.add(childId);
@@ -2254,89 +2148,6 @@ async function resolveThroughBarrel(
     // `export * from './x'` — the name may live behind the wildcard.
     if (stmt.type === 'ExportAllDeclaration' && stmt.source?.value) {
       const via = await resolveThroughBarrel(
-        String(stmt.source.value),
-        imported,
-        targetId,
-        resolve,
-        readFile,
-        cache,
-        hops + 1,
-      );
-      if (via) return via;
-    }
-  }
-  return null;
-}
-
-/** Synchronous twin of {@link resolveThroughBarrel} (see {@link
- * buildAnalyzeInputSync}). Keep in lockstep with the async body above. */
-function resolveThroughBarrelSync(
-  source: string,
-  imported: string,
-  importer: ComponentId,
-  resolve: ResolveSync,
-  readFile: ReadFileSync,
-  cache: BarrelCache,
-  hops = 0,
-): ComponentId | null {
-  if (hops > MAX_BARREL_HOPS) return null;
-  const targetId = resolve(source, importer);
-  if (!targetId) return null;
-
-  if (isSvelte(source) || isSvelte(targetId)) {
-    return imported === 'default' || imported === '*' ? targetId : null;
-  }
-
-  let body = cache.get(targetId);
-  if (body === undefined) {
-    let code: string | null;
-    try {
-      code = readFile(targetId);
-    } catch {
-      code = null;
-    }
-    body = code === null ? null : parseModuleBody(code, targetId);
-    cache.set(targetId, body);
-  }
-  if (!body) return null;
-
-  for (const stmt of body) {
-    if (stmt.type === 'ExportNamedDeclaration' && stmt.source?.value) {
-      for (const spec of stmt.specifiers ?? []) {
-        if (specName(spec.exported) !== imported) continue;
-        return resolveThroughBarrelSync(
-          String(stmt.source.value),
-          specName(spec.local) ?? 'default',
-          targetId,
-          resolve,
-          readFile,
-          cache,
-          hops + 1,
-        );
-      }
-      continue;
-    }
-    if (stmt.type === 'ExportNamedDeclaration' && !stmt.source) {
-      for (const spec of stmt.specifiers ?? []) {
-        if (specName(spec.exported) !== imported) continue;
-        const localName = specName(spec.local);
-        if (!localName) continue;
-        const found = followLocalImport(body, localName);
-        if (!found) return null;
-        return resolveThroughBarrelSync(
-          found.value,
-          found.imported,
-          targetId,
-          resolve,
-          readFile,
-          cache,
-          hops + 1,
-        );
-      }
-      continue;
-    }
-    if (stmt.type === 'ExportAllDeclaration' && stmt.source?.value) {
-      const via = resolveThroughBarrelSync(
         String(stmt.source.value),
         imported,
         targetId,

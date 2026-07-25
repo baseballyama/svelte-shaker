@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildAnalyzeInput, findNeverPassedProps, type ReadFile, type Resolve } from '../src/index';
+import {
+  buildAnalyzeInput,
+  findNeverPassedProps,
+  type ReadFile,
+  type Resolve,
+} from '../src/analyze';
 
 // Resolving a barrel (`.js`/`.ts` re-export) costs a module read+parse, so the
 // crawl does it ONLY for named imports actually rendered as a `<Local>` here. A

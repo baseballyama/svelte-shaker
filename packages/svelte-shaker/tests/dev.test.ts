@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { DevShaker, svelteShaker, type DevMode } from '../src/index';
+import { svelteShaker } from '../src/index';
+import { DevShaker, type DevMode } from '../src/engine';
 import { assertCompiles, cleanTmp, renderHtml } from './diff';
 
 afterAll(() => cleanTmp());
