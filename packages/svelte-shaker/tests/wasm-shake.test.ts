@@ -348,6 +348,47 @@ describe('M5: Rust (WASM) shake output is byte-identical to svelteShaker', () =>
     expect(viaRust['/S14.svelte']).not.toMatch(/let \{ v/);
   });
 
+  it('folds a >17-significant-digit literal correctly (parse-side rounding, issue #178)', async () => {
+    // serde_json mis-rounds `123456789012345680000` by one ULP when the AST JSON
+    // crosses into the Rust engine, so the folded number used to print as the
+    // neighbouring f64 (`...670000`) and byte-diverge from the TS engine. The Rust
+    // engine now re-parses the literal's `raw` source with Rust's correctly-rounded
+    // `str::parse::<f64>`. Passed as a member so it lands in source text.
+    const files: Record<string, string> = {
+      '/App.svelte': `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub n={123456789012345680000} />`,
+      '/Sub.svelte': `<script>\n  let { n } = $props();\n</script>\n<p>{n.toLocaleString()}</p>`,
+    };
+    const resolve = (source: string, importer: string): string | null => {
+      if (!source.startsWith('.')) return null;
+      const base = importer.slice(0, importer.lastIndexOf('/'));
+      const parts: string[] = [];
+      for (const seg of `${base}/${source}`.split('/')) {
+        if (seg === '' || seg === '.') continue;
+        if (seg === '..') parts.pop();
+        else parts.push(seg);
+      }
+      return `/${parts.join('/')}`;
+    };
+    const readFile = (id: string): string => files[id]!;
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const programInput = {
+      files: input.files.map((f) => ({ id: f.id, ast: parseSvelte(f.code, f.id), code: f.code })),
+      edges: input.edges,
+      entries: input.entries,
+    };
+    const viaRust = JSON.parse(wasm.shake_program(JSON.stringify(programInput))) as Record<
+      string,
+      string
+    >;
+    const viaTs = await svelteShaker('/App.svelte', resolve, readFile);
+    expect(viaRust).toEqual(viaTs);
+    for (const [id, code] of Object.entries(viaRust)) assertCompiles(code, id);
+    // The correctly-rounded decimal is folded, not serde_json's off-by-one-ULP neighbour.
+    expect(viaRust['/Sub.svelte']).toContain('(123456789012345680000)');
+    expect(viaRust['/Sub.svelte']).not.toContain('123456789012345670000');
+  });
+
   it('folds numbers with JS `Number#toString` at the exponent boundaries', async () => {
     // A folded number is turned back into source text by the Rust engine's
     // `js_number_to_string`. `format!("{n}")` diverges from JS at the spec's
