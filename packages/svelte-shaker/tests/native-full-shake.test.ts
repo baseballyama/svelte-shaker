@@ -156,6 +156,46 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     expect(files['/Sub.svelte']).not.toContain('1000000000000000000000'); // the old `format!` bug
   });
 
+  it('folds a >17-significant-digit literal correctly (parse-side rounding, issue #178)', async () => {
+    // serde_json mis-rounds `123456789012345680000` by one ULP; the engine now
+    // re-parses the literal's `raw` source with Rust's correctly-rounded
+    // `str::parse::<f64>`, so the native engine folds the same decimal as TS. Kept
+    // in-memory so the fresh local addon is exercised, not the published binary.
+    const { resolve, readFile } = memGraph({
+      '/App.svelte': `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub n={123456789012345680000} />`,
+      '/Sub.svelte': `<script>\n  let { n } = $props();\n</script>\n<p>{n.toLocaleString()}</p>`,
+    });
+
+    const tsResult = await svelteShakerWithMono(
+      '/App.svelte',
+      resolve,
+      readFile,
+      MONO_OFF,
+      variantSpecifier,
+    );
+
+    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
+    const session = new addon!.ShakeSession();
+    session.parse(JSON.stringify({ files: input.files.map((f) => ({ id: f.id, code: f.code })) }));
+    const config = {
+      edges: input.edges,
+      entries: input.entries,
+      escaped: input.escaped ?? [],
+      mono: MONO_OFF,
+    };
+    let native!: Shaken;
+    const files = revertCascade(input.files, (forceBail) => {
+      native = JSON.parse(
+        session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] })),
+      ) as Shaken;
+      return native.files;
+    });
+
+    expect(files).toEqual(tsResult.files);
+    expect(files['/Sub.svelte']).toContain('(123456789012345680000)');
+    expect(files['/Sub.svelte']).not.toContain('123456789012345670000');
+  });
+
   it('drops every dropped prop from an inline `$props()` type, even overlapping members', async () => {
     // `remove_type_member` emits `[a.start, b.start)` then `[a.end, b.end)` when it
     // drops the LAST type member whose predecessor is also dropped — two OVERLAPPING

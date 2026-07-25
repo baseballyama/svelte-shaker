@@ -22,12 +22,14 @@ pub enum Literal {
 }
 
 impl Literal {
-    /// Read a literal off a `Literal` AST node's `value` (never `undefined` —
-    /// source has no `undefined` literal; that is the `undefined` identifier).
-    pub fn from_node_value(v: &Value) -> Option<Literal> {
-        match v {
+    /// Read a literal off a `Literal` AST node (never `undefined` — source has no
+    /// `undefined` literal; that is the `undefined` identifier). The whole node is
+    /// taken (not just its `value`) so a numeric literal can be re-parsed from its
+    /// verbatim `raw` source (see `parse_number_literal`).
+    pub fn from_node(node: &Value) -> Option<Literal> {
+        match node.get("value")? {
             Value::String(s) => Some(Literal::Str(s.clone())),
-            Value::Number(n) => Some(Literal::Num(n.as_f64()?)),
+            Value::Number(n) => Some(Literal::Num(parse_number_literal(node, n)?)),
             Value::Bool(b) => Some(Literal::Bool(*b)),
             Value::Null => Some(Literal::Null),
             _ => None,
@@ -105,6 +107,36 @@ impl Literal {
             Literal::Undefined => Value::Null,
         }
     }
+}
+
+/// Recover the exact `f64` a JS `Number` literal denotes, preferring the node's
+/// verbatim `raw` source over serde_json's already-parsed `value`.
+///
+/// serde_json's float parser is NOT always correctly rounded: for a decimal
+/// literal needing >17 significant digits it can land on the f64 *neighbouring*
+/// the correctly-rounded value (issue #178 — e.g. `123456789012345680000` parses
+/// one ULP low). That wrong neighbour then prints (via `ryu-js`) as a different
+/// decimal than JS `Number` produces, breaking the 3-engine byte-identity
+/// invariant. Rust's `str::parse::<f64>` IS correctly rounded (round-to-nearest,
+/// ties-to-even — same as JS `Number`), so re-parsing the source token fixes it.
+///
+/// `raw` is the literal's exact source. Numeric separators (`1_000`) are stripped
+/// (Rust's parser rejects `_`, JS ignores them). Non-decimal forms — `0x`/`0o`/
+/// `0b`, and the `BigInt` `n` suffix — don't `str::parse` as f64; those fall back
+/// to serde's `value`, which is exact for them (they never hit the >17-digit
+/// rounding gap). Missing/unparseable `raw` also falls back, so nothing regresses.
+fn parse_number_literal(node: &Value, parsed: &serde_json::Number) -> Option<f64> {
+    if let Some(raw) = node.get("raw").and_then(Value::as_str) {
+        let cleaned = if raw.contains('_') {
+            std::borrow::Cow::Owned(raw.replace('_', ""))
+        } else {
+            std::borrow::Cow::Borrowed(raw)
+        };
+        if let Ok(v) = cleaned.parse::<f64>() {
+            return Some(v);
+        }
+    }
+    parsed.as_f64()
 }
 
 /// JS `ToNumber(String)` (ECMA-262 §7.1.4.1) for the cases the constant
@@ -222,7 +254,7 @@ pub fn evaluate(node: &Value, env: &Env) -> Option<Literal> {
         return None;
     }
     match type_of(node) {
-        "Literal" => Literal::from_node_value(node.get("value")?),
+        "Literal" => Literal::from_node(node),
         "Identifier" => {
             let name = node.get("name").and_then(Value::as_str)?;
             if name == "undefined" {
@@ -635,6 +667,40 @@ mod tests {
             // agree with the source-text path for numbers.
             assert_eq!(Literal::Num(n).to_dom_string(), want);
         }
+    }
+
+    #[test]
+    fn number_literal_reparsed_from_raw_is_correctly_rounded() {
+        // serde_json mis-rounds this >17-significant-digit integer literal by one
+        // ULP (issue #178): its `value` decodes to the neighbouring f64. The
+        // literal node carries the verbatim `raw`, so `from_node` re-parses it with
+        // Rust's correctly-rounded `str::parse` and recovers the exact f64 JS
+        // `Number("123456789012345680000")` produces.
+        let correct = 123456789012345680000f64; // == the JS Number value
+        let node: Value = serde_json::from_str(
+            r#"{ "type": "Literal", "value": 123456789012345680000, "raw": "123456789012345680000" }"#,
+        )
+        .unwrap();
+        // The bug is real: the pre-parsed `value` alone is the wrong neighbour.
+        let serde_value = node.get("value").unwrap().as_f64().unwrap();
+        assert_ne!(serde_value.to_bits(), correct.to_bits());
+        // `from_node` prefers `raw` and lands on the correct bits.
+        assert_eq!(Literal::from_node(&node), Some(Literal::Num(correct)));
+
+        // Numeric separators are stripped before parsing (Rust rejects `_`).
+        let sep: Value =
+            serde_json::from_str(r#"{ "type": "Literal", "value": 1000, "raw": "1_000" }"#).unwrap();
+        assert_eq!(Literal::from_node(&sep), Some(Literal::Num(1000.0)));
+
+        // A hex literal doesn't `str::parse` as f64 -> fall back to serde's value.
+        let hex: Value =
+            serde_json::from_str(r#"{ "type": "Literal", "value": 255, "raw": "0xff" }"#).unwrap();
+        assert_eq!(Literal::from_node(&hex), Some(Literal::Num(255.0)));
+
+        // No `raw` (some serialized nodes omit it) -> fall back, never panic.
+        let bare: Value =
+            serde_json::from_str(r#"{ "type": "Literal", "value": 42 }"#).unwrap();
+        assert_eq!(Literal::from_node(&bare), Some(Literal::Num(42.0)));
     }
 
     #[test]

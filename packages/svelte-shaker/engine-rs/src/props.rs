@@ -246,7 +246,7 @@ pub(crate) fn literal_attr_value(value: &Value) -> Option<Literal> {
             // assertion — mono's `specializable_shape` reads the `dynamic` flag.
             let expr = unwrap_ts_assertions(get(part, "expression"));
             if str_eq(expr, "type", "Literal") {
-                return Literal::from_node_value(expr.get("value")?);
+                return Literal::from_node(expr);
             }
         }
         return None;
@@ -468,7 +468,7 @@ pub(crate) fn literal_default(expr: &Value) -> Option<Literal> {
         return Some(Literal::Undefined); // omitted default -> undefined
     }
     match type_of(expr) {
-        Some("Literal") => Literal::from_node_value(expr.get("value")?),
+        Some("Literal") => Literal::from_node(expr),
         Some("Identifier") if expr.get("name").and_then(Value::as_str) == Some("undefined") => {
             Some(Literal::Undefined)
         }
