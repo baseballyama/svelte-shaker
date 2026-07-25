@@ -198,6 +198,11 @@ export function monomorphize(
   // its live sites folds a non-base residual (all-sites-or-nothing).
   const liveSitesByChild = new Map<ComponentId, Candidate[]>();
   const ineligible = new Set<ComponentId>(); // a live site that cannot specialize
+  // A child's residual depends only on (child, plan, shape); child/plan are fixed per
+  // id, so memoize by (childId, shapeKey) — K live sites with the SAME shape then
+  // render (a whole-source `shakeBody`) once, not K times. Cache only, no behavior
+  // change: a miss recomputes the identical string.
+  const residualCache = new Map<ComponentId, Map<string, string>>();
 
   for (const owner of models.values()) {
     const dead = deadSpans.get(owner.id) ?? [];
@@ -220,7 +225,7 @@ export function monomorphize(
         ineligible.add(call.childId);
         continue;
       }
-      const code = renderResidual(child, childPlan, shape);
+      const code = renderResidualMemo(residualCache, child, childPlan, shape);
       if (code === baseResidual(child, childPlan)) {
         // The extra literals fold nothing the base did not -> base residual ->
         // this site keeps the base.  Disqualify the child.
@@ -598,6 +603,51 @@ function renderResidual(
   const s = new MagicString(child.code);
   shakeBody(child, env, setEnv, plan, s);
   return s.toString();
+}
+
+/**
+ * A collision-free canonical key for a specialization shape, so two live sites that
+ * freeze the SAME props to the SAME literals render the child once instead of per
+ * site.  Order-independent (sorted by name) and length-prefixed / type-tagged so no
+ * two distinct shapes can share a key: string segments carry their length, `-0` stays
+ * distinct from `0`, and each literal kind carries its own tag.
+ */
+function shapeKey(shape: Map<string, Literal>): string {
+  const entries = [...shape].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  let key = '';
+  for (const [name, value] of entries) {
+    key += `${name.length}:${name}`;
+    if (value === undefined) key += 'U';
+    else if (value === null) key += 'N';
+    else if (typeof value === 'string') key += `s${value.length}:${value}`;
+    else if (typeof value === 'boolean') key += value ? 'T' : 'F';
+    else key += `d${Object.is(value, -0) ? '-0' : String(value)};`;
+  }
+  return key;
+}
+
+/**
+ * {@link renderResidual}, memoized by `(childId, shapeKey)`.  Rendering re-runs the
+ * whole-source `shakeBody`, so a hot child with many equal-shape sites otherwise pays
+ * it once per site.  Transparent: a cache miss recomputes the identical string.
+ */
+function renderResidualMemo(
+  cache: Map<ComponentId, Map<string, string>>,
+  child: FileModel,
+  plan: ComponentPlan,
+  extra: Map<string, Literal>,
+): string {
+  let byShape = cache.get(child.id);
+  if (byShape === undefined) {
+    byShape = new Map();
+    cache.set(child.id, byShape);
+  }
+  const key = shapeKey(extra);
+  const cached = byShape.get(key);
+  if (cached !== undefined) return cached;
+  const code = renderResidual(child, plan, extra);
+  byShape.set(key, code);
+  return code;
 }
 
 /**

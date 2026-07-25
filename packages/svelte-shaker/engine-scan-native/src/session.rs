@@ -222,7 +222,7 @@ impl ShakeSession {
     // never a Node abort.
     #[napi(catch_unwind)]
     pub fn shake(&self, config_json: String) -> napi::Result<String> {
-        let config: Value = serde_json::from_str(&config_json)
+        let mut config: Value = serde_json::from_str(&config_json)
             .map_err(|e| napi::Error::from_reason(format!("session.shake: config: {e}")))?;
         let opts = MonoOptions::from_value(config.get("mono").unwrap_or(&Value::Null));
 
@@ -232,7 +232,11 @@ impl ShakeSession {
         // rebuilding it per cascade pass is cheap.
         let files: Vec<ShakeFile> =
             self.files.iter().map(|f| ShakeFile { id: &f.id, ast: &f.ast, code: &f.code }).collect();
-        let take_array = |key: &str| config.get(key).cloned().unwrap_or_else(|| Value::Array(vec![]));
+        // `config` is a short-lived local; move each array out (leaving `Null`)
+        // instead of deep-cloning it. `forceBail`/`mono` are read separately below and
+        // are untouched by these takes.
+        let mut take_array =
+            |key: &str| config.get_mut(key).map(Value::take).unwrap_or_else(|| Value::Array(vec![]));
         let mut cfg_map = Map::new();
         cfg_map.insert("edges".into(), take_array("edges"));
         cfg_map.insert("entries".into(), take_array("entries"));

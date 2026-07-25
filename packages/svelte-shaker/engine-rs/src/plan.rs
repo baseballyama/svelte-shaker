@@ -176,8 +176,8 @@ pub(crate) struct Model {
     pub(crate) bail_reasons: Vec<String>,
 }
 
-pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[Value]) -> Model {
-    let imports = edge_imports(&Value::Array(edges.to_vec()));
+pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[&Value]) -> Model {
+    let imports = edge_imports(edges);
     let props_info = declared_props_full(&ast);
     let reachable_inputs = compute_reachable_inputs(&ast, &props_info);
     // The template binder scan runs over the typed IR (built via Value→IR — only the
@@ -477,10 +477,12 @@ pub(crate) fn plan_to_json(plan: &ComponentPlan) -> Value {
 /// `{ fileId: [{ name, start, end }] }`. Value-in/Value-out so a native (napi)
 /// caller never serializes the AST across a boundary.
 pub fn find_never_passed_props(input: &Value) -> Value {
-    let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
+    // Group resolved edges by their owning file, holding each edge BY REFERENCE (the
+    // edges live in `input` for the whole call) so the whole edge set is not cloned.
+    let mut edges_by_from: HashMap<&str, Vec<&Value>> = HashMap::new();
     for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(from) = e.get("from").and_then(Value::as_str) {
-            edges_by_from.entry(from.to_string()).or_default().push(e.clone());
+            edges_by_from.entry(from).or_default().push(e);
         }
     }
     // Per-file model building is pure and independent, so on native targets we fan
@@ -490,11 +492,11 @@ pub fn find_never_passed_props(input: &Value) -> Value {
     // thread pool, so it stays sequential.
     let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
     let build_one = |f: &Value| -> Option<Model> {
-        let id = f.get("id").and_then(Value::as_str)?.to_string();
+        let id = f.get("id").and_then(Value::as_str)?;
         let ast = f.get("ast").cloned().unwrap_or(Value::Null);
         let empty = Vec::new();
-        let edges = edges_by_from.get(&id).unwrap_or(&empty);
-        Some(build_model_full(&id, ast, edges))
+        let edges = edges_by_from.get(id).unwrap_or(&empty);
+        Some(build_model_full(id, ast, edges))
     };
     #[cfg(not(target_arch = "wasm32"))]
     let mut models: Vec<Model> = {

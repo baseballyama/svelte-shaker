@@ -61,12 +61,48 @@ fn imports_by_file(edges: &[Value]) -> HashMap<String, HashMap<String, String>> 
     out
 }
 
+/// Move the array at `key` out of an owned input `Value`, leaving `Null` behind.
+/// `input` is a short-lived parse result whose only use is to yield these arrays, so
+/// we take ownership instead of deep-cloning the (whole-source-carrying) array —
+/// `scan` runs on the ESLint hot path, once per invocation. Any non-array (or
+/// absent) value yields an empty vec, matching the previous `cloned()` fallback.
+fn take_array(input: &mut Value, key: &str) -> Vec<Value> {
+    match input.get_mut(key).map(Value::take) {
+        Some(Value::Array(a)) => a,
+        _ => Vec::new(),
+    }
+}
+
 fn parse_input(input_json: &str) -> napi::Result<(Vec<Value>, Vec<Value>)> {
-    let input: Value = serde_json::from_str(input_json)
+    let mut input: Value = serde_json::from_str(input_json)
         .map_err(|e| napi::Error::from_reason(format!("scan: parse input: {e}")))?;
-    let files = input.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
-    let edges = input.get("edges").and_then(Value::as_array).cloned().unwrap_or_default();
+    let files = take_array(&mut input, "files");
+    let edges = take_array(&mut input, "edges");
     Ok((files, edges))
+}
+
+/// Parse and model every file in parallel, pairing each file's borrowed `(id, code)`
+/// with its model. `edges` are grouped into per-file imports once. A `None` model is
+/// a parse error — the caller skips it (cold scan) or evicts it (daemon), the same
+/// sound "skip on parse error" either way. Files without an `id` are skipped.
+///
+/// Shared by the cold `scan` and the daemon's `rebuild` so the two build models
+/// identically (the daemon test pins their reports byte-for-byte).
+fn build_models<'a>(
+    files: &'a [Value],
+    edges: &[Value],
+) -> Vec<(&'a str, &'a str, Option<typed_scan::FileModel>)> {
+    let imports = imports_by_file(edges);
+    let empty: HashMap<String, String> = HashMap::new();
+    files
+        .par_iter()
+        .filter_map(|f| {
+            let id = f.get("id").and_then(Value::as_str)?;
+            let code = f.get("code").and_then(Value::as_str).unwrap_or_default();
+            let model = typed_scan::build_model(id, code, imports.get(id).unwrap_or(&empty));
+            Some((id, code, model))
+        })
+        .collect()
 }
 
 /// Scan a whole resolved program for never-passed props (typed path, goal B).
@@ -78,28 +114,20 @@ fn parse_input(input_json: &str) -> napi::Result<(Vec<Value>, Vec<Value>)> {
 #[napi]
 pub fn scan(input_json: String) -> napi::Result<String> {
     let (files, edges) = parse_input(&input_json)?;
-    let imports = imports_by_file(&edges);
-    let empty: HashMap<String, String> = HashMap::new();
+    let built = build_models(&files, &edges);
 
-    // Source kept by id for the UTF-16 remap of reported spans on non-ASCII files.
-    let codes: HashMap<String, String> = files
+    // Source kept by id ONLY for the UTF-16 remap of reported spans on non-ASCII
+    // files — that remap is the sole reader of `codes`, and ASCII spans need none, so
+    // ASCII sources are never stored (they dominate, so this avoids copying most of
+    // the program's source).
+    let codes: HashMap<String, String> = built
         .iter()
-        .filter_map(|f| {
-            let id = f.get("id").and_then(Value::as_str)?;
-            let code = f.get("code").and_then(Value::as_str)?;
-            Some((id.to_string(), code.to_string()))
-        })
+        .filter(|(_, code, _)| !code.is_ascii())
+        .map(|(id, code, _)| (id.to_string(), code.to_string()))
         .collect();
 
-    let models: Vec<typed_scan::FileModel> = files
-        .par_iter()
-        .filter_map(|f| {
-            let id = f.get("id").and_then(Value::as_str)?;
-            let code = f.get("code").and_then(Value::as_str).unwrap_or_default();
-            typed_scan::build_model(id, code, imports.get(id).unwrap_or(&empty))
-        })
-        .collect();
-
+    let models: Vec<typed_scan::FileModel> =
+        built.into_iter().filter_map(|(_, _, model)| model).collect();
     let refs: Vec<&typed_scan::FileModel> = models.iter().collect();
     let out = typed_scan::never_passed(&refs, &codes);
     serde_json::to_string(&out)
@@ -204,10 +232,12 @@ pub fn scan_profile(input_json: String) -> napi::Result<String> {
     let codes: HashMap<String, String> = files
         .iter()
         .filter_map(|f| {
-            Some((
-                f.get("id").and_then(Value::as_str)?.to_string(),
-                f.get("code").and_then(Value::as_str)?.to_string(),
-            ))
+            let id = f.get("id").and_then(Value::as_str)?;
+            let code = f.get("code").and_then(Value::as_str)?;
+            if code.is_ascii() {
+                return None; // ASCII spans need no UTF-16 remap; never stored (see `scan`).
+            }
+            Some((id.to_string(), code.to_string()))
         })
         .collect();
 
@@ -299,7 +329,7 @@ impl ScanDaemon {
     /// `removed`, then re-runs the whole-program assembly over the cached models.
     #[napi]
     pub fn update(&mut self, input_json: String) -> napi::Result<String> {
-        let input: Value = serde_json::from_str(&input_json)
+        let mut input: Value = serde_json::from_str(&input_json)
             .map_err(|e| napi::Error::from_reason(format!("update: parse input: {e}")))?;
         if let Some(removed) = input.get("removed").and_then(Value::as_array) {
             for id in removed.iter().filter_map(Value::as_str) {
@@ -307,10 +337,9 @@ impl ScanDaemon {
                 self.codes.remove(id);
             }
         }
-        let empty: Vec<Value> = Vec::new();
-        let files = input.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
-        let edges = input.get("edges").and_then(Value::as_array).unwrap_or(&empty);
-        self.rebuild(&files, edges);
+        let files = take_array(&mut input, "files");
+        let edges = take_array(&mut input, "edges");
+        self.rebuild(&files, &edges);
         self.report()
     }
 
@@ -318,26 +347,22 @@ impl ScanDaemon {
     /// cache. A file that fails to parse is dropped from the cache — same sound
     /// "skip on parse error" the cold scan uses.
     fn rebuild(&mut self, files: &[Value], edges: &[Value]) {
-        let imports = imports_by_file(edges);
-        let empty: HashMap<String, String> = HashMap::new();
-        let built: Vec<(String, String, Option<typed_scan::FileModel>)> = files
-            .par_iter()
-            .map(|f| {
-                let id = f.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-                let code = f.get("code").and_then(Value::as_str).unwrap_or_default().to_string();
-                let model = typed_scan::build_model(&id, &code, imports.get(&id).unwrap_or(&empty));
-                (id, code, model)
-            })
-            .collect();
-        for (id, code, model) in built {
+        for (id, code, model) in build_models(files, edges) {
             match model {
                 Some(m) => {
-                    self.codes.insert(id.clone(), code);
-                    self.models.insert(id, m);
+                    // Keep source only for non-ASCII files (the UTF-16 remap's only
+                    // reader — see `scan`); an ASCII file, including one that flipped
+                    // from non-ASCII on this edit, must not leave a stale entry behind.
+                    if code.is_ascii() {
+                        self.codes.remove(id);
+                    } else {
+                        self.codes.insert(id.to_string(), code.to_string());
+                    }
+                    self.models.insert(id.to_string(), m);
                 }
                 None => {
-                    self.models.remove(&id);
-                    self.codes.remove(&id);
+                    self.models.remove(id);
+                    self.codes.remove(id);
                 }
             }
         }

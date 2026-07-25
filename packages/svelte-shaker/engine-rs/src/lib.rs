@@ -58,7 +58,8 @@ pub fn analyze_component(ast_json: &str, edges_json: &str) -> String {
         Err(e) => return json!({ "error": e.to_string() }).to_string(),
     };
     let edges: Value = serde_json::from_str(edges_json).unwrap_or(Value::Null);
-    let imports = edge_imports(&edges);
+    let edge_refs: Vec<&Value> = edges.as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    let imports = edge_imports(&edge_refs);
     let (props, has_rest) = declared_props(&ast);
     let (shadowed, debug, written) = template_bindings(&ast);
     json!({
@@ -83,23 +84,24 @@ pub fn analyze_program(input_json: &str) -> String {
         Ok(v) => v,
         Err(e) => return json!({ "error": e.to_string() }).to_string(),
     };
-    // Group resolved edges by their owning file.
-    let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
+    // Group resolved edges by their owning file, holding each edge BY REFERENCE (the
+    // edges live in `input` for the whole call) so the whole edge set is not cloned.
+    let mut edges_by_from: HashMap<&str, Vec<&Value>> = HashMap::new();
     for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(from) = e.get("from").and_then(Value::as_str) {
-            edges_by_from.entry(from.to_string()).or_default().push(e.clone());
+            edges_by_from.entry(from).or_default().push(e);
         }
     }
     let mut models: Vec<Model> = Vec::new();
     for f in input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         let id = match f.get("id").and_then(Value::as_str) {
-            Some(i) => i.to_string(),
+            Some(i) => i,
             None => continue,
         };
         let ast = f.get("ast").cloned().unwrap_or(Value::Null);
         let empty = Vec::new();
-        let edges = edges_by_from.get(&id).unwrap_or(&empty);
-        models.push(build_model_full(&id, ast, edges));
+        let edges = edges_by_from.get(id).unwrap_or(&empty);
+        models.push(build_model_full(id, ast, edges));
     }
 
     // Program-wide escape bail (analyze.ts §4.1).
@@ -149,24 +151,26 @@ pub fn shake_program(input_json: &str) -> String {
 /// (docs/ARCHITECTURE.md §5 — the Engine stays environment-free). Returns the
 /// `{ id: slimmedSource }` object.
 pub fn shake_program_value(input: &Value) -> Value {
-    let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
+    // Group resolved edges by their owning file, holding each edge BY REFERENCE (the
+    // edges live in `input` for the whole call) so the whole edge set is not cloned.
+    let mut edges_by_from: HashMap<&str, Vec<&Value>> = HashMap::new();
     for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(from) = e.get("from").and_then(Value::as_str) {
-            edges_by_from.entry(from.to_string()).or_default().push(e.clone());
+            edges_by_from.entry(from).or_default().push(e);
         }
     }
     let mut models: Vec<Model> = Vec::new();
     let mut code_by_id: HashMap<String, String> = HashMap::new();
     for f in input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         let id = match f.get("id").and_then(Value::as_str) {
-            Some(i) => i.to_string(),
+            Some(i) => i,
             None => continue,
         };
         let ast = f.get("ast").cloned().unwrap_or(Value::Null);
-        code_by_id.insert(id.clone(), f.get("code").and_then(Value::as_str).unwrap_or("").to_string());
+        code_by_id.insert(id.to_string(), f.get("code").and_then(Value::as_str).unwrap_or("").to_string());
         let empty = Vec::new();
-        let edges = edges_by_from.get(&id).unwrap_or(&empty);
-        models.push(build_model_full(&id, ast, edges));
+        let edges = edges_by_from.get(id).unwrap_or(&empty);
+        models.push(build_model_full(id, ast, edges));
     }
 
     // Revert cascade (index.ts `shakeWithRevertCascade`): the JS caller re-invokes
@@ -339,10 +343,12 @@ pub fn shake_program_with_mono_value(
     opts: &MonoOptions,
     own_size: &mut dyn FnMut(&str, &str) -> Option<f64>,
 ) -> Value {
-    let mut edges_by_from: HashMap<String, Vec<Value>> = HashMap::new();
+    // Group resolved edges by their owning file, holding each edge BY REFERENCE (the
+    // edges live in `config` for the whole call) so the whole edge set is not cloned.
+    let mut edges_by_from: HashMap<&str, Vec<&Value>> = HashMap::new();
     for e in config.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         if let Some(from) = e.get("from").and_then(Value::as_str) {
-            edges_by_from.entry(from.to_string()).or_default().push(e.clone());
+            edges_by_from.entry(from).or_default().push(e);
         }
     }
     // Per-file build is pure and independent; the resulting Vec order is preserved by
