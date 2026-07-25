@@ -172,6 +172,16 @@ describe('vite-plugin-svelte-shaker: parser follows the engine', () => {
     );
   });
 
+  it("engine: 'rust' with parser: 'svelte' is a contradiction, and says so", async () => {
+    // The two options ask for incompatible things: the native engine is the only Rust
+    // engine and it always parses in-process with rsvelte, so it cannot honor
+    // svelte/compiler. Silently dropping one of the two would apply a config the user
+    // did not write, so this is rejected with a message naming the conflict.
+    await expect(
+      bundle([shaker({ entries: ['.'], engine: 'rust', parser: 'svelte' })]),
+    ).rejects.toThrow(/`parser: "svelte"` forces it off/);
+  });
+
   it("parser: 'rsvelte' throws when @rsvelte/compiler cannot be loaded, naming the opt-out", async () => {
     // An explicit `parser: 'rsvelte'` on the JS engine is the one path that still needs
     // the JS-side rsvelte parser, so a missing @rsvelte/compiler is a hard error there —
