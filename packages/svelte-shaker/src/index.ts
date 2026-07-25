@@ -1,7 +1,8 @@
 import { analyze, analyzeInput } from './analyze.js';
 import { buildAnalyzeInput, type ReadFile, type Resolve } from './crawl.js';
 import { type Parse, type ParseCache } from './parse.js';
-import { transformAll, transformAllWithMono } from './transform.js';
+import { transformAll } from './transform.js';
+import { transformAllWithMono } from './mono-rewrite.js';
 import {
   monomorphize,
   DEFAULT_MONO_OPTIONS,
