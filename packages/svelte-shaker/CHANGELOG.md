@@ -1,5 +1,74 @@
 # svelte-shaker
 
+## 0.18.0
+
+### Minor Changes
+
+- 2a06d03: Remove the WASM engine. The shake now runs on the **native (napi) Rust engine** when
+  a prebuilt binary loads, and the **JS engine** otherwise — two tiers instead of three.
+  Both are differentially tested to produce **byte-identical** output, so nothing about
+  what ships changes.
+
+  Why: once native prebuilts covered darwin/linux/win, WASM was only ever selected for
+  "no prebuilt binary **and** a mid-sized app", where it beat the JS engine on speed
+  alone. That narrow slice did not justify a 382 kB committed artifact in every install
+  plus a third engine to keep at parity. Dropping it cuts the published tarball from
+  **314 kB to 139 kB** (unpacked 858 kB → 436 kB).
+
+  **Migration**
+
+  - **`engine: 'wasm'` was never a valid value** — no change needed if you never set
+    `engine`.
+  - **`engine: 'rust'`** now means the native engine only. It previously fell back to
+    WASM when no prebuilt binary existed; it now **throws** instead, naming
+    `engine: 'js'` as the way out. If you set `engine: 'rust'` and build on a platform
+    without a prebuilt binary, switch to `engine: 'auto'` (the default, which falls back
+    to JS automatically) or `engine: 'js'`.
+  - **`parser`** now applies only to the JS engine and defaults to `'svelte'`
+    (svelte/compiler). Previously the default _followed the engine_, so the WASM engine
+    parsed with rsvelte; with WASM gone there is no engine whose default is `'rsvelte'`.
+    Set `parser: 'rsvelte'` explicitly if you want it — note it forces the JS engine.
+    Output is byte-identical either way.
+  - The undocumented `svelteShakerWasm` / `svelteShakerWasmWithMono` exports and the
+    `build:wasm` script are gone.
+
+  The ~300-component size gate that routed large apps away from WASM is removed with it:
+  the native engine never had a size ceiling, so `auto` now picks native regardless of
+  app size.
+
+- 8277645: Trim internal, test-only symbols from the package's public entry (`svelte-shaker`). These were re-exported from the barrel but only ever imported by the engine's own tests — they were never part of the documented API, and no plugin/Node consumer used them:
+
+  - Removed the synchronous crawl entirely: `buildAnalyzeInputSync`, and the `ResolveSync` / `ReadFileSync` types. The async `buildAnalyzeInput` is the only crawl the plugin and native engine use; the sync twin had no consumer. If you were calling `buildAnalyzeInputSync`, use `await buildAnalyzeInput(...)` with async `resolve`/`readFile`.
+  - No longer re-exported from `svelte-shaker`: `findNeverPassedProps` / `UnpassedProp`, `analyzeInput` / `deadSpansForPlans`, `DevShaker` / `DevMode` / `DevShakerChange`, `transformAll` / `transformAllWithMono`, and `monomorphize` / `MonomorphizeResult` / `Variant` / `CallSiteBinding`. These remain available on the engine's internal modules but are no longer a supported import from the package root.
+
+  The supported surface is unchanged: the `svelte-shaker/vite` plugin, `svelte-shaker/node`, and the engine functions `svelteShaker`, `svelteShakerWithMono`, `analyze`, `buildAnalyzeInput`, plus the `DEFAULT_MONO_OPTIONS` / `MonomorphizeOptions` / `ComponentId` and related public types.
+
+### Patch Changes
+
+- f800ced: Lower peak memory during the whole-program shake, with byte-for-byte identical output: the Rust engine's per-component IR no longer keeps a second full copy of the parsed AST (plus the instance and module scripts) alongside the one the model already owns — it now holds only the template fragment it re-walks each fixpoint round. On a large app this drops the retained AST memory roughly in half during the build.
+
+  The bundled WASM engine carries this immediately; the optional native (`svelte-shaker-engine-scan-native`) binary picks it up on its next release.
+
+- ac2ccb9: Fix the Rust (WASM/native) engine leaving a TypeScript type annotation behind when it dropped the last two members of an inline `$props()` type, making the shaken component's source differ from the TypeScript engine's (correct) output. When a component kept one prop but dropped the final inline type member whose predecessor was also dropped — e.g. `let { label, urgent, variant }: { label?: number; urgent?: boolean; variant?: string } = $props()` where only `label` survives — the engine's source editor resolved the two overlapping member removals by keeping the earlier one, so `urgent?: boolean` was left in the emitted type. The editor now unions overlapping removals exactly as `magic-string` (and hence the TypeScript engine) does, restoring byte-identical output across all three engines.
+
+  The bundled WASM engine carries this fix immediately; the optional `svelte-shaker-engine-scan-native` binary picks it up on its next release.
+
+- 36e850e: Faster builds with byte-for-byte identical output — the engine skips redundant copying and re-rendering during the whole-program pass:
+
+  - Monomorphization now renders each child's specialized source once per distinct call-site shape instead of once per call site, so a component used at many identical call sites is shaken once rather than repeatedly.
+  - The whole-program shake no longer deep-copies the resolved edge set on every run, and the native prop scan no longer deep-copies the whole-program source input on every invocation (nor the per-file source of ASCII components, which never need it).
+
+  The bundled WASM engine carries these immediately; the optional native (`svelte-shaker-engine-scan-native`) binary picks up its share on its next release.
+
+- 01807b0: Faster builds: the escape scan now reads, parses, and resolves the non-`.svelte` modules under `entries` in parallel instead of one file (and one import specifier) at a time. On real apps this scan can dominate the crawl, so parallelizing its file IO cuts build time with no change to what is shaken — output is byte-for-byte identical.
+- 5bdc24c: Fix the Rust (WASM/native) engine folding a high-precision numeric prop literal to a value one ULP off what JavaScript computes, breaking byte-for-byte agreement with the TypeScript engine (and, in principle, the rendered output). When the app's AST crossed into the Rust engine as JSON, `serde_json`'s float parser rounded some decimal integer literals to the neighbouring `f64` — e.g. `123456789012345680000` decoded to `123456789012345670000` — so a folded prop like `<Sub n={123456789012345680000} />` produced a different number than the (correct) TypeScript engine. The engine now recovers each numeric literal from its verbatim source (`raw`) with Rust's correctly-rounded `str::parse::<f64>`, matching JavaScript's `Number` semantics; this only affects literals needing more than 17 significant digits, where the old parse diverged. Non-decimal (`0x`/`0o`/`0b`) and `BigInt` literals are unaffected.
+
+  The bundled WASM engine carries this fix immediately; the optional `svelte-shaker-engine-scan-native` binary picks it up on its next release.
+
+- 4dd62b6: Fix the Rust (WASM/native) engine folding a number to a form JS never prints, which could make a shaken component render differently than the original. The engine stringified folded numbers with Rust's default formatter, which diverges from JavaScript's `Number.prototype.toString` at the exponent cutoffs — `1e21` became `1000000000000000000000` (JS: `1e+21`) and `1e-7` became `0.0000001` (JS: `1e-7`). Since that text feeds both the substituted source and the value used to compute which `<style>` rules can match, a folded numeric prop could shift the output. Number stringification now follows the ECMAScript algorithm, matching the JS engine and the browser. The engine also now reads `0b…`/`0o…` binary/octal string literals and hex literals beyond 2^63 the way JS coerces them, instead of treating them as `NaN`.
+
+  The bundled WASM engine carries this fix immediately; the optional `svelte-shaker-engine-scan-native` binary picks it up on its next release.
+
 ## 0.17.0
 
 ### Minor Changes
