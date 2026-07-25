@@ -10,7 +10,7 @@
 //!     variants }`). The monomorphization net-win gate's compiled-byte size proxy is
 //!     computed in-process by rsvelte ({@link own_size}) — NO JS compiler callback.
 //!
-//! Soundness is layered exactly like the wasm driver (`src/wasm-engine.ts` +
+//! Soundness is layered exactly like the JS driver (`src/native-engine.ts` +
 //! `src/revert-cascade.ts`):
 //!  - INNER cascade (here): after each shake, re-parse every emitted file with
 //!    rsvelte; any file whose changed output no longer parses is force-bailed and
@@ -43,7 +43,7 @@ const MAX_REVERT_ITERATIONS: usize = 3;
 /// for it (the whole point of the native path). `None` on a compile error (an
 /// un-sizable module makes the gate decline the child, never bloat).
 ///
-/// The gate must decide IDENTICALLY across the TS / WASM / native engines (parity is
+/// The gate must decide IDENTICALLY across the TS and native engines (parity is
 /// test-gated), so this MUST match what the JS side measures: the JS engines call
 /// `@rsvelte/compiler` `compile_client(source, id).js.length`, a UTF-16 code-unit
 /// count over the SAME rsvelte rev this crate is pinned to. We mirror `compile_client`
@@ -71,7 +71,7 @@ fn own_size(id: &str, source: &str) -> Option<f64> {
 }
 
 /// One retained file: its source plus the AST the engine shakes (svelte/compiler
-/// JSON shape, UTF-16 offsets — exactly what the wasm path feeds).
+/// JSON shape, UTF-16 offsets — exactly what the JS engine consumes).
 struct StoredFile {
     id: String,
     code: String,
@@ -158,7 +158,7 @@ impl ShakeSession {
     /// [`crate::parse_files`] export). `input_json` is `{ files: [{ id, code }] }`.
     // `catch_unwind`: a panic in rsvelte parse (or serialization) becomes a JS
     // exception instead of aborting the Node process — the JS driver then degrades to
-    // the WASM/JS engine rather than crashing the build.
+    // the JS engine rather than crashing the build.
     #[napi(catch_unwind)]
     pub fn parse(&mut self, input_json: String) -> napi::Result<String> {
         let input: Value = serde_json::from_str(&input_json)
@@ -214,7 +214,7 @@ impl ShakeSession {
     /// Whole-program shake + monomorphization over the retained ASTs. `config_json`
     /// is `{ edges, entries?, escaped?, mono?, forceBail? }`. The net-win gate's
     /// compiled-byte size proxy is computed IN RUST ({@link own_size}, rsvelte's
-    /// client codegen) — unlike the wasm engine, the native path makes NO callback
+    /// client codegen) — unlike the JS engine, the native path makes NO callback
     /// into a JS compiler. Returns `{ files: { id: code }, variants: { specifier:
     /// code } }`.
     // `catch_unwind`: `own_size` already catches compile panics, but the shake core
@@ -251,7 +251,7 @@ impl ShakeSession {
             .unwrap_or_default();
 
         // The size proxy is computed in-process by rsvelte ({@link own_size}), so
-        // unlike the wasm path there is no JS callback to marshal and no thread
+        // unlike the JS path there is no JS callback to marshal and no thread
         // constraint. The monomorphization gate (`net_win`) still calls it only from
         // the SEQUENTIAL stage, but that is now incidental rather than required.
         let mut own_size_cb = |id: &str, src: &str| -> Option<f64> { own_size(id, src) };

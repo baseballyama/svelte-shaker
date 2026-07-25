@@ -27,7 +27,7 @@ rayon = "1.12.0"
 # keeps the host/napi allocator; the client codegen path is not feature-gated, so it
 # needs no extra deps.
 #
-# SIZE-PROXY PARITY: the gate must decide identically across the TS / WASM / native
+# SIZE-PROXY PARITY: the gate must decide identically across the TS and native
 # engines — the JS engines compute the proxy from `@rsvelte/compiler` (0.8.1) while
 # native computes it from THIS crate, so their client codegen must agree byte-for-byte.
 # This rev (0.7.17) is verified byte-identical to `@rsvelte/compiler` 0.8.1 across the
@@ -42,8 +42,8 @@ rayon = "1.12.0"
 rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "852f80e27a442ea209a19b9f1e4339b62a5dbde2", default-features = false }
 
 # The Value-based analysis engine, reused verbatim (rlib): its
-# `find_never_passed_props` is already pinned byte-for-byte to the JS engine by
-# the `wasm-never-passed` differential test, so the native path inherits that
+# `find_never_passed_props` is pinned byte-for-byte to the JS engine by the
+# `native-never-passed` differential test, so the native path inherits that
 # soundness for free.
 svelte-shaker-engine = { path = "../engine-rs" }
 

@@ -5,14 +5,13 @@
  * ResolvedEdge[] }` — the output of svelte-shaker's `buildAnalyzeInput` crawl
  * (resolution already done). Returns the JSON of `{ [fileId: string]: { name:
  * string; start: number; end: number }[] }` with UTF-16 offsets, keys sorted by
- * file id — the same shape as the WASM `find_never_passed_props_json` and the TS
- * `findNeverPassedProps`.
+ * file id — the same shape as the TS `findNeverPassedProps`.
  *
  * Synchronous; requires Node >= 22.12.
  */
 /**
  * The addon ABI generation. The JS loader (`tryLoadNativeEngine`) checks this and
- * rejects a version-skewed prebuilt binary (→ falls back to WASM/JS) rather than
+ * rejects a version-skewed prebuilt binary (→ falls back to the JS engine) rather than
  * mis-calling it: e.g. the 0.2.x addon's `shake` took an `ownSize` callback, while
  * 0.3.x computes the size proxy in Rust and `shake` takes one argument. Bumped on any
  * breaking change to the exported method signatures.
@@ -50,7 +49,7 @@ export declare function parseFiles(inputJson: string): string;
  * Focused IR parity pin: `[{ name, start, end }]` for every `<Component>` the internal
  * template IR walk finds in `astJson` (svelte JSON) — so `ir-parity.test.ts` can assert
  * it equals the engine's Value walk. A native-only shim that exercises the IR walk
- * directly without touching the committed wasm.
+ * directly.
  */
 export declare function irComponentTags(astJson: string): string;
 
@@ -81,7 +80,7 @@ export declare class ShakeSession {
    *
    * The monomorphization net-win gate's compiled-byte size proxy is computed IN RUST by
    * rsvelte (`session::own_size`, mirroring `@rsvelte/compiler`'s `compile_client`), so
-   * unlike the WASM engine there is NO JS compiler callback — the native path runs the
+   * unlike the JS engine there is NO JS compiler callback — the native path runs the
    * whole gate in-process.
    */
   shake(configJson: string): string;

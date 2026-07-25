@@ -1,7 +1,7 @@
 //! Single-component analysis: declared props, fold-blocking bindings, the
 //! `<svelte:options>` bail, rendered child calls, and escaped components.
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
@@ -22,62 +22,13 @@ pub(crate) const REVERT_REASON: &str = "reverted: transform emitted unparseable 
 /// agree.
 pub(crate) const MODULE_ESCAPE_REASON: &str = "has a consumer outside the analyzed .svelte graph";
 
-/// The declared prop names (the `Property` keys of the `let { ... } = $props()`
-/// `ObjectPattern`, a `...rest` skipped) plus whether such a rest element exists
-/// — mirrors `findPropsDeclaration` + the prop loop in analyze.ts.
-pub(crate) fn declared_props(ast: &Value) -> (Vec<String>, bool) {
-    let body = match ast
-        .get("instance")
-        .and_then(|i| i.get("content"))
-        .and_then(|c| c.get("body"))
-        .and_then(Value::as_array)
-    {
-        Some(b) => b,
-        None => return (Vec::new(), false),
-    };
-
-    for stmt in body {
-        if !str_eq(stmt, "type", "VariableDeclaration") {
-            continue;
-        }
-        for decl in arr(stmt, "declarations") {
-            let init = get(decl, "init");
-            let id = get(decl, "id");
-            let is_props_call = str_eq(init, "type", "CallExpression")
-                && str_eq(get(init, "callee"), "type", "Identifier")
-                && str_eq(get(init, "callee"), "name", "$props");
-            if !is_props_call || !str_eq(id, "type", "ObjectPattern") {
-                continue;
-            }
-            let mut names = Vec::new();
-            let mut has_rest = false;
-            for p in arr(id, "properties") {
-                match type_of(p) {
-                    // `...rest` holds only UNDECLARED props — not a declared name.
-                    Some("RestElement") => has_rest = true,
-                    Some("Property") => {
-                        let key = get(p, "key");
-                        if str_eq(key, "type", "Identifier") {
-                            if let Some(name) = key.get("name").and_then(Value::as_str) {
-                                names.push(name.to_string());
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            return (names, has_rest); // the first `$props()` destructuring wins
-        }
-    }
-    (Vec::new(), false)
-}
-
 /// Names bound OUTSIDE the `$props()` pattern (a same-named prop is a different
 /// entity there, so it must never be folded), names used as `{@debug}`
 /// arguments, and names the component WRITES TO (reassign / `++` / destructure
 /// assign / `bind:`). Mirrors `collectTemplateBindings` in analyze.ts. The
 /// `$props()` destructuring binds via an `ObjectPattern`, never an
 /// `Identifier`/function param, so it is naturally excluded by the branches below.
+#[cfg(test)]
 pub(crate) fn template_bindings(ast: &Value) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut shadowed = Vec::new();
     let mut debug = Vec::new();
@@ -656,20 +607,6 @@ pub(crate) fn edge_imports(edges: &[&Value]) -> HashMap<String, String> {
     imports
 }
 
-/// Each `<Child .../>` this component renders that resolves to a default-`.svelte`
-/// import, paired with its source span. Mirrors `collectChildCalls`.
-pub(crate) fn child_calls(ast: &Value, imports: &HashMap<String, String>) -> Vec<Value> {
-    let mut out = Vec::new();
-    walk(get(ast, "fragment"), &mut |node| {
-        if str_eq(node, "type", "Component") {
-            if let Some(id) = node.get("name").and_then(Value::as_str).and_then(|n| imports.get(n)) {
-                out.push(json!({ "childId": id, "start": get(node, "start"), "end": get(node, "end") }));
-            }
-        }
-    });
-    out
-}
-
 /// Namespace import locals (`import * as ns`).  If `ns` is read as a value the
 /// whole namespace escapes, so every `ns.*` member must bail (see `flag_escape`).
 pub(crate) fn namespace_locals(ast: &Value) -> HashSet<String> {
@@ -713,6 +650,7 @@ pub(crate) fn flag_escape(
 /// Imported components LEAKED as a value (escape, analyze.ts §4.1): an import
 /// referenced as an ordinary value (e.g. `<svelte:component this={X}>` or
 /// assigned/passed in the instance script) rather than only as a `<X .../>` tag.
+#[cfg(test)]
 pub(crate) fn escaped_components(
     ast: &Value,
     imports: &HashMap<String, String>,

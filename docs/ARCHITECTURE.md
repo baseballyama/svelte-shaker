@@ -327,8 +327,8 @@ whole-program クロールは **`.svelte` しかパースしない**。よって
 
 両フィーダーは `computeEscapedComponents`（`svelte-shaker/node`）で 1 本化し、build パスと dev パスの
 双方に配線する。dev では非 `.svelte` モジュールの add/change/unlink で escape 集合を再計算し、集合が
-動いたときだけ full-reload する（dev が build より unsound にならないため）。両エンジン（JS / Rust WASM）
-は `escaped` を同一セマンティクスで bail し、byte-identical 出力を保つ。
+動いたときだけ full-reload する（dev が build より unsound にならないため）。両エンジン（JS / ネイティブ
+Rust）は `escaped` を同一セマンティクスで bail し、byte-identical 出力を保つ。
 
 `computeEscapedComponents` は escape 集合に加え **診断を構造化データで返す**：parse できなかった
 モジュール（`.jsx`/`.tsx` の JSX 本文・特殊 TS 等 → そこから mount される component が escape されない
@@ -485,33 +485,25 @@ transform（enforce: 'pre'：vite-plugin-svelte より前）:
 - 我々は他のプリプロセッサ（TS トランスパイル等）より **前**＝著者ソースに最も近い段階で動く。
   prop の型・default を読め、出力も `.svelte`(+TS) のまま保てる。
 
-### 6.4 エンジン / パーサの自動選択（`RUST_ENGINE_MAX_COMPONENTS`）
+### 6.4 エンジン / パーサの自動選択
 
-Rust エンジンには**同一の解析ロジックに 2 つのフロントエンド**がある（§6.5）：
+エンジンは 2 つある：
 
-- **ネイティブ（napi）エンジン**：rsvelte で**プロセス内**パースし AST を Rust 側に保持する。
-  ホールプログラムの AST が境界を通らないので**最速・サイズ上限なし**。ただし per-platform の
-  prebuilt バイナリとして配布され、環境によってはロードできない。
-- **WASM エンジン**：同じ Rust エンジンだが、**ホールプログラムの AST を JS↔WASM 境界へ JSON で
-  往復させる**（§5.1 の IR）。コンポーネントが数百規模になるとこの AST は数十 MB（実測アプリ：
-  ~600 コンポーネントで ~60 MB）に達し、境界の marshaling コストがパースの節約を上回るので、
-  小〜中規模でのみ勝つ。
+- **ネイティブ（napi）Rust エンジン**：rsvelte で**プロセス内**パースし AST を Rust 側に保持する
+  （§6.5）。ホールプログラムの AST が境界を通らないので**圧倒的に速く、サイズ上限もない**。ただし
+  per-platform の prebuilt バイナリとして配布され、環境によってはロードできない。
+- **JS エンジン**：prebuilt バイナリを必要とせず、どの環境でも必ず動く。
 
-`engine: 'auto'` は **ネイティブがロードできればそれを使い（境界を通さないので
-`RUST_ENGINE_MAX_COMPONENTS` のサイズゲート不適用）**、不可なら seed コンポーネント数が
-`RUST_ENGINE_MAX_COMPONENTS`（既定 300、`src/vite.ts`）以下のとき WASM、超えたら境界税のない JS
-エンジンに載せる。`engine: 'rust'` は Rust を強制する（ネイティブ→不可なら WASM。両方不可なら throw）。
-3 エンジンは byte 一致（差分テスト済み）なので、選択は**速度のみ**に効き**出荷物は変わらない**。
+`engine: 'auto'`（既定）は **ネイティブがロードできればそれを使い、不可なら JS** に載せる。
+`engine: 'rust'` はネイティブを強制する（ロードできなければ throw）。`engine: 'js'` は JS を強制する。
+両エンジンは byte 一致（差分テスト済み）なので、選択は**速度のみ**に効き**出荷物は変わらない**。
 
-**`parser` は JS / WASM エンジンのパース実装のみを制御する**。ネイティブエンジンは常にプロセス内
-rsvelte でパースするので `parser` は適用されない。既定はエンジンに追従：WASM では rsvelte（AST が
-そのまま Rust へ渡る）、JS では svelte/compiler（rsvelte パースは JS 経路では ~2倍遅いだけで下流の
-利得がない）。`parser: 'svelte'` は「svelte/compiler を使う」指定であり、rsvelte 専用のネイティブ
-エンジンはこれを尊重できないため**ネイティブを強制オフ**し、svelte/compiler でパースする JS/WASM に
-フォールバックする。JS 側 rsvelte パーサ（`@rsvelte/compiler`）は WASM 経路でのみ必要で、ネイティブ
-には不要——rsvelte が解決先の JS 側パーサ（明示 `parser: 'rsvelte'` か WASM の既定）で
-`@rsvelte/compiler` を読めなければ**黙ってフォールバックせず throw**する（マシン差で shake 結果が
-変わらないため。§6 の決定性方針。opt-out は `parser: 'svelte'`）。パーサのメモ化は `useRust` 別に持つ。
+**`parser` は JS エンジンのパース実装のみを制御する**。ネイティブエンジンは常にプロセス内 rsvelte で
+パースするので `parser` は適用されない。既定は svelte/compiler（rsvelte パースは JS 経路では ~2倍
+遅いだけで下流の利得がない）。`parser: 'svelte'` は「svelte/compiler を使う」指定であり、rsvelte 専用の
+ネイティブエンジンはこれを尊重できないため**ネイティブを強制オフ**し、JS エンジンにフォールバックする。
+明示 `parser: 'rsvelte'` を指定して `@rsvelte/compiler` を読めなければ**黙ってフォールバックせず
+throw** する（マシン差で shake 結果が変わらないため。§6 の決定性方針。opt-out は `parser: 'svelte'`）。
 
 ### 6.5 ネイティブ（napi）エンジン — Session プロトコルと facts-provider crawl
 
@@ -526,20 +518,20 @@ rsvelte でパースするので `parser` は適用されない。既定はエ�
    この facts を読んで edges を解決する（§6.1 の 2 パス構成の 1 パス目を native facts に載せ替え）。
    seed 外で発見した `.svelte`（ライブラリ依存）はその場で **`session.parseMore`**（追加パース・
    retain・重複 skip）して facts を得る。これにより **JS 側の再パース+AST walk（旧構成の最大コスト）を
-   除去**する（`analyze.ts` の `FactsProvider` 抽象。JS/WASM 経路は従来どおり JS パースの provider）。
+   除去**する（`analyze.ts` の `FactsProvider` 抽象。JS 経路は従来どおり JS パースの provider）。
 3. **`session.shake({ edges, entries, escaped, mono, forceBail }, ownSize)`** — 保持済み AST 上で
    ホールプログラムの shake + monomorphization を実行し `{ files, variants }` を返す。AST は境界を
    通らず、JS へ戻るのは monomorphization の net-win gate が使う `ownSize`（svelte compile のバイト数）
    コールバックだけ。
 4. **revert cascade** — 内側で rsvelte 再パースにより収束させ、**外側で svelte/compiler の最終検証
    （権威）**を変更ファイルのみに掛けて、残った未パース出力を `forceBail` で差し戻す（`revert-cascade.ts`
-   を JS/WASM と共有）。有効なプログラムは外側 1 パスで収束する。
+   を JS エンジンと共有）。有効なプログラムは外側 1 パスで収束する。
 
-出力は 3 エンジンとも byte 一致（`tests/native-engine.test.ts` がプラグイン経路 `svelteShakerNativeWithMono`
+出力は両エンジンとも byte 一致（`tests/native-engine.test.ts` がプラグイン経路 `svelteShakerNativeWithMono`
 を、`tests/native-full-shake.test.ts` が Session 直叩きを、それぞれ TS `svelteShakerWithMono` に対して
 mono on/off で固定）。エンジンコア（`shake_program_with_mono_value`）は svelte/compiler 形の Value(JSON)
-AST を消費する 1 実装で、WASM は JS 側でパースした Value を受け取り、ネイティブは rsvelte の `Root` を
-同じ Value 形へ直列化（`session.rs` の `root_to_ast_value`）して同じコアに渡す。テンプレートの binder /
+AST を消費する 1 実装で、ネイティブは rsvelte の `Root` を同じ Value 形へ直列化（`session.rs` の
+`root_to_ast_value`）してそのコアに渡す。テンプレートの binder /
 escape / dead-span 解析だけは Value から起こした型付き IR（`engine-rs/src/ir.rs`）を歩く（内部最適化。
 JS/CSS/shake は Value のまま）。
 
@@ -822,22 +814,21 @@ _「コンポーネントを JS の liveness モデルに落として到達可�
   monomorphization バンドル ≤ value-set narrowing を
   `tests/mono.test.ts` で担保。プラグインでは既定 ON（`shaker({ monomorphize: false })` で OFF）。エンジン API
   `svelteShakerWithMono` は `{ enabled: true }` で有効化（既定 OFF）。
-- **Rust エンジン（WASM + ネイティブ chatty）** ✅：エンジンコア `engine-rs`（環境非依存、Value(JSON)
-  AST を消費、`shake_program_with_mono_value`）を WASM（`svelte_shaker_engine`）と napi
-  （`engine-scan-native`）の 2 フロントエンドが駆動（§6.4 / §6.5）。ネイティブは常駐 `ShakeSession`
-  （`parse` / `parseMore` / `shake`）で AST を境界に通さず edits だけ返し、crawl は `analyze.ts` の
-  `FactsProvider` 抽象経由で native facts を読む（`src/native-engine.ts` が `svelteShakerNativeWithMono`
-  を配線、`vite.ts` が `auto`/`rust` で選択）。ネイティブ側は per-file の build_model / fixpoint(plans・
-  usage・owner-env) / dead-span(IR) / reverse / phase1 / parse+serialize を rayon で並列化（wasm は逐次、
-  `#[cfg(not(target_arch="wasm32"))]`）。3 エンジン byte 一致（`tests/{native-engine,native-full-shake,
-  native-parse-files,ir-parity,wasm-*}.test.ts`）。
+- **Rust エンジン（ネイティブ chatty）** ✅：エンジンコア `engine-rs`（環境非依存、Value(JSON) AST を
+  消費、`shake_program_with_mono_value`）を napi フロントエンド `engine-scan-native` が rlib として
+  リンクして駆動する（§6.4 / §6.5）。常駐 `ShakeSession`（`parse` / `parseMore` / `shake`）で AST を
+  境界に通さず edits だけ返し、crawl は `analyze.ts` の `FactsProvider` 抽象経由で native facts を読む
+  （`src/native-engine.ts` が `svelteShakerNativeWithMono` を配線、`vite.ts` が `auto`/`rust` で選択）。
+  per-file の build_model / fixpoint(plans・usage・owner-env) / dead-span(IR) / reverse / phase1 /
+  parse+serialize は rayon で並列化。両エンジン byte 一致（`tests/{native-engine,native-full-shake,
+  native-parse-files,ir-parity}.test.ts`）。
 - **ネイティブエンジンの配布** ✅：`.github/workflows/prebuild-native-scanner.yml` が
   `svelte-shaker-engine-scan-native` を darwin-x64/darwin-arm64/linux-x64/linux-arm64/win32-x64 の
   per-platform prebuilt `.node`（`@napi-rs/cli`）としてビルドし、単一パッケージに全バイナリを同梱して npm
   Trusted Publishing（OIDC、トークンレス）で公開する。`packages/svelte-shaker/package.json` の
   `optionalDependencies` がこのパッケージを配線済みで、ローダ（`engine-scan-native/index.cjs`）が
   published `.node` を解決する。バイナリが存在しない環境（未対応プラットフォーム、インストール失敗等）では
-  `tryLoadNativeEngine` が null を返し WASM/JS に自動フォールバックする（挙動は従来どおり byte 一致）。
+  `tryLoadNativeEngine` が null を返し JS エンジンに自動フォールバックする（挙動は byte 一致）。
 
 ### REMAINING（未実装・後続）
 
@@ -961,7 +952,7 @@ _「コンポーネントを JS の liveness モデルに落として到達可�
 ちょうど 1 の名前だけ許す）、**`$derived` / `$props` / 他 rune は対象外**、**`export const` は解析グラフ外
 から到達可能なので除外**。`scriptConstEnv` は plan 非依存の静的事実なので不動点の外で 1 回だけ計算し、
 owner が bail していても子への forwarding には使える（bail は owner 自身の prop 可観測性の話で、
-owner が渡す定数の真実性は変えない）。JS / Rust(WASM) 両エンジンが同一セマンティクスで実装し
+owner が渡す定数の真実性は変えない）。JS / ネイティブ Rust 両エンジンが同一セマンティクスで実装し
 byte 一致を保つ。
 
 ### 参考文献

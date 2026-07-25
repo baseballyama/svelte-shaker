@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve as resolvePath } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import {
   buildAnalyzeInput,
   svelteShakerWithMono,
@@ -13,6 +13,7 @@ import { tryLoadRsvelteOwnSize } from '../src/rsvelte-parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 import { loadNativeAddon } from './native-addon';
 import { memGraph } from './mem-graph';
+import { assertCompiles, cleanTmp } from './diff';
 
 // The native chatty full-shake (Round 2) must produce byte-for-byte the SAME output
 // as the TS `svelteShakerWithMono` — the audited, differential-SSR-tested reference.
@@ -31,6 +32,8 @@ interface NativeAddon {
   ShakeSession: new () => ShakeSession;
 }
 const addon = loadNativeAddon<NativeAddon>();
+
+afterAll(() => cleanTmp());
 
 const MONO_ON: MonomorphizeOptions = { enabled: true, maxVariants: 8, minSavings: 0 };
 const MONO_OFF: MonomorphizeOptions = { enabled: false, maxVariants: 8, minSavings: 0 };
@@ -71,8 +74,13 @@ async function tsShake(entry: ComponentId, mono: MonomorphizeOptions): Promise<S
  * Session runs its own inner rsvelte cascade, so for valid programs this outer loop
  * settles in one pass.
  */
-async function nativeShake(entry: ComponentId, mono: MonomorphizeOptions): Promise<Shaken> {
-  const input = await buildAnalyzeInput(entry, fsResolve, fsReadFile);
+async function nativeShake(
+  entry: ComponentId | ComponentId[],
+  mono: MonomorphizeOptions,
+  resolve = fsResolve,
+  readFile = fsReadFile,
+): Promise<Shaken> {
+  const input = await buildAnalyzeInput(entry, resolve, readFile);
   const session = new addon!.ShakeSession();
   session.parse(JSON.stringify({ files: input.files.map((f) => ({ id: f.id, code: f.code })) }));
   const config = {
@@ -89,6 +97,38 @@ async function nativeShake(entry: ComponentId, mono: MonomorphizeOptions): Promi
     return last.files;
   });
   return { files, variants: last.variants };
+}
+
+/**
+ * Both engines over an in-memory graph, the shape the regression cases below need.
+ * In-memory (rather than a golden fixture) so the FRESH, locally-built addon is
+ * exercised — the separately-published binary lags engine changes — and asserts the
+ * byte-identity up front, so each case only has to state what it additionally pins.
+ */
+async function bothOverGraph(
+  files: Record<string, string>,
+  entry: ComponentId | ComponentId[],
+  mono: MonomorphizeOptions = MONO_OFF,
+): Promise<Shaken> {
+  const { resolve, readFile } = memGraph(files);
+  const result = await svelteShakerWithMono(
+    entry,
+    resolve,
+    readFile,
+    mono,
+    variantSpecifier,
+    undefined,
+    undefined,
+    ownSize,
+  );
+  const tsVariants: Record<string, string> = {};
+  for (const v of result.mono.variants.values()) tsVariants[variantSpecifier(v.id)] = v.code;
+
+  const native = await nativeShake(entry, mono, resolve, readFile);
+  expect(native.files).toEqual(result.files);
+  expect(native.variants).toEqual(tsVariants);
+  for (const [id, code] of Object.entries(native.files)) assertCompiles(code, id);
+  return native;
 }
 
 const FIXTURES = resolvePath(__dirname, 'fixtures');
@@ -113,85 +153,37 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
   });
 
   it('folds exponent-boundary numbers with JS `Number#toString`, matching the TS engine', async () => {
-    // The native engine turns a folded number back into source via the same
-    // `js_number_to_string` as the WASM engine; `format!("{n}")` diverged from JS
-    // at the fixed<->exponential cutoffs (`1e21`, `1e-7`). Kept in-memory (not a
-    // fixture) so the fresh, locally-built addon is exercised rather than the
-    // separately-published binary, which lags this engine change.
-    const { resolve, readFile } = memGraph({
-      '/App.svelte': `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub big={1e21} small={1e-7} plain={1e20} />`,
-      '/Sub.svelte':
-        `<script>\n  let { big, small, plain } = $props();\n</script>\n` +
-        `<p>{big.toLocaleString()} {small.toLocaleString()} {plain.toLocaleString()}</p>`,
-    });
-
-    const tsResult = await svelteShakerWithMono(
+    // A folded number is turned back into source by the engine's
+    // `js_number_to_string`. `format!("{n}")` diverges from JS at the spec's
+    // fixed<->exponential cutoffs (`1e21 -> "1e+21"`, `1e-7 -> "1e-7"`), which would
+    // emit a DIFFERENT number than the unshaken component renders. Passed as members
+    // so they land in source text (`(1e+21).toLocaleString()`).
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub big={1e21} small={1e-7} tiny={1e-6} plain={1e20} />`,
+        '/Sub.svelte':
+          `<script>\n  let { big, small, tiny, plain } = $props();\n</script>\n` +
+          `<p>{big.toLocaleString()} {small.toLocaleString()} {tiny.toLocaleString()} {plain.toLocaleString()}</p>`,
+      },
       '/App.svelte',
-      resolve,
-      readFile,
-      MONO_OFF,
-      variantSpecifier,
     );
-
-    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
-    const session = new addon!.ShakeSession();
-    session.parse(JSON.stringify({ files: input.files.map((f) => ({ id: f.id, code: f.code })) }));
-    const config = {
-      edges: input.edges,
-      entries: input.entries,
-      escaped: input.escaped ?? [],
-      mono: MONO_OFF,
-    };
-    let native!: Shaken;
-    const files = revertCascade(input.files, (forceBail) => {
-      native = JSON.parse(
-        session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] })),
-      ) as Shaken;
-      return native.files;
-    });
-
-    expect(files).toEqual(tsResult.files);
     expect(files['/Sub.svelte']).toContain('(1e+21)');
     expect(files['/Sub.svelte']).toContain('(1e-7)');
+    expect(files['/Sub.svelte']).toContain('(0.000001)'); // just above the cutoff: no exponent
     expect(files['/Sub.svelte']).not.toContain('1000000000000000000000'); // the old `format!` bug
   });
 
   it('folds a >17-significant-digit literal correctly (parse-side rounding, issue #178)', async () => {
     // serde_json mis-rounds `123456789012345680000` by one ULP; the engine now
     // re-parses the literal's `raw` source with Rust's correctly-rounded
-    // `str::parse::<f64>`, so the native engine folds the same decimal as TS. Kept
-    // in-memory so the fresh local addon is exercised, not the published binary.
-    const { resolve, readFile } = memGraph({
-      '/App.svelte': `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub n={123456789012345680000} />`,
-      '/Sub.svelte': `<script>\n  let { n } = $props();\n</script>\n<p>{n.toLocaleString()}</p>`,
-    });
-
-    const tsResult = await svelteShakerWithMono(
+    // `str::parse::<f64>`, so it folds the same decimal as the TS engine.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub n={123456789012345680000} />`,
+        '/Sub.svelte': `<script>\n  let { n } = $props();\n</script>\n<p>{n.toLocaleString()}</p>`,
+      },
       '/App.svelte',
-      resolve,
-      readFile,
-      MONO_OFF,
-      variantSpecifier,
     );
-
-    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
-    const session = new addon!.ShakeSession();
-    session.parse(JSON.stringify({ files: input.files.map((f) => ({ id: f.id, code: f.code })) }));
-    const config = {
-      edges: input.edges,
-      entries: input.entries,
-      escaped: input.escaped ?? [],
-      mono: MONO_OFF,
-    };
-    let native!: Shaken;
-    const files = revertCascade(input.files, (forceBail) => {
-      native = JSON.parse(
-        session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] })),
-      ) as Shaken;
-      return native.files;
-    });
-
-    expect(files).toEqual(tsResult.files);
     expect(files['/Sub.svelte']).toContain('(123456789012345680000)');
     expect(files['/Sub.svelte']).not.toContain('123456789012345670000');
   });
@@ -202,46 +194,170 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     // removes. magic-string (the TS engine) unions them, so both members go; the
     // native `MagicEdit` used to keep the earlier one, leaving `urgent?: boolean`
     // behind and diverging from TS. `label` stays (dynamic), so the `$props()` line
-    // survives and the type-member path actually runs. In-memory (not a fixture) so
-    // the fresh local addon is exercised, not the published binary that lags this fix.
-    const { resolve, readFile } = memGraph({
-      '/App.svelte': `<script lang="ts">\n  import Sub from './Sub.svelte';\n  let n = Math.random();\n</script>\n<Sub label={n} />`,
-      '/Sub.svelte':
-        `<script lang="ts">\n  let { label, urgent = false, variant = 'info' }: ` +
-        `{ label?: number; urgent?: boolean; variant?: string } = $props();\n</script>\n` +
-        `{#if urgent}<strong>!</strong>{/if}\n<p class="alert alert-{variant}">{label}</p>`,
-    });
-
-    const tsResult = await svelteShakerWithMono(
+    // survives and the type-member path actually runs.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script lang="ts">\n  import Sub from './Sub.svelte';\n  let n = Math.random();\n</script>\n<Sub label={n} />`,
+        '/Sub.svelte':
+          `<script lang="ts">\n  let { label, urgent = false, variant = 'info' }: ` +
+          `{ label?: number; urgent?: boolean; variant?: string } = $props();\n</script>\n` +
+          `{#if urgent}<strong>!</strong>{/if}\n<p class="alert alert-{variant}">{label}</p>`,
+      },
       '/App.svelte',
-      resolve,
-      readFile,
-      MONO_OFF,
-      variantSpecifier,
     );
-
-    const input = await buildAnalyzeInput('/App.svelte', resolve, readFile);
-    const session = new addon!.ShakeSession();
-    session.parse(JSON.stringify({ files: input.files.map((f) => ({ id: f.id, code: f.code })) }));
-    const config = {
-      edges: input.edges,
-      entries: input.entries,
-      escaped: input.escaped ?? [],
-      mono: MONO_OFF,
-    };
-    let native!: Shaken;
-    const files = revertCascade(input.files, (forceBail) => {
-      native = JSON.parse(
-        session.shake(JSON.stringify({ ...config, forceBail: [...forceBail] })),
-      ) as Shaken;
-      return native.files;
-    });
-
-    expect(files).toEqual(tsResult.files);
     // The dropped members are gone; the kept one stays.
     expect(files['/Sub.svelte']).toContain('label?: number');
     expect(files['/Sub.svelte']).not.toContain('urgent?: boolean');
     expect(files['/Sub.svelte']).not.toContain('variant?: string');
+  });
+
+  it('edits non-ASCII source at UTF-16 offsets, matching the TS engine', async () => {
+    // Multibyte text before/after the folded branch would corrupt a byte-indexed
+    // editor; `MagicEdit` counts UTF-16 units, so it must match the TS engine exactly.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub />`,
+        '/Sub.svelte': `<script>\n  let { hasIcon = false } = $props();\n</script>\n<p>こんにちは🌟</p>\n{#if hasIcon}<p>アイコン</p>{/if}\n<p>さようなら</p>`,
+      },
+      '/App.svelte',
+    );
+    // The dead `{#if}` (アイコン) is gone; the surrounding multibyte text survives intact.
+    expect(files['/Sub.svelte']).toContain('こんにちは🌟');
+    expect(files['/Sub.svelte']).toContain('さようなら');
+    expect(files['/Sub.svelte']).not.toContain('アイコン');
+  });
+
+  it('does not fold a TS interface-member key', async () => {
+    // Mirrors transform-robustness's interface-key guard: the engine's
+    // `is_non_reference` must skip a `TSPropertySignature` key, or it would corrupt
+    // `width?: number` -> `36?: number` and diverge from the TS engine.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script lang="ts">\n  import Child from './Child.svelte';\n</script>\n<Child />`,
+        '/Child.svelte': `<script lang="ts">\n  interface Props {\n    width?: number;\n    height?: number;\n  }\n  const { width = 36, height = 20 }: Props = $props();\n</script>\n<p>{width}{height}</p>`,
+      },
+      '/App.svelte',
+    );
+    expect(files['/Child.svelte']).toContain('width?: number');
+    expect(files['/Child.svelte']).not.toContain('36?: number');
+  });
+
+  it('folds through TS assertions identically to the TS engine (issue #150)', async () => {
+    // svelte/compiler keeps `'chips' as const` / `8 as const` as TS assertion nodes,
+    // so the engine sees them too. Its evaluator (call-site value) and its
+    // `literal_default` (never-passed default) must both read through the erased
+    // assertion exactly like the TS engine, or the two byte-diverge on `lang="ts"`
+    // apps. `pattern` folds from the call site; `size` from its `as const` default.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script lang="ts">\n  import Child from './Child.svelte';\n</script>\n<Child pattern={'chips' as const} />`,
+        '/Child.svelte':
+          `<script lang="ts">\n  let { pattern, size = 8 as const } = $props();\n</script>\n` +
+          `{#if pattern === 'text'}<em>t</em>{/if}\n{#if pattern === 'chips'}<b>c</b>{/if}\n` +
+          `{#if size === 8}<i>eight</i>{/if}`,
+      },
+      '/App.svelte',
+    );
+    const child = files['/Child.svelte']!;
+    expect(child).toContain('<b>c</b>'); // pattern folded from the call site
+    expect(child).toContain('<i>eight</i>'); // size folded from its `as const` default
+    expect(child).not.toContain('<em>'); // dead `pattern === 'text'` arm removed
+    expect(child).not.toContain('pattern'); // both props dropped from the signature
+  });
+
+  it('matches the TS engine on an interprocedural pass-through (docs §13.1)', async () => {
+    // App -> Mid -> Child: `variant` folds in Mid, so the forwarded
+    // `<Child variant={variant}/>` must fold in Child too and its attribute be
+    // removed. The fixpoint's owner-env evaluation must match the TS engine
+    // byte-for-byte — including a ternary and a pure-literal forward.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>\n  import Mid from './Mid.svelte';\n</script>\n<Mid variant="primary" />`,
+        '/Mid.svelte':
+          `<script>\n  import Child from './Child.svelte';\n  import Leaf from './Leaf.svelte';\n  let { variant } = $props();\n</script>\n` +
+          `<Child variant={variant} />\n<Leaf k={variant === 'primary' ? 'x' : 'y'} m={'a' + 'b'} />`,
+        '/Child.svelte':
+          `<script>\n  let { variant = 'other' } = $props();\n</script>\n` +
+          `{#if variant === 'primary'}<b>P</b>{:else}<i>o</i>{/if}`,
+        '/Leaf.svelte':
+          `<script>\n  let { k = 'z', m = 'z' } = $props();\n</script>\n` +
+          `{#if k === 'x'}<b>X</b>{/if}{#if m === 'ab'}<b>AB</b>{/if}`,
+      },
+      '/App.svelte',
+    );
+    // The pass-through actually fired (both engines agree on this, in the helper).
+    expect(files['/Child.svelte']).not.toMatch(/let \{ variant/);
+    expect(files['/Mid.svelte']).not.toContain('variant=');
+    expect(files['/Leaf.svelte']).not.toMatch(/let \{ k/);
+  });
+
+  it('propagates a deep pass-through chain past the old fixpoint cap', async () => {
+    // A 14-stage forwarding chain needs more propagation rounds than the old fixed
+    // cap of 10. Both engines scale the fixpoint bound with the component count, so
+    // the deepest fold (S14) must reach the leaf identically — byte-for-byte.
+    const graph: Record<string, string> = {
+      '/App.svelte': `<script>\n  import S1 from './S1.svelte';\n</script>\n<S1 v="go" />\n`,
+    };
+    for (let k = 1; k < 14; k++) {
+      graph[`/S${k}.svelte`] =
+        `<script>\n  import S${k + 1} from './S${k + 1}.svelte';\n  let { v } = $props();\n</script>\n` +
+        `<S${k + 1} v={v} />\n`;
+    }
+    graph['/S14.svelte'] =
+      `<script>\n  let { v = 'stop' } = $props();\n</script>\n` +
+      `{#if v === 'go'}<b>GO</b>{:else}<i>stop</i>{/if}\n`;
+
+    const { files } = await bothOverGraph(graph, '/App.svelte');
+    // The fold reached the leaf in both engines: dead arm gone, prop dropped.
+    expect(files['/S14.svelte']).toContain('<b>GO</b>');
+    expect(files['/S14.svelte']).not.toContain('stop</i>');
+    expect(files['/S14.svelte']).not.toMatch(/let \{ v/);
+  });
+});
+
+describe.skipIf(!addon)('native ShakeSession under a changing file set', () => {
+  it('stays byte-identical to the TS engine across an edit/add/remove sequence', async () => {
+    // The whole-program cascade must re-converge when the FILE SET moves, not just
+    // when a file's contents do: a new caller passing a different value un-shakes a
+    // child, and removing it re-shakes. A build re-runs the crawl and a fresh
+    // ShakeSession per build, so that is what this drives — one session per step.
+    const APP_NO_ICON = `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub />`;
+    const APP_ICON = `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub hasIcon={true} />`;
+    const APP_NO_SUB = `<script>\n  import Sub from './Sub.svelte';\n</script>\n<p>hi</p>`;
+    const SUB = `<script>\n  let { hasIcon = false } = $props();\n</script>\n{#if hasIcon}<p>Icon</p>{/if}\n<p>base</p>`;
+    const OTHER = `<script>\n  import Sub from './Sub.svelte';\n</script>\n<Sub hasIcon={false} />`;
+
+    const graph: Record<string, string> = { '/App.svelte': APP_NO_ICON, '/Sub.svelte': SUB };
+    // Every `.svelte` in the set is an entry, so a file reachable from nothing (an
+    // orphaned `/Other.svelte`) still contributes its call sites — as in a real crawl.
+    const step = async (): Promise<Shaken> =>
+      bothOverGraph(
+        graph,
+        Object.keys(graph).filter((f) => f.endsWith('.svelte')),
+      );
+
+    // init: hasIcon never passed -> folded -> Icon removed.
+    expect((await step()).files['/Sub.svelte']).not.toContain('Icon');
+
+    // edit a call site: App passes hasIcon={true} -> Sub keeps Icon.
+    graph['/App.svelte'] = APP_ICON;
+    expect((await step()).files['/Sub.svelte']).toContain('Icon');
+
+    // add a file passing a different value -> {true,false} -> Sub un-shakes.
+    graph['/Other.svelte'] = OTHER;
+    expect((await step()).files['/Sub.svelte']).toContain('hasIcon');
+
+    // remove it -> single `true` site -> folds again.
+    delete graph['/Other.svelte'];
+    expect((await step()).files['/Sub.svelte']).toContain('Icon');
+
+    // edit a leaf's own markup.
+    graph['/Sub.svelte'] = SUB.replace('<p>base</p>', '<p>BASE</p>');
+    expect((await step()).files['/Sub.svelte']).toContain('BASE');
+
+    // drop the usage entirely -> Sub left untouched.
+    graph['/App.svelte'] = APP_NO_SUB;
+    expect((await step()).files['/Sub.svelte']).toContain('hasIcon');
   });
 });
 

@@ -95,18 +95,6 @@ impl Literal {
         self.to_js_string()
     }
 
-    /// JSON-serializable form for handing a folded literal back to the Shell.
-    /// `Undefined` has no JSON form; callers that can produce it must special-case
-    /// it (the plan layer keeps it out of JSON by construction).
-    pub fn to_json(&self) -> Value {
-        match self {
-            Literal::Str(s) => Value::String(s.clone()),
-            Literal::Num(n) => serde_json::Number::from_f64(*n).map(Value::Number).unwrap_or(Value::Null),
-            Literal::Bool(b) => Value::Bool(*b),
-            Literal::Null => Value::Null,
-            Literal::Undefined => Value::Null,
-        }
-    }
 }
 
 /// Recover the exact `f64` a JS `Number` literal denotes, preferring the node's

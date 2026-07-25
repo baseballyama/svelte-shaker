@@ -1,6 +1,6 @@
 # Compile the Rust crates on every change to them.
 #
-# The WASM engine (`engine-rs`) and the native napi scanner (`engine-scan-native`)
+# The engine core (`engine-rs`) and the native napi scanner (`engine-scan-native`)
 # are built only by the release / prebuild workflows, so the main CI never touched
 # them. That let a napi/napi-derive version skew (#127) silently break a fresh
 # `cargo build` — it shipped unnoticed because the published binaries predated the
@@ -63,8 +63,6 @@ jobs:
           printf '[patch."https://github.com/baseballyama/rsvelte"]\nrsvelte_core = { path = ".rsvelte-src/crates/rsvelte_core" }\n' > .cargo/config.toml
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
       # Building the native scanner compiles the engine-rs rlib AND the napi
       # cdylib — the exact combination the napi skew broke.
@@ -72,16 +70,10 @@ jobs:
         working-directory: packages/svelte-shaker/engine-scan-native
         run: cargo build --release
 
-      # The WASM engine's own unit tests run on the host (no rsvelte dep here).
-      - name: Test WASM engine (host)
+      # The engine core's own unit tests run standalone (no rsvelte dep here).
+      - name: Test engine core
         working-directory: packages/svelte-shaker/engine-rs
         run: cargo test --release
-
-      # A wasm-target compile catches a wasm-only break without pulling in the
-      # wasm-pack / wasm-opt toolchain.
-      - name: Compile WASM engine (wasm32)
-        working-directory: packages/svelte-shaker/engine-rs
-        run: cargo build --release --target wasm32-unknown-unknown
 
       # Run the native byte-identity tests against the freshly built addon, so a Rust
       # change that breaks native/JS parity fails HERE. The main `pnpm test` (ci.yml)
