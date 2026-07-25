@@ -1,30 +1,29 @@
-# svelte-shaker-engine (Rust → WASM)
+# svelte-shaker-engine
 
-The Rust core of the svelte-shaker engine, compiled to WebAssembly
-(`docs/RUST-MIGRATION.md` M4+). It is being ported one validated slice at a time;
-each slice is pinned against the TypeScript engine by a differential test
-(`packages/svelte-shaker/tests/wasm-m4.test.ts`).
+The Rust core of the svelte-shaker engine (`docs/RUST-MIGRATION.md` M4+): the
+whole-program analysis, the monomorphization graph/gate, and the transform. It has
+no boundary of its own — it is linked as an **rlib** by
+[`engine-scan-native`](../engine-scan-native), the napi addon that owns the JS
+boundary. Every slice is pinned against the TypeScript engine by a differential test
+(`packages/svelte-shaker/tests/native-full-shake.test.ts`).
 
 ## Design
 
 **Self-contained — no `rsvelte_core` build dependency.** The crate analyzes a
-Svelte component AST handed in as **JSON** (the modern parse shape). The JS side
-parses (`@rsvelte/compiler` / `svelte/compiler`) and passes the AST in, so this
-crate only needs `serde_json` + `wasm-bindgen` and builds to a small,
-cross-platform `.wasm` — no heavy compiler crate, no native toolchain in CI.
+Svelte component AST handed in as a **`serde_json::Value`** (the modern parse
+shape); the caller parses and passes the AST in. So this crate needs only
+`serde_json` (plus `ryu-js` for spec-exact number printing and `rayon` for the
+per-file fan-out) — no heavy compiler crate.
+
+`shake_program_with_mono_value` is the single entry point; it takes the parsed ASTs
+by reference, so the native session can retain them across builds without the
+engine ever cloning the whole program.
 
 ## Build
 
-The compiled artifact in `pkg/` is **committed** so the Node test suite (and CI)
-loads it without a Rust toolchain. After editing `src/`, rebuild and commit:
-
 ```sh
-pnpm --filter svelte-shaker build:wasm   # wasm-pack build --target nodejs
 cargo test --manifest-path packages/svelte-shaker/engine-rs/Cargo.toml
 ```
 
-> Because `pkg/` is committed and not rebuilt in CI yet, rebuilding after a source
-> change is a contributor responsibility. The behavioral differential test runs
-> the *committed* artifact against the TS engine, so a behavior-changing drift is
-> caught; a CI job that runs `cargo test` + `build:wasm` (pinned toolchain) is a
-> tracked follow-up.
+CI compiles and tests this crate on every Rust change
+(`.github/workflows/ci-rust.yml`), together with the native addon that links it.

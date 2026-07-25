@@ -11,7 +11,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 // an OLD 0.2.x binary the new one-argument way throws a napi TypeError that — with no
 // guard — crashes `vite build`. Two defenses, both pinned here:
 //   1. `hasSessionApi` REJECTS a binary whose `engineApiVersion` is missing/wrong, so
-//      the loader never returns an ABI-incompatible addon (it degrades to WASM/JS).
+//      the loader never returns an ABI-incompatible addon (it degrades to the JS engine).
 //   2. Even so, any OTHER native runtime failure is caught in the plugin and degrades
 //      to the JS engine with a warning, never a crashed build.
 // ----------------------------------------------------------------------

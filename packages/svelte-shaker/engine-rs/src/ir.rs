@@ -1,10 +1,9 @@
 //! The engine's internal template IR (docs/RUST-MIGRATION.md M4; docs/ARCHITECTURE.md §6.4).
 //!
 //! A typed, owned view of the template STRUCTURE, built by [`from_value`] from the
-//! svelte/compiler-shaped JSON `Value` the engine consumes. BOTH engines build it the
-//! same way — there is no direct `rsvelte Root → IR` converter: the wasm path gets the
-//! `Value` from the JS-side parse, and the native path serializes rsvelte's `Root` to
-//! the SAME `Value` form (`engine-scan-native/src/session.rs` `root_to_ast_value`) and
+//! svelte/compiler-shaped JSON `Value` the engine consumes. There is no direct
+//! `rsvelte Root → IR` converter: the native path serializes rsvelte's `Root` to that
+//! same `Value` form (`engine-scan-native/src/session.rs` `root_to_ast_value`) and
 //! then calls `from_value`. It replaces the per-fixpoint-round re-walking of the
 //! `Value` template in the dead-branch scan (`compute_dead_spans_ir`) and
 //! `build_model`'s binder / escape reads with a fast typed walk; the rest of the
@@ -266,10 +265,8 @@ pub struct Root {
 }
 
 // =============================================================================
-// Value → IR converter — the wasm frontend (the input JSON is already parsed on
-// the JS side) and, in slice (a), the source `build_model` reads through. Maps the
-// svelte/compiler JSON shape faithfully (verified against the real parser output);
-// the native `rsvelte Root → IR` converter (a later slice) produces the same IR.
+// Value → IR converter — what `build_model` reads through. Maps the
+// svelte/compiler JSON shape faithfully (verified against the real parser output).
 // =============================================================================
 
 fn ntype(node: &Value) -> &str {

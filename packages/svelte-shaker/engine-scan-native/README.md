@@ -49,7 +49,7 @@ The output is **pinned byte-for-byte to the JS engine**, two ways:
 - The corpus benchmark pins `scan` (typed) === `scan_via_value` (oracle) === the JS
   engine on the full flygate corpus (650 components): same 18 files, same 53 reports,
   zero diffs. The oracle path reuses `svelte_shaker_engine::find_never_passed_props`,
-  which is itself pinned to the TS engine by the `wasm-never-passed` test.
+  which `tests/native-never-passed.test.ts` pins to the TS engine.
 
 A parse error on any file yields no model for it (it is silently skipped), so a
 broken file can only ever make the scan **under-report**, never produce a false
@@ -122,8 +122,8 @@ extension is `.dylib` on macOS, `.so` on Linux, `.dll` on Windows; the `.node` t
 `darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64` / `win32-x64`.)
 
 Consumers get the speedup automatically once it is installed (e.g. as an optional
-dependency); the ESLint rule loads it when present and falls back to the JS/WASM
-engine otherwise.
+dependency); the ESLint rule loads it when present and falls back to the JS engine
+otherwise.
 
 ## Performance
 

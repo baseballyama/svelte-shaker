@@ -10,7 +10,7 @@ import { loadNativeAddon } from './native-addon';
 // exercises the Value→IR converter + the IR walk end-to-end on every golden fixture
 // (plus example/e2e) as a focused check; the full-shake corpus tests cover the IR
 // through the whole shake. A napi shim (`irComponentTags`) runs the IR walk so the
-// committed wasm is untouched.
+// engine's own Value walk is untouched.
 interface Addon {
   irComponentTags: (astJson: string) => string;
 }

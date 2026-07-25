@@ -12,7 +12,7 @@ import type { ComponentId } from './ir.js';
 
 // NODE-ONLY: loads the native Rust (napi) engine and drives it from the Vite plugin.
 // Imported only by `vite.ts` (a Node entry), never by the environment-free engine, so
-// the browser playground build stays clean. Unlike the WASM engine, this parses with
+// the browser playground build stays clean. Unlike the JS engine, this parses with
 // rsvelte IN PROCESS and keeps the ASTs Rust-side (a `ShakeSession`), so no
 // whole-program AST ever crosses the JS boundary — the crawl reads per-file FACTS from
 // the session instead of re-parsing in JS (docs/RUST-MIGRATION.md M3).
@@ -55,7 +55,7 @@ const EXPECTED_ENGINE_API_VERSION = 3;
  * generation AND the `ShakeSession` shape (`parse` + `parseMore` + `shake`). An OLDER
  * published `svelte-shaker-engine-scan-native` — one with no `engineApiVersion`, a
  * different generation, or predating `parseMore` — is REJECTED so the caller degrades
- * to WASM/JS instead of mis-calling an incompatible binary and crashing the build. */
+ * to the JS engine instead of mis-calling an incompatible binary and crashing the build. */
 export function hasSessionApi(mod: Partial<NativeEngine>): mod is NativeEngine {
   const versionFn = mod.engineApiVersion;
   // The 0.2.x addon has no `engineApiVersion` export, so this rejects it — the exact
@@ -73,7 +73,7 @@ export function hasSessionApi(mod: Partial<NativeEngine>): mod is NativeEngine {
 
 /**
  * Load the native Rust (napi) engine, or `null` if it can't be loaded (then the caller
- * falls back to the WASM / JS engine). Two locations are tried in order:
+ * falls back to the JS engine). Two locations are tried in order:
  *  - the published `svelte-shaker-engine-scan-native` package (an
  *    `optionalDependency` — installed only when a prebuilt binary exists for this
  *    platform); this is the layout an npm consumer gets.
@@ -120,7 +120,7 @@ export interface NativeMonoResult {
 
 /**
  * Whole-program shake via the native Rust engine — the counterpart of
- * {@link svelteShakerWithMono} / {@link svelteShakerWasmWithMono}, handling
+ * {@link svelteShakerWithMono}, handling
  * monomorphization too (mono off → an empty variant set).
  *
  * The seed components are parsed ONCE by the session (a batched, parallel rsvelte
@@ -205,6 +205,6 @@ export async function svelteShakerNativeWithMono(
   });
   // The engine already keys each variant by its `?shaker_variant=` request specifier
   // (mono.rs `variant_specifier`), the same key the `load` hook serves — so pass it
-  // through, exactly as the WASM engine does.
+  // through, exactly as the JS engine does.
   return { files, variants: new Map(Object.entries(last.variants)) };
 }

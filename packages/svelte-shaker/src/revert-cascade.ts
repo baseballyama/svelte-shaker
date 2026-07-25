@@ -12,7 +12,7 @@ import type { FileModel } from './model.js';
 // WHOLE transform, so the parent's edits are recomputed against a child that drops
 // nothing.  Should a transform never converge, we fall back to the untouched
 // originals for every file — a whole-program no-op, always sound.  The JS engine
-// (index.ts) and the WASM engine (wasm-engine.ts) share this skeleton so their
+// (index.ts) and the native engine (native-engine.ts) share this skeleton so their
 // revert behavior can never drift.
 
 /** How many times we re-run after force-bailing the unparseable components before
@@ -26,7 +26,7 @@ export const MAX_REVERT_ITERATIONS = 3;
 export const REVERT_REASON = 'reverted: transform emitted unparseable source';
 
 /** The original id + source of one component — the minimum the cascade needs from
- * a {@link FileModel} (JS engine) or a program input file (WASM engine). */
+ * a {@link FileModel} (JS engine) or a program input file (native engine). */
 interface OriginalFile {
   id: ComponentId;
   code: string;
@@ -57,7 +57,7 @@ function unparseableIds(
  * with those ids added to the force-bail set, up to {@link
  * MAX_REVERT_ITERATIONS} times; if it never converges, return every file's
  * untouched original.  `run` receives the accumulated set of ids to bail and must
- * honor it (the JS engine force-bails their plans; the WASM engine threads them to
+ * honor it (the JS engine force-bails their plans; the native engine threads them to
  * Rust as `forceBail`).
  */
 export function revertCascade(

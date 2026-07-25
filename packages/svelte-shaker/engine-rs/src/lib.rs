@@ -1,18 +1,14 @@
-//! WASM core for svelte-shaker (docs/RUST-MIGRATION.md M4+).
+//! Rust core for svelte-shaker (docs/RUST-MIGRATION.md M4+).
 //!
-//! Self-contained on purpose: it analyzes a Svelte component AST handed in as
+//! Environment-free by design: it analyzes a Svelte component AST handed in as
 //! JSON (the modern parse shape — produced on the JS side by rsvelte or
-//! svelte/compiler), so it has NO build dependency on the rsvelte compiler crate
-//! and builds to a small, cross-platform `wasm` artifact. It is being ported one
-//! validated slice at a time, each pinned against the TS engine by a differential
-//! test (`packages/svelte-shaker/tests/wasm-m4.test.ts`).
+//! svelte/compiler), so it has NO build dependency on the rsvelte compiler crate.
+//! It is linked as an rlib by the `engine-scan-native` napi addon, which owns the
+//! boundary; every slice is pinned against the TS engine by a differential test
+//! (`packages/svelte-shaker/tests/native-full-shake.test.ts`).
 
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-// The `#[wasm_bindgen]` prelude is the WASM frontend only; native links the
-// environment-free cores as an rlib and never pulls in wasm-bindgen / js-sys.
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
 
 mod analyze;
 mod ast;
@@ -20,8 +16,7 @@ mod css;
 mod dead_code;
 mod eval;
 // The engine's internal template IR (docs/ARCHITECTURE.md §6.5). `pub` so the native
-// crate can drive the IR-walk vs Value-walk parity pin through a napi shim without
-// touching the committed wasm.
+// crate can drive the IR-walk vs Value-walk parity pin through a napi shim.
 pub mod ir;
 mod mono;
 mod plan;
@@ -44,149 +39,14 @@ use crate::unread::collect_unread;
 // (`svelte_shaker_engine::find_never_passed_props`).
 pub use crate::plan::find_never_passed_props;
 
-// The native (napi) engine drives the same whole-program shake through these
-// environment-free cores (`shake_program_value` / `shake_program_with_mono_value`
-// are `pub fn` above); it builds the mono options with this re-exported type.
+// The native (napi) engine drives the whole-program shake through the
+// environment-free `shake_program_with_mono_value` core below; it builds the mono
+// options with this re-exported type.
 pub use crate::mono::MonoOptions;
-
-/// Analyze one component AST (JSON) given its resolved outgoing edges (JSON), and
-/// return the per-file model fields ported so far: declared props, `...rest`
-/// presence, shadowed / `{@debug}` fold-blocking names, the `<svelte:options>`
-/// bail, the rendered child calls, and escaped components. `{"error": "..."}` on
-/// malformed input.
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn analyze_component(ast_json: &str, edges_json: &str) -> String {
-    let ast: Value = match serde_json::from_str(ast_json) {
-        Ok(v) => v,
-        Err(e) => return json!({ "error": e.to_string() }).to_string(),
-    };
-    let edges: Value = serde_json::from_str(edges_json).unwrap_or(Value::Null);
-    let edge_refs: Vec<&Value> = edges.as_array().map(|a| a.iter().collect()).unwrap_or_default();
-    let imports = edge_imports(&edge_refs);
-    let (props, has_rest) = declared_props(&ast);
-    let (shadowed, debug, written) = template_bindings(&ast);
-    json!({
-        "props": props,
-        "hasRestProp": has_rest,
-        "shadowed": sorted(shadowed),
-        "debug": sorted(debug),
-        "written": sorted(written),
-        "bail": component_bail(&ast),
-        "childCalls": child_calls(&ast, &imports),
-        "escaped": escaped_components(&ast, &imports, &imported_locals(&ast), &namespace_locals(&ast)),
-    })
-    .to_string()
-}
-
-/// Whole-program analysis entry: `input` is `{ files: [{id, ast}], edges:
-/// [{from, local, to, kind}], entries }` (the AST is parsed on the JS side).
-/// Returns `{ id: plan }` for every component.
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn analyze_program(input_json: &str) -> String {
-    let input: Value = match serde_json::from_str(input_json) {
-        Ok(v) => v,
-        Err(e) => return json!({ "error": e.to_string() }).to_string(),
-    };
-    // Group resolved edges by their owning file, holding each edge BY REFERENCE (the
-    // edges live in `input` for the whole call) so the whole edge set is not cloned.
-    let mut edges_by_from: HashMap<&str, Vec<&Value>> = HashMap::new();
-    for e in input.get("edges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
-        if let Some(from) = e.get("from").and_then(Value::as_str) {
-            edges_by_from.entry(from).or_default().push(e);
-        }
-    }
-    let mut models: Vec<Model> = Vec::new();
-    for f in input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
-        let id = match f.get("id").and_then(Value::as_str) {
-            Some(i) => i,
-            None => continue,
-        };
-        let ast = f.get("ast").cloned().unwrap_or(Value::Null);
-        let empty = Vec::new();
-        let edges = edges_by_from.get(id).unwrap_or(&empty);
-        models.push(build_model_full(id, ast, edges));
-    }
-
-    // Program-wide escape bail (analyze.ts §4.1).
-    let mut escaped = HashSet::new();
-    for m in &models {
-        for id in &m.escaped {
-            escaped.insert(id.clone());
-        }
-    }
-    for m in &mut models {
-        if escaped.contains(&m.id) && !m.bail_reasons.iter().any(|r| r == ESCAPE_REASON) {
-            m.bail_reasons.push(ESCAPE_REASON.to_string());
-        }
-    }
-    // Consumers outside the `.svelte` graph escape too (analyze.ts §4.2).
-    stamp_module_escapes(&mut models, &input);
-
-    let plans = run_fixpoint(&models);
-    let out: serde_json::Map<String, Value> =
-        plans.iter().map(|(id, plan)| (id.clone(), plan_to_json(plan))).collect();
-    Value::Object(out).to_string()
-}
-
-/// JSON-string wrapper of {@link find_never_passed_props} for the WASM boundary.
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn find_never_passed_props_json(input_json: &str) -> String {
-    let input: Value = match serde_json::from_str(input_json) {
-        Ok(v) => v,
-        Err(e) => return json!({ "error": e.to_string() }).to_string(),
-    };
-    find_never_passed_props(&input).to_string()
-}
-
-/// Whole-program shake: analyze + transform.  `input` is `{ files: [{id, ast,
-/// code}], edges, entries }`.  Returns `{ id: slimmedSource }` for every file —
-/// byte-for-byte the output of the always-on folds (the `svelteShaker` equivalent).
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn shake_program(input_json: &str) -> String {
-    match serde_json::from_str::<Value>(input_json) {
-        Ok(input) => shake_program_value(&input).to_string(),
-        Err(e) => json!({ "error": e.to_string() }).to_string(),
-    }
-}
-
-/// Environment-free core of [`shake_program`]: the program input is already parsed,
-/// so there is no js_sys here and the native (napi) engine can call it directly
-/// (docs/ARCHITECTURE.md §5 — the Engine stays environment-free). Returns the
-/// `{ id: slimmedSource }` object.
-pub fn shake_program_value(input: &Value) -> Value {
-    // Borrow the parsed ASTs out of `input` (which owns them for the call) into the
-    // shared `ShakeFile` slice `build_models_with_escapes` consumes — the same shape
-    // the mono core receives, so both paths build models one way.
-    let null = Value::Null;
-    let files: Vec<ShakeFile> = input
-        .get("files")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-        .iter()
-        .filter_map(|f| {
-            Some(ShakeFile {
-                id: f.get("id").and_then(Value::as_str)?,
-                ast: f.get("ast").unwrap_or(&null),
-                code: f.get("code").and_then(Value::as_str).unwrap_or(""),
-            })
-        })
-        .collect();
-
-    let (models, code_by_id) = build_models_with_escapes(&files, input);
-    let plans = run_fixpoint(&models);
-    let edits_map = run_base_phases(&models, &plans, &code_by_id);
-
-    let out: serde_json::Map<String, Value> = models
-        .iter()
-        .map(|m| (m.id.clone(), Value::String(edits_map.get(&m.id).map(|e| e.render()).unwrap_or_default())))
-        .collect();
-    Value::Object(out)
-}
 
 /// Build the per-file [`Model`]s and stamp the program-wide bails, shared by the
 /// always-on shake and the mono shake. Groups the resolved edges by owning file,
-/// builds each model (fanned across cores off-wasm; the per-file build is pure and
+/// builds each model (fanned across cores; the per-file build is pure and
 /// order-preserving, so mono variant ids stay stable), then applies the three
 /// whole-program bails: the revert-cascade force-bail (`forceBail`), the escape-union
 /// bail, and the outside-the-graph module-escape bail. `config` carries everything but
@@ -202,20 +62,17 @@ fn build_models_with_escapes(files: &[ShakeFile], config: &Value) -> (Vec<Model>
     }
     // Per-file build is pure and independent; the resulting Vec order is preserved by
     // par_iter().collect(), so mono variant ids (keyed by first caller in program
-    // order) stay identical. On native we fan it across cores; wasm stays sequential.
+    // order) stay identical whether or not the fan-out reorders the work.
     let build_one = |f: &ShakeFile| -> (Model, String, String) {
         let empty = Vec::new();
         let edges = edges_by_from.get(f.id).unwrap_or(&empty);
         let model = build_model_full(f.id, f.ast.clone(), edges);
         (model, f.id.to_string(), f.code.to_string())
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let built: Vec<(Model, String, String)> = {
         use rayon::prelude::*;
         files.par_iter().map(build_one).collect()
     };
-    #[cfg(target_arch = "wasm32")]
-    let built: Vec<(Model, String, String)> = files.iter().map(build_one).collect();
     let mut models: Vec<Model> = Vec::with_capacity(built.len());
     let mut code_by_id: HashMap<String, String> = HashMap::with_capacity(built.len());
     for (model, id, code) in built {
@@ -257,7 +114,7 @@ fn build_models_with_escapes(files: &[ShakeFile], config: &Value) -> (Vec<Model>
 /// removals (phase 0), unread-prop drops (phase 0b), per-body fold + prop drop (phase
 /// 1), call-site attribute stripping (phase 2), then the reverse removals (phase 2.5).
 /// Returns each file's `MagicEdit`; the mono caller layers phase 3 (variant rewrites)
-/// on top before rendering. The per-owner phases are fanned across cores off-wasm.
+/// on top before rendering. The per-owner phases are fanned across cores.
 fn run_base_phases(models: &[Model], plans: &Plans, code_by_id: &HashMap<String, String>) -> HashMap<String, MagicEdit> {
     let models_by_id: HashMap<&str, &Model> = models.iter().map(|m| (m.id.as_str(), m)).collect();
 
@@ -276,13 +133,10 @@ fn run_base_phases(models: &[Model], plans: &Plans, code_by_id: &HashMap<String,
             Some((model.id.clone(), ops))
         }
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let mut reverse: HashMap<String, Vec<ReverseOp>> = {
         use rayon::prelude::*;
         models.par_iter().filter_map(reverse_one).collect()
     };
-    #[cfg(target_arch = "wasm32")]
-    let mut reverse: HashMap<String, Vec<ReverseOp>> = models.iter().filter_map(reverse_one).collect();
 
     // Phase 0b: unread declared props (docs §PR7).  Merge its (a) removals into the
     // reverse map (they never target the same attribute — declared vs undeclared),
@@ -296,7 +150,7 @@ fn run_base_phases(models: &[Model], plans: &Plans, code_by_id: &HashMap<String,
 
     // Phase 1 folds each body into its OWN MagicEdit and returns its dropped props —
     // per-model and independent (all shared reads are immutable), so fan it across
-    // cores on native. The outputs are id-keyed maps, so assembling them afterwards is
+    // cores. The outputs are id-keyed maps, so assembling them afterwards is
     // order-independent.
     let phase1_one = |model: &Model| -> (String, HashSet<String>, Vec<Span>, MagicEdit) {
         let plan = &plans[&model.id];
@@ -311,13 +165,10 @@ fn run_base_phases(models: &[Model], plans: &Plans, code_by_id: &HashMap<String,
         };
         (model.id.clone(), d, dead, edits)
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let phase1: Vec<(String, HashSet<String>, Vec<Span>, MagicEdit)> = {
         use rayon::prelude::*;
         models.par_iter().map(phase1_one).collect()
     };
-    #[cfg(target_arch = "wasm32")]
-    let phase1: Vec<(String, HashSet<String>, Vec<Span>, MagicEdit)> = models.iter().map(phase1_one).collect();
     let mut edits_map: HashMap<String, MagicEdit> = HashMap::with_capacity(phase1.len());
     let mut dropped: HashMap<String, HashSet<String>> = HashMap::with_capacity(phase1.len());
     let mut edited_spans: HashMap<String, Vec<Span>> = HashMap::with_capacity(phase1.len());
@@ -354,51 +205,6 @@ fn run_base_phases(models: &[Model], plans: &Plans, code_by_id: &HashMap<String,
     edits_map
 }
 
-/// Whole-program shake WITH monomorphization.  `input` is the same shape as
-/// `shake_program`; `options_json` is `{enabled, maxVariants, minSavings}`;
-/// `own_size(source) -> number | null` is the per-module compiled-byte proxy the
-/// net-win gate uses (the JS side runs svelte/compiler, so decisions match the TS
-/// engine).  Returns `{ files: {id: code}, variants: {specifier: code} }`.
-// WASM-only: its `own_size` is a js-sys callback, so this whole wrapper is compiled
-// out of the native build (which calls `shake_program_with_mono_value` with a napi
-// callback instead).
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-pub fn shake_program_with_mono(input_json: &str, options_json: &str, own_size: &js_sys::Function) -> String {
-    let input: Value = match serde_json::from_str(input_json) {
-        Ok(v) => v,
-        Err(e) => return json!({ "error": e.to_string() }).to_string(),
-    };
-    let options: Value = serde_json::from_str(options_json).unwrap_or(Value::Null);
-    let opts = MonoOptions::from_value(&options);
-    // Adapt the JS `ownSize` function into the environment-free core's raw size
-    // callback (the size memo lives in the core, matching the TS `sizeCache`).
-    let mut js_size = |id: &str, src: &str| -> Option<f64> {
-        own_size
-            .call2(&JsValue::NULL, &JsValue::from_str(id), &JsValue::from_str(src))
-            .ok()
-            .and_then(|v| v.as_f64())
-    };
-    // Borrow the parsed ASTs out of `input` (which owns them for this call) into the
-    // core's `files` slice; `input` itself carries the edges/entries/… config.
-    let null = Value::Null;
-    let files: Vec<ShakeFile> = input
-        .get("files")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-        .iter()
-        .filter_map(|f| {
-            Some(ShakeFile {
-                id: f.get("id").and_then(Value::as_str)?,
-                ast: f.get("ast").unwrap_or(&null),
-                code: f.get("code").and_then(Value::as_str).unwrap_or(""),
-            })
-        })
-        .collect();
-    shake_program_with_mono_value(&files, &input, &opts, &mut js_size).to_string()
-}
-
 /// One file handed to the shake core: its id, its parsed AST, and its source, all
 /// BORROWED. Passing the retained ASTs by reference (rather than folding them into a
 /// cloned input `Value`) is what lets the native session skip a full-program AST
@@ -409,11 +215,13 @@ pub struct ShakeFile<'a> {
     pub code: &'a str,
 }
 
-/// Environment-free core of [`shake_program_with_mono`]: `files` are the parsed ASTs
-/// (borrowed), `config` is `{ edges, entries?, escaped?, forceBail? }` (everything
-/// but the ASTs), and `own_size(id, source)` is a raw per-module size callback (the
-/// wasm boundary adapts the JS function; the native engine passes a napi callback).
-/// No js_sys here, so the Shell boundary holds. Returns `{ files, variants }`.
+/// Whole-program shake WITH monomorphization — the engine's single entry point.
+/// `files` are the parsed ASTs (borrowed), `config` is
+/// `{ edges, entries?, escaped?, forceBail? }` (everything but the ASTs), and
+/// `own_size(id, source)` is a raw per-module compiled-byte proxy the net-win gate
+/// calls (the native engine passes a napi-free in-process rsvelte closure). No
+/// environment dependency here, so the Shell boundary holds (docs/ARCHITECTURE.md
+/// §5). Returns `{ files: {id: code}, variants: {specifier: code} }`.
 pub fn shake_program_with_mono_value(
     files: &[ShakeFile],
     config: &Value,
@@ -446,8 +254,8 @@ pub fn shake_program_with_mono_value(
         monomorphize(&models, &plans, &code_by_id, &entries, opts, &mut own_size_fn)
     };
 
-    // Base phases (identical to `shake_program`): reverse removals, fold bodies + drop
-    // props, strip dropped-prop attributes, then the reverse removals.
+    // Base phases: reverse removals, fold bodies + drop props, strip dropped-prop
+    // attributes, then the reverse removals.
     let mut edits_map = run_base_phases(&models, &plans, &code_by_id);
 
     // Phase 3 (monomorphization): rewrite each bound `<Child …>` to its variant.
@@ -471,8 +279,29 @@ mod tests {
         analyze_edges(ast, "[]")
     }
 
+    /// The per-file [`Model`] the engine really builds, projected to the fields these
+    /// unit tests pin: declared props, `...rest`, the shadowed / `{@debug}` / written
+    /// fold-blocking names, the `<svelte:options>` bail, the rendered child calls, and
+    /// the escaped components.
     fn analyze_edges(ast: &Value, edges: &str) -> Value {
-        serde_json::from_str(&analyze_component(&ast.to_string(), edges)).unwrap()
+        let edges: Value = serde_json::from_str(edges).unwrap();
+        let edge_refs: Vec<&Value> = edges.as_array().map(|a| a.iter().collect()).unwrap();
+        let m = build_model_full("/C.svelte", ast.clone(), &edge_refs);
+        let props = m.props_info.as_ref().map(|p| &p.props);
+        json!({
+            "props": props.map(|p| p.iter().map(|d| d.name.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+            "hasRestProp": m.props_info.as_ref().is_some_and(|p| p.has_rest),
+            "shadowed": sorted(m.shadowed.into_iter().collect()),
+            "debug": sorted(m.debug.into_iter().collect()),
+            "written": sorted(m.written.into_iter().collect()),
+            "bail": m.bail_reasons,
+            "childCalls": m.child_calls.iter().map(|(cid, n)| json!({
+                "childId": cid,
+                "start": n.get("start"),
+                "end": n.get("end"),
+            })).collect::<Vec<_>>(),
+            "escaped": m.escaped,
+        })
     }
 
     #[test]

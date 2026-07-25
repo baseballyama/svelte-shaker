@@ -35,14 +35,13 @@ const nativeAvailable = (() => {
 })();
 
 // ----------------------------------------------------------------------
-// The `parser` option controls how the JS / WASM engines parse `.svelte` — the
-// default FOLLOWS THE ENGINE (rsvelte on the WASM Rust engine, svelte/compiler on the
-// JS engine, where rsvelte's parse is pure overhead). The NATIVE (napi) engine parses
-// with rsvelte IN PROCESS and never touches the JS-side `@rsvelte/compiler`, so the
-// `parser` option does not apply to it; `parser: 'svelte'` forces the native engine
-// OFF (it cannot honor svelte/compiler). We wrap both loaders so we can (a) observe
-// which paths reach for the JS rsvelte parser, and (b) force load failures to prove
-// the fallback / opt-out behavior.
+// The `parser` option controls how the JS engine parses `.svelte`, and defaults to
+// svelte/compiler (on the JS engine rsvelte's parse is pure overhead). The NATIVE
+// (napi) engine parses with rsvelte IN PROCESS and never touches the JS-side
+// `@rsvelte/compiler`, so the `parser` option does not apply to it; `parser: 'svelte'`
+// forces the native engine OFF (it cannot honor svelte/compiler). We wrap both loaders
+// so we can (a) observe which paths reach for the JS rsvelte parser, and (b) force load
+// failures to prove the throw / opt-out behavior.
 // ----------------------------------------------------------------------
 
 vi.mock('../src/rsvelte-parse', async (importOriginal) => {
@@ -160,18 +159,30 @@ describe('vite-plugin-svelte-shaker: parser follows the engine', () => {
     expect(code).not.toMatch(IF_MACHINERY);
   });
 
-  it('the WASM fallback throws when @rsvelte/compiler cannot be loaded, pointing at the dependency and the opt-out', async () => {
-    // With the native engine unavailable, engine: 'rust' falls back to the WASM engine,
-    // which parses `.svelte` with the JS rsvelte parser — so a missing @rsvelte/compiler
-    // is a hard error there (a silent swap would shake differently machine to machine).
+  it("engine: 'rust' throws when the native engine cannot be loaded, pointing at the JS opt-out", async () => {
+    // `engine: 'rust'` is an explicit demand for the native engine. Silently shaking on
+    // the JS engine instead would hide that the build lost its prebuilt binary, so it is
+    // a hard error naming the way out (`engine: 'js'`, whose output is byte-identical).
     loadNative.mockReturnValue(null);
+    await expect(bundle([shaker({ entries: ['.'], engine: 'rust' })])).rejects.toThrow(
+      /native Rust engine could not be loaded/,
+    );
+    await expect(bundle([shaker({ entries: ['.'], engine: 'rust' })])).rejects.toThrow(
+      /engine: "js"/,
+    );
+  });
+
+  it("parser: 'rsvelte' throws when @rsvelte/compiler cannot be loaded, naming the opt-out", async () => {
+    // An explicit `parser: 'rsvelte'` on the JS engine is the one path that still needs
+    // the JS-side rsvelte parser, so a missing @rsvelte/compiler is a hard error there —
+    // a silent swap to svelte/compiler would shake differently machine to machine.
     loadRsvelte.mockReturnValue(null);
-    await expect(bundle([shaker({ entries: ['.'], engine: 'rust' })])).rejects.toThrow(
-      /@rsvelte\/compiler/,
-    );
-    await expect(bundle([shaker({ entries: ['.'], engine: 'rust' })])).rejects.toThrow(
-      /parser: "svelte"/,
-    );
+    await expect(
+      bundle([shaker({ entries: ['.'], engine: 'js', parser: 'rsvelte' })]),
+    ).rejects.toThrow(/@rsvelte\/compiler/);
+    await expect(
+      bundle([shaker({ entries: ['.'], engine: 'js', parser: 'rsvelte' })]),
+    ).rejects.toThrow(/parser: "svelte"/);
   });
 
   it("parser: 'svelte' still works when @rsvelte/compiler is unavailable (it is the fallback)", async () => {

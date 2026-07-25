@@ -114,13 +114,13 @@ plugins: [shaker(&#123; entries: [<span class="s">'src'</span>] &#125;), svelte(
         </dd>
         <dt><code>engine</code></dt>
         <dd>
-          <span class="def">'auto'</span> Rust/WASM engine when loadable, else JS.
+          <span class="def">'auto'</span> Native Rust engine when loadable, else JS.
           Byte-identical output either way.
         </dd>
         <dt><code>parser</code></dt>
         <dd>
-          <span class="def">'rsvelte'</span> Soundness-neutral; <code>'svelte'</code>
-          is the fallback escape hatch.
+          <span class="def">'svelte'</span> The JS engine's parser; soundness-neutral.
+          <code>'rsvelte'</code> opts in, and forces the JS engine.
         </dd>
         <dt><code>dev</code></dt>
         <dd>

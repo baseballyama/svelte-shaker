@@ -49,19 +49,17 @@ npm i -D svelte-shaker   # requires svelte@^5
 
 Nothing else to install. The plugin picks its engine automatically (see
 [Options](#options)): if a **native (napi) Rust** binary loads it runs there —
-parsing with rsvelte in process, fastest, no size ceiling; otherwise a small/medium
-app runs on the **WASM Rust engine** (parsing with **rsvelte** from
-`@rsvelte/compiler`, a bundled WASM dependency — no peer, no platform-specific
-binary) and a large app on the **JS engine** with **svelte/compiler**. `engine` and
-`parser` let you pin the choice.
+parsing with rsvelte in process, by far the fastest; otherwise the shake runs on the
+**JS engine** with **svelte/compiler**, which needs no prebuilt binary and always
+works. Both shake **byte-identically**, so the fallback costs only build time.
+`engine` and `parser` let you pin the choice.
 
 ## Usage (Vite)
 
 Add the plugin **before** `svelte()`. By default it runs only in `vite build` —
 dev/HMR is a pass-through (opt into dev shaking with the `dev` option, see
 [Options](#options)). The engine is chosen automatically (native Rust if a binary
-loads, else WASM Rust for small/medium or JS for large), and every path falls back
-cleanly (see [Options](#options)).
+loads, else JS), and every path falls back cleanly (see [Options](#options)).
 
 ```ts
 // vite.config.ts
@@ -87,7 +85,7 @@ through your plugin's `resolveId`/`load` hooks; the unused-prop fold / constant
 fold / value-set narrowing shake only needs the `transform` swap. The
 environment-free engine and the in-browser playground parse with svelte/compiler
 — the Vite plugin's rsvelte selection is a plugin concern (it loads a Node-only
-WASM module); the engine takes an optional `parse` argument if you want to swap it.
+module); the engine takes an optional `parse` argument if you want to swap it.
 
 ### Options
 
@@ -107,9 +105,9 @@ shaker({
   verbose: false, // true = per-file size breakdown after the build
 
   // Engine is auto-selected; set these only to pin.
-  engine: 'auto', // 'auto' (native Rust if it loads, else WASM if <=~300, else JS) | 'js' | 'rust'
-  parser: undefined, // JS/WASM parse only (native always uses in-process rsvelte);
-  // default follows the engine (WASM->rsvelte, JS->svelte); set 'rsvelte' | 'svelte' to pin
+  engine: 'auto', // 'auto' (native Rust if it loads, else JS) | 'js' | 'rust'
+  parser: undefined, // JS engine only (native always uses in-process rsvelte);
+  // defaults to svelte/compiler; set 'rsvelte' to pin rsvelte instead
 
   dev: false, // default off: dev is a pass-through. 'incremental' (re-parse only
   // changed files) | 'coarse' (re-analyze everything) opts in; never monomorphizes
@@ -120,33 +118,25 @@ That list is exhaustive: any other key **fails the build**, naming the key and t
 options that do exist. A typo would otherwise be ignored — and a misspelled
 `preserve` ships the component you meant to protect, over-shaken.
 
-- **`engine`** — which engine runs the shake. There are two Rust engines (the same
-  analysis behind two frontends) plus the JS engine. The **native (napi)** engine
-  parses with rsvelte **in process** and keeps the ASTs Rust-side, so no
-  whole-program AST crosses a boundary — fastest, no size ceiling — but it ships as
-  a per-platform prebuilt binary that may not exist for every install. The **WASM**
-  engine is the same Rust engine, but the whole-program AST must cross the JS↔WASM
-  boundary as JSON (tens of MB past a few hundred components), so it only wins for
-  small/medium apps; the **JS** engine needs no boundary crossing, so it wins for a
-  large app when the native binary isn't available. **`'auto'`** (default) uses the
-  native engine if a binary loads (no size gate), else the WASM engine for a
-  small/medium app or the JS engine for a large one. **`'rust'`** forces a Rust
-  engine — native if it loads, else WASM (throwing if `@rsvelte/compiler` can't load
-  for the WASM fallback); **`'js'`** forces the JS engine. All three are
+- **`engine`** — which engine runs the shake. There are two. The **native (napi
+  Rust)** engine parses with rsvelte **in process** and keeps the ASTs Rust-side, so
+  no whole-program AST crosses a boundary — by far the fastest — but it ships as a
+  per-platform prebuilt binary that may not exist for every install. The **JS**
+  engine needs no prebuilt binary and always works. **`'auto'`** (default) uses the
+  native engine if a binary loads, else the JS engine. **`'rust'`** forces the native
+  engine, throwing if it can't be loaded; **`'js'`** forces the JS engine. Both are
   differentially tested to shake **byte-identically**, so this is **speed-only** — it
   never changes what ships.
-- **`parser`** — how the **JS / WASM** engines parse `.svelte`. It does **not** apply
-  to the native engine, which always parses with rsvelte in process. The default
-  **follows the engine**: **rsvelte** on the WASM engine (its AST crosses into Rust
-  directly), **svelte/compiler** on the JS engine (where rsvelte's parse is ~2× slower
-  with no downstream benefit). The choice is **soundness-neutral** — the engine reads
-  only UTF-16 `start`/`end`, so both parsers are differentially tested to produce
+- **`parser`** — how the **JS** engine parses `.svelte`. It does **not** apply to the
+  native engine, which always parses with rsvelte in process. It defaults to
+  **svelte/compiler**, because on the JS engine rsvelte's parse is ~2× slower with no
+  downstream benefit. The choice is **soundness-neutral** — the engine reads only
+  UTF-16 `start`/`end`, so both parsers are differentially tested to produce
   **byte-identical** output, never changing what renders. `parser: 'svelte'` also
   forces the native engine **off** (it can't honor svelte/compiler), so the shake uses
-  a JS/WASM engine with svelte/compiler. When rsvelte is the resolved JS-side parser
-  (`parser: 'rsvelte'`, or the WASM engine's default) and `@rsvelte/compiler` can't
-  load, the plugin **throws** rather than silently swapping (so the same source can't
-  shake differently on another machine); `parser: 'svelte'` is the explicit opt-out.
+  the JS engine. With an explicit `parser: 'rsvelte'` that `@rsvelte/compiler` can't
+  satisfy, the plugin **throws** rather than silently swapping (so the same source
+  can't shake differently on another machine); `parser: 'svelte'` is the opt-out.
 - **`monomorphize`** — the one shaking knob, **on** by default. A measured
   net-win gate only specializes a component when that strictly shrinks the whole
   program, so monomorphization **never bloats**: whatever the knobs are set to,

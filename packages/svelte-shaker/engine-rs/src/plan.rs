@@ -37,7 +37,6 @@ fn fixpoint_iteration_bound(component_count: usize) -> usize {
 }
 
 pub(crate) struct ComponentPlan {
-    pub(crate) id: String,
     pub(crate) bail: bool,
     pub(crate) reasons: Vec<String>,
     pub(crate) const_fold: Vec<(String, Literal)>,
@@ -46,9 +45,8 @@ pub(crate) struct ComponentPlan {
 }
 
 impl ComponentPlan {
-    pub(crate) fn empty(id: &str) -> ComponentPlan {
+    pub(crate) fn empty() -> ComponentPlan {
         ComponentPlan {
-            id: id.to_string(),
             bail: false,
             reasons: Vec::new(),
             const_fold: Vec::new(),
@@ -103,7 +101,7 @@ pub(crate) fn build_plan(
     sites: Option<&Vec<CallSite>>,
     owner_envs: &OwnerEnvs,
 ) -> ComponentPlan {
-    let mut plan = ComponentPlan::empty(&model.id);
+    let mut plan = ComponentPlan::empty();
     if !model.bail_reasons.is_empty() {
         plan.bail = true;
         plan.reasons = model.bail_reasons.clone();
@@ -229,8 +227,8 @@ pub(crate) type Plans = HashMap<String, ComponentPlan>;
 /// Stamp {@link MODULE_ESCAPE_REASON} on every model listed in the input's
 /// `escaped` array (analyze.ts §4.2 `stampModuleEscapes`): components with a
 /// consumer outside the `.svelte` graph.  Ids not in the program are ignored.  The
-/// single injection point `shake_program`, `shake_program_with_mono`,
-/// `analyze_program`, and `find_never_passed_props` all share.
+/// single injection point `shake_program_with_mono_value` and
+/// `find_never_passed_props` share.
 pub(crate) fn stamp_module_escapes(models: &mut [Model], input: &Value) {
     let escaped: HashSet<&str> = input
         .get("escaped")
@@ -270,13 +268,10 @@ pub(crate) fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -
             })
             .collect()
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let per_model: Vec<Vec<(String, CallSite)>> = {
         use rayon::prelude::*;
         models.par_iter().map(one).collect()
     };
-    #[cfg(target_arch = "wasm32")]
-    let per_model: Vec<Vec<(String, CallSite)>> = models.iter().map(one).collect();
     let mut usage: HashMap<String, Vec<CallSite>> = HashMap::new();
     for pairs in per_model {
         for (child_id, site) in pairs {
@@ -316,14 +311,9 @@ fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
             None
         }
     };
-    #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
         models.par_iter().filter_map(one).collect()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        models.iter().filter_map(one).collect()
     }
 }
 
@@ -350,14 +340,9 @@ pub(crate) fn merge_script_consts(script_consts: &HashMap<String, Literal>, fold
 pub(crate) fn build_plans(models: &[Model], usage: &HashMap<String, Vec<CallSite>>, prev: &Plans) -> Plans {
     let owner_envs = owner_envs_for(models, prev);
     let build = |m: &Model| (m.id.clone(), build_plan(m, usage.get(&m.id), &owner_envs));
-    #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
         models.par_iter().map(build).collect()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        models.iter().map(build).collect()
     }
 }
 
@@ -380,14 +365,9 @@ pub(crate) fn dead_spans_for_plans(models: &[Model], plans: &Plans) -> HashMap<S
             Some((model.id.clone(), spans))
         }
     };
-    #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
         models.par_iter().filter_map(one).collect()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        models.iter().filter_map(one).collect()
     }
 }
 
@@ -427,47 +407,6 @@ pub(crate) fn run_fixpoint(models: &[Model]) -> Plans {
     plans
 }
 
-/// Encode a literal for the plan JSON; `undefined` uses a sentinel object so it
-/// stays distinct from `null` across the boundary (the differential test mirrors it).
-pub(crate) fn literal_to_plan_json(v: &Literal) -> Value {
-    match v {
-        Literal::Undefined => json!({ "$undefined": true }),
-        other => other.to_json(),
-    }
-}
-
-pub(crate) fn plan_to_json(plan: &ComponentPlan) -> Value {
-    let const_fold: serde_json::Map<String, Value> =
-        plan.const_fold.iter().map(|(k, v)| (k.clone(), literal_to_plan_json(v))).collect();
-    let narrow: serde_json::Map<String, Value> = plan
-        .narrow
-        .iter()
-        .map(|(k, vs)| (k.clone(), Value::Array(vs.iter().map(literal_to_plan_json).collect())))
-        .collect();
-    let value_sets: serde_json::Map<String, Value> = plan
-        .value_sets
-        .iter()
-        .map(|(k, s)| {
-            (
-                k.clone(),
-                json!({
-                    "values": s.values.iter().map(literal_to_plan_json).collect::<Vec<_>>(),
-                    "dynamic": s.dynamic,
-                    "top": s.top,
-                }),
-            )
-        })
-        .collect();
-    json!({
-        "id": plan.id,
-        "bail": plan.bail,
-        "reasons": plan.reasons,
-        "constFold": const_fold,
-        "narrow": narrow,
-        "valueSets": value_sets,
-    })
-}
-
 /// Per-component props that NO call site in the program passes (explicit,
 /// `bind:`, spread, or body/`{#snippet}` content). The Rust counterpart of
 /// analyze.ts `findNeverPassedProps`: high-confidence only — bailed/escaped
@@ -485,11 +424,10 @@ pub fn find_never_passed_props(input: &Value) -> Value {
             edges_by_from.entry(from).or_default().push(e);
         }
     }
-    // Per-file model building is pure and independent, so on native targets we fan
-    // it out across cores (it dominates the scan's wall-clock). The order of the
-    // resulting `Vec<Model>` is irrelevant — escapes are unioned and usage is keyed
-    // by id below — so this is purely a speedup, not a behavior change. wasm has no
-    // thread pool, so it stays sequential.
+    // Per-file model building is pure and independent, so we fan it out across cores
+    // (it dominates the scan's wall-clock). The order of the resulting `Vec<Model>`
+    // is irrelevant — escapes are unioned and usage is keyed by id below — so this is
+    // purely a speedup, not a behavior change.
     let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
     let build_one = |f: &Value| -> Option<Model> {
         let id = f.get("id").and_then(Value::as_str)?;
@@ -498,15 +436,12 @@ pub fn find_never_passed_props(input: &Value) -> Value {
         let edges = edges_by_from.get(id).unwrap_or(&empty);
         Some(build_model_full(id, ast, edges))
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let mut models: Vec<Model> = {
         use rayon::prelude::*;
         files.par_iter().filter_map(build_one).collect()
     };
-    #[cfg(target_arch = "wasm32")]
-    let mut models: Vec<Model> = files.iter().filter_map(build_one).collect();
 
-    // Program-wide escape bail (analyze.ts §4.1), same as analyze_program.
+    // Program-wide escape bail (analyze.ts §4.1), same as the whole-program shake.
     let mut escaped = HashSet::new();
     for m in &models {
         for id in &m.escaped {

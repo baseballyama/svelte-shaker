@@ -2,7 +2,7 @@
 //!
 //! The fast path for the ESLint rule `svelte/no-useless-props`: instead of parsing
 //! every component in JS and shipping a serialized AST across the JS boundary into
-//! the WASM engine, this addon parses with rsvelte natively (in parallel) and
+//! the JS engine, this addon parses with rsvelte natively (in parallel) and
 //! analyzes in-process.
 //!
 //! Two scan paths, both pinned to the JS engine and to each other:
@@ -17,7 +17,7 @@
 //! Input/output stay as JSON strings: the JS `buildAnalyzeInputSync` crawl already
 //! produces `{ files: [{id, code}], edges }` with resolution done, so the addon only
 //! adds native parsing + analysis. Output is `{ fileId: [{name, start, end}] }` with
-//! UTF-16 offsets — the same shape as the WASM `find_never_passed_props_json`.
+//! UTF-16 offsets — the same shape as the TS `findNeverPassedProps`.
 
 use std::collections::HashMap;
 
@@ -34,7 +34,7 @@ mod utf16;
 use utf16::{convert_positions_to_utf16, Utf8ToUtf16};
 
 /// The addon's ABI/protocol generation. The JS loader (`tryLoadNativeEngine`) checks
-/// this so a version-skewed prebuilt binary is REJECTED (→ fall back to WASM/JS)
+/// this so a version-skewed prebuilt binary is REJECTED (→ fall back to the JS engine)
 /// rather than silently mis-called: e.g. the 0.2.x addon's `shake` took a JS
 /// `ownSize` callback, whereas 0.3.x computes the size proxy in Rust and `shake`
 /// takes one argument — calling the old binary the new way throws a napi TypeError
@@ -164,7 +164,7 @@ pub fn parse_files(input_json: String) -> napi::Result<String> {
 /// (svelte JSON) as `[{ name, start, end }]`, so `tests/ir-parity.test.ts` can assert it
 /// equals the engine's Value walk over the same AST across the fixture corpus. A
 /// native-only shim — it exercises the Value→IR converter + IR walk directly without
-/// touching the committed wasm. The full-shake corpus tests cover the IR end-to-end;
+/// a napi shim. The full-shake corpus tests cover the IR end-to-end;
 /// this keeps a direct, minimal check on the template `<Component>` read specifically.
 #[napi]
 pub fn ir_component_tags(ast_json: String) -> napi::Result<String> {

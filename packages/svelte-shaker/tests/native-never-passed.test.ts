@@ -10,7 +10,8 @@ import type { ReadFile, Resolve } from '../src/crawl';
 // The native (napi) scanner must match the TS `findNeverPassedProps` on the same
 // program — name AND span, byte-for-byte. The native path parses with rsvelte and
 // runs the validated engine in-process; this differential test is the soundness
-// pin for `engine-scan-native`, the napi twin of `wasm-never-passed.test.ts`.
+// pin for `engine-scan-native`, the napi counterpart of the TS engine's own
+// `never-passed-props.test.ts`.
 const require = createRequire(import.meta.url);
 const addonPath = fileURLToPath(new URL('../engine-scan-native/index.cjs', import.meta.url));
 const dylib = fileURLToPath(

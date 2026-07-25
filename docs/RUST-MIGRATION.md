@@ -207,6 +207,16 @@ EditResult = { changed: Record<id, src>, removedVariants: string[], newVariants:
 **エンジン全体（解析+変換+emit+CSS, unused-prop fold / constant fold / value-set narrowing）が Rust/WASM で TS と byte 一致**。`engine-rs/`（自己完結・
 rsvelte_core 非依存・serde_json + wasm-bindgen）、`@rsvelte/compiler`(WASM) は差分オラクルの parse 比較用 devDep。
 
+> **【supersede】WASM フロントエンドは削除済み**
+> 本節以降の M4〜M6 の記述は「Rust エンジンを WASM で駆動する」当時の設計を記録したものである。
+> その後 native prebuilt（napi、darwin/linux/win の 5 ターゲット）が出荷され、WASM は
+> 「prebuilt が無い環境 × 中規模アプリ」だけの速度中間層になったため、**WASM フロントエンドは
+> 削除された**（`engine-rs/pkg`、`src/wasm-engine.ts`、`wasm-*` テスト、`build:wasm`、
+> `#[wasm_bindgen]` export 群、`RUST_ENGINE_MAX_COMPONENTS` ゲート）。
+> **エンジンコア `engine-rs` は残り**、napi addon `engine-scan-native` が rlib としてリンクして
+> 駆動する。現行のエンジン選択は **native → JS の 2 段**（§6.4 in ARCHITECTURE.md）。
+> 出力は従来どおり byte 一致で、削除による挙動変化は無い。
+
 ### プロダクション化の follow-up（本移行のスコープ外・要メンテナ判断）
 
 検証は完了したが、Rust エンジンを**出荷経路**にするのは別判断（後戻りしにくい）:

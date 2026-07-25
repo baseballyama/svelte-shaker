@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // The WHOLE POINT of the native engine: when it is active, the monomorphization
 // net-win gate's size proxy is computed IN RUST by rsvelte (`session::own_size`), so
 // the hot path never calls back into the JS Svelte compiler. We pin that here by
-// spying on `svelte/compiler`'s `compile` — the size-proxy call the WASM/TS engines
+// spying on `svelte/compiler`'s `compile` — the size-proxy call the TS engine
 // make — and asserting the native shake makes ZERO such calls even while
 // monomorphization genuinely fires. `parse` is left real: the OUTER revert-cascade
 // validation deliberately re-parses changed files with svelte/compiler (the authority,

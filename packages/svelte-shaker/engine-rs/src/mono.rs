@@ -7,7 +7,7 @@
 //! so the ONLY thing crossing back to JS is the per-module size proxy `ownSize`
 //! (svelte compile), passed as a callback.  Using the SAME compiler the TS engine
 //! uses makes every decision byte-identical; validated by the differential
-//! `wasm-mono` test (Rust files+variants == TS svelteShakerWithMono).
+//! `native-full-shake` test (Rust files+variants == TS svelteShakerWithMono).
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -30,7 +30,7 @@ pub struct MonoOptions {
 
 impl MonoOptions {
     /// Read `{ enabled, maxVariants, minSavings }` (the JS `MonomorphizeOptions`
-    /// shape), defaulting each field exactly as the wasm boundary did.
+    /// shape), defaulting each field exactly as the TS engine does.
     pub fn from_value(options: &Value) -> Self {
         MonoOptions {
             enabled: options.get("enabled").and_then(Value::as_bool).unwrap_or(false),

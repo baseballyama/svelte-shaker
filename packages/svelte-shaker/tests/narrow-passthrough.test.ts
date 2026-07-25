@@ -130,8 +130,8 @@ describe('interprocedural pass-through of value sets', () => {
     // The set join dedupes by `Object.is` (SameValue): -0 and +0 are DISTINCT, but
     // two NaNs are the SAME.  This pins that the forwarded-set union honors it — and
     // that the Rust port's bit-level `object_is` agrees (see the engine-rs unit
-    // test).  These values can't ride the plan-JSON wasm differential (`NaN`
-    // serializes to `null`), so the dedupe equivalence is asserted here directly.
+    // test).  These values can't ride a JSON differential (`NaN` serializes to
+    // `null`), so the dedupe equivalence is asserted here directly.
     const files = {
       '/App.svelte':
         `<script>\n  import Mid from './Mid.svelte';\n</script>\n` +

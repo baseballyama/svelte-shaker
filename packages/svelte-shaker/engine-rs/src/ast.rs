@@ -64,7 +64,7 @@ pub(crate) fn push_unique(out: &mut Vec<String>, name: &str) {
 /// analog of a zimmerframe walk whose visitor descends unconditionally.
 ///
 /// KEY-ORDER INVARIANT: an object's fields are visited in `serde_json::Map`
-/// iteration order — alphabetical (the default `BTreeMap`) in the wasm/host build,
+/// iteration order — alphabetical (the default `BTreeMap`) in a plain host build,
 /// insertion order when a caller enables the `preserve_order` feature (the native
 /// scanner does). That order is NOT source order, so this walk must never be used by
 /// a pass that assumes template source order. It is sound for the passes that do use
