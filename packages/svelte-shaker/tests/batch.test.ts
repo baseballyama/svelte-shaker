@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  analyzeInput,
-  buildAnalyzeInput,
-  svelteShaker,
-  transformAll,
-  type AnalyzeInput,
-} from '../src/index';
+import { buildAnalyzeInput, svelteShaker, type AnalyzeInput } from '../src/index';
+import { analyzeInput } from '../src/analyze';
+import { transformAll } from '../src/transform';
 import { memGraph } from './mem-graph';
 
 // ----------------------------------------------------------------------

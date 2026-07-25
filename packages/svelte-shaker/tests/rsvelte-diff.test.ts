@@ -1,14 +1,9 @@
 import { readdirSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import {
-  analyzeInput,
-  buildAnalyzeInput,
-  svelteShaker,
-  transformAll,
-  type ReadFile,
-  type Resolve,
-} from '../src/index';
+import { buildAnalyzeInput, svelteShaker, type ReadFile, type Resolve } from '../src/index';
+import { analyzeInput } from '../src/analyze';
+import { transformAll } from '../src/transform';
 import type { ParseCache } from '../src/parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 import { rsvelteParse } from './rsvelte-parse';

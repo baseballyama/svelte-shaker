@@ -10,7 +10,7 @@ JS, ships a serialized AST across the JS boundary, or materializes the AST as JS
 at all.
 
 ```
-buildAnalyzeInputSync (JS crawl: resolve edges, read files)
+buildAnalyzeInput (JS crawl: resolve edges, read files)
         │  { files: [{id, code}], edges }   (JSON string)
         ▼
    scan()  ── rayon ─▶ rsvelte parse ─▶ typed-AST walk (no Value)

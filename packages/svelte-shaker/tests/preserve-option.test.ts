@@ -5,8 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { build, type Rollup } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { shaker } from '../src/vite';
-import { buildAnalyzeInput, findNeverPassedProps } from '../src/index';
-import type { ReadFile, Resolve } from '../src/index';
+import { buildAnalyzeInput, findNeverPassedProps } from '../src/analyze';
+import type { ReadFile, Resolve } from '../src/analyze';
 import { matchPreserve } from '../src/escape-scan';
 
 describe('matchPreserve', () => {

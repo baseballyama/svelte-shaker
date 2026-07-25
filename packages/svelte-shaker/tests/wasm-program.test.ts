@@ -1,7 +1,8 @@
 import { join, resolve as resolvePath } from 'node:path';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-import { analyzeInput, buildAnalyzeInput, type ComponentId } from '../src/index';
+import { buildAnalyzeInput, type ComponentId } from '../src/index';
+import { analyzeInput } from '../src/analyze';
 import { parseSvelte } from '../src/parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 import type { ComponentPlan, Literal, PropValueSet } from '../src/ir';

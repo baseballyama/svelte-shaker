@@ -1,13 +1,8 @@
 import { join, resolve as resolvePath } from 'node:path';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-import {
-  analyzeInput,
-  buildAnalyzeInput,
-  type ReadFile,
-  type ResolvedEdge,
-  type Resolve,
-} from '../src/index';
+import { buildAnalyzeInput, type ReadFile, type ResolvedEdge, type Resolve } from '../src/index';
+import { analyzeInput } from '../src/analyze';
 import { parseSvelte } from '../src/parse';
 import { fsReadFile, fsResolve } from '../src/scan';
 import { memGraph } from './mem-graph';
