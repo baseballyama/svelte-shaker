@@ -957,7 +957,7 @@ function nodeSignalsSlotInputs(root: AnyNode): boolean {
 /** True when a `$props()` ObjectPattern binds a prop whose external name is not a
  * plain identifier (a string-literal or computed key), so {@link declared_props}
  * did not capture it. */
-function hasUnrepresentableKey(pattern: AnyNode | undefined): boolean {
+export function hasUnrepresentableKey(pattern: AnyNode | undefined): boolean {
   for (const p of pattern?.properties ?? []) {
     if (p.type === 'RestElement') continue; // handled via hasRestProp
     if (p.type !== 'Property') return true; // unexpected shape -> conservative ALL

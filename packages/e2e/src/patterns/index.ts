@@ -12,3 +12,4 @@ export { default as Snippets } from './Snippets.svelte';
 export { default as Bindable } from './Bindable.svelte';
 export { default as DynamicComponent } from './DynamicComponent.svelte';
 export { default as TypedProps } from './TypedProps.svelte';
+export { default as CssProps } from './CssProps.svelte';

@@ -12,6 +12,7 @@
     StyleStrip,
     TernaryFold,
     TypedProps,
+    CssProps,
   } from './patterns/index.ts';
 
   // Pattern 3: the real mode-watcher ModeWatcher component.
@@ -59,3 +60,8 @@
 
 <!-- Pattern 12: TypeScript-typed props with lang="ts" interface. -->
 <TypedProps title="e2e test" />
+
+<!-- Pattern 14: non-prop call-site attributes.  `--accent` renders a
+     <svelte-css-wrapper> element and `my:directive` is a preprocessor marker;
+     both must survive, while `tone` still folds. -->
+<CssProps tone="warm" my:directive --accent="crimson" />

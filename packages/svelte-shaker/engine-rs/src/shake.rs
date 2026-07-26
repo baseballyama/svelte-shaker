@@ -10,6 +10,7 @@ use crate::css::shake_css;
 use crate::dead_code::{decide_chain, is_full_removal, ChainDecision};
 use crate::eval::{evaluate, Env, Literal, SetEnv};
 use crate::plan::{remap_to_local_names, Model};
+use crate::props::has_unrepresentable_key;
 use crate::transform::MagicEdit;
 
 pub(crate) const NL: u16 = b'\n' as u16;
@@ -562,7 +563,13 @@ pub(crate) fn drop_props(model: &Model, drop: &HashSet<String>, edits: &mut Magi
         return;
     }
     let remaining = pi.props.iter().filter(|p| !drop.contains(&p.name)).count();
-    if remaining == 0 && !pi.has_rest {
+    // `props` holds only the identifier-keyed properties, so "nothing remains" does
+    // NOT mean the pattern is empty: a string-literal / computed key (`{ 'ns:x': v }`)
+    // is invisible to the count, and deleting the whole declaration would silently
+    // turn its binding into an undefined global — code that still compiles.  Those
+    // patterns fall through to the per-run removal below, which tiles over the FULL
+    // property list and so leaves the unrepresentable one in place.
+    if remaining == 0 && !pi.has_rest && !has_unrepresentable_key(&pi.pattern) {
         remove_whole_line(&pi.declaration, edits);
         return;
     }

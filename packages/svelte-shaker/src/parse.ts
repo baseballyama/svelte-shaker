@@ -250,6 +250,29 @@ export function attrValueParts(value: unknown): AnyNode[] {
 }
 
 /**
+ * True for an `Attribute` name that is NOT a prop write on a component, even
+ * though the parser typed it as a plain `Attribute`.  Two classes:
+ *
+ *  - `--custom-prop` — a CSS custom property.  Svelte compiles it to
+ *    `$.css_props(...)`, which RENDERS a `<svelte-css-wrapper>` element around
+ *    the component, so it is markup, not an input (`startsWith('--')` is
+ *    Svelte's own test in its component transform visitor).
+ *  - `ns:name` in a namespace Svelte does not define.  The parser splits on the
+ *    first `:` and only turns the known prefixes (`use`/`bind`/`on`/…) into
+ *    typed directive nodes; on a miss it falls through to `create_attribute`
+ *    with the FULL name, colon included.  So the allow-list has already been
+ *    applied upstream and every colon-bearing `Attribute` reaching us is outside
+ *    it — duplicating the list here would only rot when Svelte adds a prefix.
+ *    (The `{name}` shorthand path takes an ESTree `Identifier`, so it cannot
+ *    produce a colon.)  These are markers a preprocessor consumes, not props.
+ *
+ * Mirrors the Rust engine's `ast.rs::is_non_prop_attr_name`.
+ */
+export function isNonPropAttrName(name: string): boolean {
+  return name.startsWith('--') || name.includes(':');
+}
+
+/**
  * The `[start, end)` span to delete for an attribute, eating one preceding
  * space/tab so the tag stays tidy.  Shared by the call-site attribute removals
  * (transform + monomorphization rewrite) and the reverse pass's `attrOp`.
