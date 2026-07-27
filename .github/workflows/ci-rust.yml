@@ -70,6 +70,10 @@ jobs:
         working-directory: packages/svelte-shaker/engine-scan-native
         run: cargo build --release
 
+      - name: Check native scanner size
+        working-directory: packages/svelte-shaker/engine-scan-native
+        run: node scripts/check-binary-size.cjs
+
       # The engine core's own unit tests run standalone (no rsvelte dep here).
       - name: Test engine core
         working-directory: packages/svelte-shaker/engine-rs

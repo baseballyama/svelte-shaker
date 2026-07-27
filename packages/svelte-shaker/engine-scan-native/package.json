@@ -19,7 +19,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "cargo build --release",
+    "build": "cargo build --release && node scripts/check-binary-size.cjs",
     "build:debug": "cargo build"
   },
   "engines": {
