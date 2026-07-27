@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { build, type Rollup } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { shaker } from '../src/vite';
+import { tryLoadNativeEngine } from '../src/native-engine';
 
 // A component rendered from a `.svelte` template WITHOUT `p`, but mounted from a
 // `.ts` module WITH `p: true`.  The `.svelte`-only crawl cannot see `main.ts`, so
@@ -45,6 +46,7 @@ function files(mountsWidget: boolean): Record<string, string> {
 }
 
 const IF_MACHINERY = /\bif_block\b|\$\.if\(/;
+const nativeAvailable = tryLoadNativeEngine() !== null;
 
 function writeApp(dir: string, content: Record<string, string>): void {
   rmSync(dir, { recursive: true, force: true });
@@ -93,10 +95,13 @@ describe('vite-plugin-svelte-shaker — non-.svelte module (.ts) call-site scan'
     expect(code).toContain('P BRANCH');
   });
 
-  it('JS and Rust engines scan identically (byte-identical bundle)', async () => {
-    const js = await bundle(join(BASE, 'mount'), [shaker({ entries: ['.'], engine: 'js' })]);
-    const rust = await bundle(join(BASE, 'mount'), [shaker({ entries: ['.'], engine: 'rust' })]);
-    expect(rust).toBe(js);
-    expect(rust).toContain('P BRANCH');
-  });
+  it.skipIf(!nativeAvailable)(
+    'JS and Rust engines scan identically (byte-identical bundle)',
+    async () => {
+      const js = await bundle(join(BASE, 'mount'), [shaker({ entries: ['.'], engine: 'js' })]);
+      const rust = await bundle(join(BASE, 'mount'), [shaker({ entries: ['.'], engine: 'rust' })]);
+      expect(rust).toBe(js);
+      expect(rust).toContain('P BRANCH');
+    },
+  );
 });
