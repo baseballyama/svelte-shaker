@@ -2,7 +2,7 @@
 //! never be produced by the (bounded) set of classes the template can render.
 
 use serde_json::Value;
-use std::collections::HashSet;
+use hashbrown::HashSet;
 
 use crate::ast::*;
 use crate::eval::{evaluate, Env, SetEnv};

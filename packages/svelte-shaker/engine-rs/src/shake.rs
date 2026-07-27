@@ -3,7 +3,7 @@
 //! attributes.  Shares `decide_chain` with the analysis so folds never disagree.
 
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::css::shake_css;
@@ -630,38 +630,31 @@ pub(crate) fn remove_call_site_attributes(
     edited_spans: &[Span],
     owner_env: &Env,
 ) {
-    // Collect first (so we don't borrow the ast through `walk` while editing).
-    let mut to_remove: Vec<Value> = Vec::new();
-    walk(get(&model.ast, "fragment"), &mut |node| {
-        if !str_eq(node, "type", "Component") {
-            return;
-        }
+    // Collect first so the immutable call-site index is not borrowed while editing.
+    let mut to_remove: Vec<&Value> = Vec::new();
+    for call in &model.child_calls {
         // Skip a `<Child/>` phase 1 folded away: its source (attributes included) is
         // gone, so editing it now would overlap that edit.
-        if !edited_spans.is_empty() && in_spans(node, edited_spans) {
-            return;
+        if !edited_spans.is_empty() && span_in_spans(call.node.span, edited_spans) {
+            continue;
         }
-        let drop = node
-            .get("name")
-            .and_then(Value::as_str)
-            .and_then(|n| model.imports.get(n))
-            .and_then(|cid| dropped.get(cid));
+        let drop = dropped.get(&call.child_id);
         if let Some(drop) = drop {
             if drop.is_empty() {
-                return;
+                continue;
             }
-            for attr in arr(node, "attributes") {
+            for attr in &call.node.attributes {
                 if type_of(attr) == Some("Attribute") {
                     if let Some(name) = attr.get("name").and_then(Value::as_str) {
                         if drop.contains(name) && is_side_effect_free(get(attr, "value"), owner_env) {
-                            to_remove.push(attr.clone());
+                            to_remove.push(attr);
                         }
                     }
                 }
             }
         }
-    });
-    for attr in &to_remove {
+    }
+    for attr in to_remove {
         remove_attr_with_space(attr, edits);
     }
 }

@@ -297,6 +297,9 @@ pub(crate) fn off(node: &Value, key: &str) -> i64 {
 }
 
 pub(crate) fn in_spans(node: &Value, spans: &[Span]) -> bool {
-    let (s, e) = (off(node, "start"), off(node, "end"));
+    span_in_spans((off(node, "start"), off(node, "end")), spans)
+}
+
+pub(crate) fn span_in_spans((s, e): Span, spans: &[Span]) -> bool {
     spans.iter().any(|&(a, b)| s >= a && e <= b)
 }

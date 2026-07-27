@@ -10,13 +10,16 @@
 //! `native-full-shake` test (Rust files+variants == TS svelteShakerWithMono).
 
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::dead_code::compute_dead_spans_ir;
 use crate::eval::{Env, Literal, SetEnv};
-use crate::plan::{dead_spans_for_plans, is_fold_blocked, remap_to_local_names, ComponentPlan, Model, Plans};
-use crate::props::{read_call_site, PropDecl};
+use crate::plan::{
+    dead_spans_for_plans, is_fold_blocked, remap_to_local_names, CallSiteNode, ComponentPlan, Model,
+    Plans,
+};
+use crate::props::PropDecl;
 use crate::shake::{remove_attr_with_space, shake_body};
 use crate::transform::MagicEdit;
 
@@ -43,7 +46,7 @@ impl MonoOptions {
 /// One live `<Child/>` site that folds extra literals (a specialization candidate).
 pub(crate) struct MonoCandidate {
     pub(crate) owner: String,
-    pub(crate) node: Value,
+    pub(crate) node: CallSiteNode,
     pub(crate) shape: Vec<(String, Literal)>,
     /// The residual this site folds to — the dedup key.
     pub(crate) code: String,
@@ -51,7 +54,7 @@ pub(crate) struct MonoCandidate {
 
 pub(crate) struct MonoBinding {
     pub(crate) owner: String,
-    pub(crate) node: Value,
+    pub(crate) node: CallSiteNode,
     /// `<childId>?shaker_variant=<n>` request specifier this site resolves to.
     pub(crate) variant_spec: String,
     pub(crate) shape: Vec<(String, Literal)>,
@@ -144,11 +147,11 @@ pub(crate) fn live_children_for_env(model: &Model, env: &Env, set_env: &SetEnv) 
     let local_set = remap_to_local_names(set_env, model);
     let dead = compute_dead_spans_ir(&model.ir.fragment, &local_env, &local_set);
     let mut out = Vec::new();
-    for (cid, node) in &model.child_calls {
-        if !dead.is_empty() && in_spans(node, &dead) {
+    for call in &model.child_calls {
+        if !dead.is_empty() && span_in_spans(call.node.span, &dead) {
             continue;
         }
-        out.push(cid.clone());
+        out.push(call.child_id.clone());
     }
     out
 }
@@ -156,8 +159,11 @@ pub(crate) fn live_children_for_env(model: &Model, env: &Env, set_env: &SetEnv) 
 /// The extra props a call site freezes to a literal (declared, not already an
 /// app-wide constant, not shadowed/`{@debug}`/nested, literal & no spread can
 /// override).  Mirrors `specializableShape`.
-pub(crate) fn specializable_shape(node: &Value, child: &Model, plan: &ComponentPlan) -> Vec<(String, Literal)> {
-    let site = read_call_site(node, None);
+pub(crate) fn specializable_shape(
+    site: &crate::props::CallSite,
+    child: &Model,
+    plan: &ComponentPlan,
+) -> Vec<(String, Literal)> {
     let mut declared: HashMap<&str, &PropDecl> = HashMap::new();
     if let Some(pi) = &child.props_info {
         for d in &pi.props {
@@ -355,7 +361,10 @@ pub(crate) fn monomorphize(
         let code = code_by_id.get(&m.id).map(String::as_str).unwrap_or("");
         if plan.bail {
             base_source.insert(m.id.clone(), code.to_string());
-            base_children_of.insert(m.id.clone(), m.child_calls.iter().map(|(c, _)| c.clone()).collect());
+            base_children_of.insert(
+                m.id.clone(),
+                m.child_calls.iter().map(|call| call.child_id.clone()).collect(),
+            );
         } else {
             base_source.insert(m.id.clone(), render_residual(m, plan, code, &[]));
             base_children_of.insert(m.id.clone(), live_children_for_env(m, &plan.const_env(), &plan.set_env()));
@@ -374,8 +383,9 @@ pub(crate) fn monomorphize(
     for owner in models {
         let empty = Vec::new();
         let dead = dead_spans.get(&owner.id).unwrap_or(&empty);
-        for (child_id, node) in &owner.child_calls {
-            if !dead.is_empty() && in_spans(node, dead) {
+        for call in &owner.child_calls {
+            let child_id = &call.child_id;
+            if !dead.is_empty() && span_in_spans(call.node.span, dead) {
                 continue; // dead site
             }
             let child = match models_by_id.get(child_id.as_str()) {
@@ -391,7 +401,7 @@ pub(crate) fn monomorphize(
                 ineligible.insert(child_id.clone());
                 continue;
             }
-            let shape = specializable_shape(node, child, child_plan);
+            let shape = specializable_shape(&call.site, child, child_plan);
             if shape.is_empty() {
                 ineligible.insert(child_id.clone());
                 continue;
@@ -422,7 +432,7 @@ pub(crate) fn monomorphize(
             }
             live_sites.entry(child_id.clone()).or_default().push(MonoCandidate {
                 owner: owner.id.clone(),
-                node: node.clone(),
+                node: call.node.clone(),
                 shape,
                 code,
             });
@@ -545,7 +555,7 @@ pub(crate) fn rewrite_bound_call_sites(
         let mut imports_to_add: Vec<(String, String)> = Vec::new();
         let mut counter = 0usize;
         for b in list {
-            let original = b.node.get("name").and_then(Value::as_str).unwrap_or("Cmp");
+            let original = b.node.name.as_str();
             let local = match local_for.get(&b.variant_spec) {
                 Some(l) => l.clone(),
                 None => {
@@ -584,15 +594,18 @@ pub(crate) fn rfind_u16(haystack: &[u16], needle: &[u16], from: usize) -> Option
 
 /// Rewrite one `<Child …>` open (and matching close) tag name to `local` and strip
 /// the frozen-prop attributes.  Mirrors `rewriteOneSite`; offsets are UTF-16 units.
-pub(crate) fn rewrite_one_site(code: &str, node: &Value, local: &str, frozen: &[(String, Literal)], edits: &mut MagicEdit) {
-    let name = match node.get("name").and_then(Value::as_str) {
-        Some(n) => n,
-        None => return,
-    };
+pub(crate) fn rewrite_one_site(
+    code: &str,
+    node: &CallSiteNode,
+    local: &str,
+    frozen: &[(String, Literal)],
+    edits: &mut MagicEdit,
+) {
+    let name = node.name.as_str();
     let units: Vec<u16> = code.encode_utf16().collect();
     let name_u: Vec<u16> = name.encode_utf16().collect();
-    let start = off(node, "start") as usize;
-    let end = off(node, "end") as usize;
+    let start = node.span.0 as usize;
+    let end = node.span.1 as usize;
 
     let open_name_start = start + 1;
     if open_name_start + name_u.len() <= units.len()
@@ -610,7 +623,7 @@ pub(crate) fn rewrite_one_site(code: &str, node: &Value, local: &str, frozen: &[
     }
     // Remove the frozen-prop attributes (the variant hard-codes them).
     let frozen_names: HashSet<&str> = frozen.iter().map(|(k, _)| k.as_str()).collect();
-    for attr in arr(node, "attributes") {
+    for attr in &node.attributes {
         if type_of(attr) != Some("Attribute") {
             continue;
         }

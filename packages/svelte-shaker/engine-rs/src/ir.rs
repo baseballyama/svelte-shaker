@@ -670,7 +670,7 @@ mod tests {
     /// a member access `C.foo` (only the object escapes), and the instance script.
     #[test]
     fn escaped_components_ir_matches_value() {
-        use std::collections::{HashMap, HashSet};
+        use hashbrown::{HashMap, HashSet};
         let id = |n: &str| json!({ "type": "Identifier", "name": n });
         let etag = |n: &str| json!({ "type": "ExpressionTag", "start": 0, "end": 1, "expression": id(n) });
         let ast = json!({
@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn compute_dead_spans_ir_matches_value() {
         use crate::eval::Literal;
-        use std::collections::HashMap;
+        use hashbrown::HashMap;
         let id = |n: &str| json!({ "type": "Identifier", "name": n });
         let lit = |s: &str| json!({ "type": "Literal", "value": s });
         let eq = |l: serde_json::Value, r: serde_json::Value| {

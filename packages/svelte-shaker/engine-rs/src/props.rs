@@ -2,7 +2,7 @@
 //! (last-write-wins + spread tracking), and per-prop value-set joining.
 
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::eval::{evaluate, set_var, Env, Literal, SetEnv};
@@ -215,10 +215,6 @@ pub(crate) struct ExplicitProp {
 pub(crate) struct CallSite {
     pub(crate) had_spread: bool,
     pub(crate) explicit: HashMap<String, ExplicitProp>,
-    /// The component that OWNS this call site (renders the `<Child .../>`); the
-    /// fixpoint evaluates a forwarded expression against its fold env. `None` for
-    /// callers outside the graph fixpoint (mono). Mirrors `CallSite.owner`.
-    pub(crate) owner: Option<String>,
 }
 
 pub(crate) fn dynamic_write(index: i64, last_spread: i64, expr: Value) -> ExplicitProp {
@@ -373,7 +369,7 @@ fn single_expr_value(value: &Value) -> Value {
 
 /// Read one `<Child .../>` into a {@link CallSite} (last-write-wins + spread
 /// tracking + synthesized body props). Mirrors `readCallSite`.
-pub(crate) fn read_call_site(component: &Value, owner: Option<String>) -> CallSite {
+pub(crate) fn read_call_site(component: &Value) -> CallSite {
     let attrs = arr(component, "attributes");
     // Only spreads we cannot expand are opaque; a known object literal is expanded
     // into explicit writes below, so `after_last_spread` is measured against the
@@ -449,7 +445,7 @@ pub(crate) fn read_call_site(component: &Value, owner: Option<String>) -> CallSi
     for name in synthesized_body_props(component) {
         explicit.insert(name, dynamic_write(attrs.len() as i64, last_spread, Value::Null));
     }
-    CallSite { had_spread: last_spread >= 0, explicit, owner }
+    CallSite { had_spread: last_spread >= 0, explicit }
 }
 
 // ---- value-set join --------------------------------------------------------
@@ -488,13 +484,17 @@ pub(crate) struct OwnerEnv {
 /// Per-owner {@link OwnerEnv} for this fixpoint round (the previous round's folds).
 pub(crate) type OwnerEnvs = HashMap<String, OwnerEnv>;
 
-pub(crate) fn value_set_for(decl: &PropDecl, sites: &[CallSite], owner_envs: &OwnerEnvs) -> PropValueSet {
+pub(crate) fn value_set_for(
+    decl: &PropDecl,
+    sites: &[(&CallSite, &str)],
+    owner_envs: &OwnerEnvs,
+) -> PropValueSet {
     let empty_fold: Env = HashMap::new();
     let empty_narrow: SetEnv = HashMap::new();
     let mut values = Vec::new();
     let mut dynamic = false;
     let mut top = false;
-    for site in sites {
+    for (site, owner) in sites {
         match site.explicit.get(&decl.name) {
             Some(e) if e.after_last_spread => {
                 if !e.dynamic {
@@ -505,7 +505,7 @@ pub(crate) fn value_set_for(decl: &PropDecl, sites: &[CallSite], owner_envs: &Ow
                     // Interprocedural pass-through: resolve the forwarded expression
                     // against the OWNER's env (previous round). A `bind:`/multi-part
                     // write has no `expr`, so it never resolves here.
-                    let owner_env = site.owner.as_ref().and_then(|o| owner_envs.get(o));
+                    let owner_env = owner_envs.get(*owner);
                     let fold = owner_env.map(|e| &e.fold).unwrap_or(&empty_fold);
                     let narrow = owner_env.map(|e| &e.narrow).unwrap_or(&empty_narrow);
                     // A BARE owner-prop reference the owner narrowed to a known set

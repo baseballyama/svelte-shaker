@@ -6,7 +6,7 @@
 
 use crate::ast::unwrap_ts_assertions;
 use serde_json::Value;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::mem::discriminant;
 
 /// A statically-known literal (the Rust counterpart of `ir.ts` `Literal`).

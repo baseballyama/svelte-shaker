@@ -1,7 +1,7 @@
 //! If/else-if chain dead-span analysis (dead.ts `decideChain` / `computeDeadSpans`):
 //! the single source of truth shared by the analysis and the transform.
 
-use std::collections::HashSet;
+use hashbrown::HashSet;
 
 use serde_json::Value;
 

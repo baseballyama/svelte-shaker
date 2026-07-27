@@ -30,6 +30,7 @@ use serde_json::{json, Map, Value};
 use svelte_shaker_engine::{shake_program_with_mono_value, MonoOptions, ShakeFile};
 
 use crate::parse_files::facts_from_root;
+use crate::{parse_json, take_array};
 use crate::utf16::{convert_positions_to_utf16, Utf8ToUtf16};
 
 /// How many times the inner cascade re-runs after force-bailing unparseable output
@@ -101,15 +102,22 @@ fn reparses(code: &str) -> bool {
 }
 
 /// Parse + serialize a batch of `{ id, code }` inputs across cores, preserving input
-/// order (`par_iter().collect()` keeps it — the shake iterates `self.files` in
+/// order (`into_par_iter().collect()` keeps it — the shake iterates `self.files` in
 /// program order). Returns each file's retained form plus its Round-1 facts JSON.
 /// Thread-safe: each file's `Root` and its serialize arena stay on one worker thread,
 /// and `SERIALIZE_ARENA` is a thread_local installed/restored per
 /// `with_serialize_arena` call, so the fan-out shares no mutable state.
-fn parse_batch(files: &[Value]) -> Vec<(StoredFile, Value)> {
-    let build = |f: &Value| -> (StoredFile, Value) {
-        let id = f.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-        let code = f.get("code").and_then(Value::as_str).unwrap_or_default().to_string();
+fn parse_batch(files: Vec<Value>) -> Vec<(StoredFile, Value)> {
+    let build = |mut f: Value| -> (StoredFile, Value) {
+        // The input object is owned and discarded after this call. Move both strings
+        // out of its Value slots so parse+retain never duplicates whole-program
+        // source merely to cross from the JSON envelope into StoredFile.
+        let mut take_string = |key: &str| match f.get_mut(key).map(Value::take) {
+            Some(Value::String(value)) => value,
+            _ => String::new(),
+        };
+        let id = take_string("id");
+        let code = take_string("code");
         // One parse feeds BOTH the retained shake AST and the Round-1 facts.
         match parse(&code, ParseOptions::default()) {
             Ok(root) => {
@@ -129,7 +137,7 @@ fn parse_batch(files: &[Value]) -> Vec<(StoredFile, Value)> {
         }
     };
     use rayon::prelude::*;
-    files.par_iter().map(build).collect()
+    files.into_par_iter().map(build).collect()
 }
 
 #[napi]
@@ -161,9 +169,8 @@ impl ShakeSession {
     // the JS engine rather than crashing the build.
     #[napi(catch_unwind)]
     pub fn parse(&mut self, input_json: String) -> napi::Result<String> {
-        let input: Value = serde_json::from_str(&input_json)
-            .map_err(|e| napi::Error::from_reason(format!("session.parse: input: {e}")))?;
-        let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+        let mut input = parse_json(input_json, "session.parse: input")?;
+        let files = take_array(&mut input, "files");
 
         let results = parse_batch(files);
         self.files.clear();
@@ -185,21 +192,19 @@ impl ShakeSession {
     /// it sent before. `input_json` is `{ files: [{ id, code }] }`.
     #[napi(catch_unwind)]
     pub fn parse_more(&mut self, input_json: String) -> napi::Result<String> {
-        let input: Value = serde_json::from_str(&input_json)
-            .map_err(|e| napi::Error::from_reason(format!("session.parseMore: input: {e}")))?;
-        let files = input.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+        let mut input = parse_json(input_json, "session.parseMore: input")?;
+        let files = take_array(&mut input, "files");
 
         let existing: HashSet<&str> = self.files.iter().map(|f| f.id.as_str()).collect();
         let fresh: Vec<Value> = files
-            .iter()
+            .into_iter()
             .filter(|f| {
                 f.get("id").and_then(Value::as_str).map(|id| !existing.contains(id)).unwrap_or(false)
             })
-            .cloned()
             .collect();
         drop(existing);
 
-        let results = parse_batch(&fresh);
+        let results = parse_batch(fresh);
         self.files.reserve(results.len());
         let mut facts_out = Vec::with_capacity(results.len());
         for (stored, facts) in results {
@@ -222,8 +227,7 @@ impl ShakeSession {
     // never a Node abort.
     #[napi(catch_unwind)]
     pub fn shake(&self, config_json: String) -> napi::Result<String> {
-        let mut config: Value = serde_json::from_str(&config_json)
-            .map_err(|e| napi::Error::from_reason(format!("session.shake: config: {e}")))?;
+        let mut config = parse_json(config_json, "session.shake: config")?;
         let opts = MonoOptions::from_value(config.get("mono").unwrap_or(&Value::Null));
 
         // Borrow the retained ASTs into the core's `files` slice — no full-program AST

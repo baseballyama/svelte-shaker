@@ -2,7 +2,7 @@
 //! `<svelte:options>` bail, rendered child calls, and escaped components.
 
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::eval::{evaluate, Env, Literal};

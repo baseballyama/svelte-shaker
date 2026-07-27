@@ -8,7 +8,7 @@
 //! (`packages/svelte-shaker/tests/native-full-shake.test.ts`).
 
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 mod analyze;
 mod ast;
@@ -295,10 +295,10 @@ mod tests {
             "debug": sorted(m.debug.into_iter().collect()),
             "written": sorted(m.written.into_iter().collect()),
             "bail": m.bail_reasons,
-            "childCalls": m.child_calls.iter().map(|(cid, n)| json!({
-                "childId": cid,
-                "start": n.get("start"),
-                "end": n.get("end"),
+            "childCalls": m.child_calls.iter().map(|call| json!({
+                "childId": call.child_id,
+                "start": call.node.span.0,
+                "end": call.node.span.1,
             })).collect::<Vec<_>>(),
             "escaped": m.escaped,
         })

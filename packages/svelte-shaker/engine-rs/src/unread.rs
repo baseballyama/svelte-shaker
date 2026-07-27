@@ -9,10 +9,10 @@
 //! Its removals merge into the reverse phase, sharing the protect/apply machinery.
 
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::plan::{Model, Plans};
+use crate::plan::{CallSiteNode, Model, Plans};
 use crate::props::PropDecl;
 use crate::reverse::{is_reverse_removable_value, ReverseOp};
 
@@ -108,27 +108,24 @@ pub(crate) fn collect_unread(models: &[Model], models_by_id: &HashMap<&str, &Mod
             Some(p) if !p.bail => {}
             _ => continue, // a bailed owner makes no edits
         }
-        let mut components: Vec<Value> = Vec::new();
-        walk(get(&owner.ast, "fragment"), &mut |node| {
-            if str_eq(node, "type", "Component") {
-                components.push(node.clone());
-            }
-        });
-        for node in &components {
-            let child_id =
-                match node.get("name").and_then(Value::as_str).and_then(|n| owner.imports.get(n)) {
-                    Some(c) => c,
-                    None => continue,
-                };
-            let names = match effective.get(child_id) {
+        for call in &owner.child_calls {
+            let names = match effective.get(&call.child_id) {
                 Some(n) => n,
                 None => continue,
             };
-            let decls = match decl_by_child.get(child_id.as_str()) {
+            let decls = match decl_by_child.get(call.child_id.as_str()) {
                 Some(d) => d,
                 None => continue,
             };
-            classify_site(node, child_id, names, owner, decls, &mut drop_eligible, &mut removals);
+            classify_site(
+                &call.node,
+                &call.child_id,
+                names,
+                owner,
+                decls,
+                &mut drop_eligible,
+                &mut removals,
+            );
         }
     }
 
@@ -149,7 +146,7 @@ pub(crate) fn collect_unread(models: &[Model], models_by_id: &HashMap<&str, &Mod
 /// push each (a)-removable attribute, and veto (b) for any prop the site passes
 /// non-removably.  A spread site never yields an (a) removal but does NOT veto (b).
 fn classify_site(
-    node: &Value,
+    node: &CallSiteNode,
     child_id: &str,
     names: &HashSet<String>,
     owner: &Model,
@@ -157,7 +154,7 @@ fn classify_site(
     drop_eligible: &mut HashMap<String, HashMap<String, bool>>,
     removals: &mut HashMap<String, Vec<ReverseOp>>,
 ) {
-    let attrs = arr(node, "attributes");
+    let attrs = &node.attributes;
     let has_spread = attrs.iter().any(|a| type_of(a) == Some("SpreadAttribute"));
     for attr in attrs {
         let name = match attr.get("name").and_then(Value::as_str) {
@@ -190,7 +187,7 @@ fn classify_site(
             continue;
         }
         removals.entry(owner.id.clone()).or_default().push(ReverseOp {
-            component: node.clone(),
+            component: node.span,
             start: off(attr, "start"),
             end: off(attr, "end"),
             eat_leading_space: true,
