@@ -10,11 +10,11 @@
  * Synchronous; requires Node >= 22.12.
  */
 /**
- * The addon ABI generation. The JS loader (`tryLoadNativeEngine`) checks this and
- * rejects a version-skewed prebuilt binary (→ falls back to the JS engine) rather than
- * mis-calling it: e.g. the 0.2.x addon's `shake` took an `ownSize` callback, while
- * 0.3.x computes the size proxy in Rust and `shake` takes one argument. Bumped on any
- * breaking change to the exported method signatures.
+ * The native-engine compatibility generation. The JS loader
+ * (`tryLoadNativeEngine`) checks this and rejects a version-skewed prebuilt binary
+ * (→ falls back to the JS engine) rather than silently diverging or mis-calling it.
+ * Bumped whenever the exported API or transform semantics make an older binary
+ * incompatible with the current JS engine.
  */
 export declare function engineApiVersion(): number;
 

@@ -6,17 +6,16 @@ import { build, type Rollup } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 // ----------------------------------------------------------------------
-// The native addon is published separately from `svelte-shaker` and versioned in
-// lockstep. When `shake` dropped its JS `ownSize` callback (0.2.x → 0.3.x), driving
-// an OLD 0.2.x binary the new one-argument way throws a napi TypeError that — with no
-// guard — crashes `vite build`. Two defenses, both pinned here:
+// The native addon is published separately from `svelte-shaker`, so an install can
+// temporarily contain an older binary. Two defenses, both pinned here:
 //   1. `hasSessionApi` REJECTS a binary whose `engineApiVersion` is missing/wrong, so
-//      the loader never returns an ABI-incompatible addon (it degrades to the JS engine).
+//      the loader never returns an API- or behavior-incompatible addon (it degrades to
+//      the JS engine).
 //   2. Even so, any OTHER native runtime failure is caught in the plugin and degrades
 //      to the JS engine with a warning, never a crashed build.
 // ----------------------------------------------------------------------
 
-describe('native addon ABI guard (hasSessionApi)', () => {
+describe('native addon compatibility guard (hasSessionApi)', () => {
   // Imported lazily so the mock below (for the degradation test) does not shadow it.
   it('rejects a 0.2.x-shaped addon (ShakeSession present, no engineApiVersion)', async () => {
     const { hasSessionApi } =
@@ -32,7 +31,7 @@ describe('native addon ABI guard (hasSessionApi)', () => {
     expect(hasSessionApi({ ShakeSession: OldSession as never })).toBe(false);
   });
 
-  it('rejects a future/mismatched ABI generation, accepts the current one', async () => {
+  it('rejects a mismatched compatibility generation, accepts the current one', async () => {
     const { hasSessionApi } =
       await vi.importActual<typeof import('../src/native-engine')>('../src/native-engine');
     class Session {
@@ -43,7 +42,10 @@ describe('native addon ABI guard (hasSessionApi)', () => {
     expect(hasSessionApi({ ShakeSession: Session as never, engineApiVersion: () => 99 })).toBe(
       false,
     );
-    expect(hasSessionApi({ ShakeSession: Session as never, engineApiVersion: () => 3 })).toBe(true);
+    expect(hasSessionApi({ ShakeSession: Session as never, engineApiVersion: () => 3 })).toBe(
+      false,
+    );
+    expect(hasSessionApi({ ShakeSession: Session as never, engineApiVersion: () => 4 })).toBe(true);
   });
 });
 
@@ -56,7 +58,7 @@ vi.mock('../src/native-engine', async (importOriginal) => {
   return {
     ...orig,
     // A loadable-looking native engine, so the plugin enters the native branch...
-    tryLoadNativeEngine: () => ({ ShakeSession: class {}, engineApiVersion: () => 3 }),
+    tryLoadNativeEngine: () => ({ ShakeSession: class {}, engineApiVersion: () => 4 }),
     // ...whose whole-program shake then throws, exercising the plugin's catch/degrade.
     svelteShakerNativeWithMono: () => {
       throw new Error('simulated native crash');
