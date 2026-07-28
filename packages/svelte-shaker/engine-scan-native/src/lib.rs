@@ -65,16 +65,20 @@ fn imports_by_file(edges: &[Value]) -> HashMap<String, HashMap<String, String>> 
 /// we take ownership instead of deep-cloning the (whole-source-carrying) array —
 /// `scan` runs on the ESLint hot path, once per invocation. Any non-array (or
 /// absent) value yields an empty vec, matching the previous `cloned()` fallback.
-fn take_array(input: &mut Value, key: &str) -> Vec<Value> {
+pub(crate) fn take_array(input: &mut Value, key: &str) -> Vec<Value> {
     match input.get_mut(key).map(Value::take) {
         Some(Value::Array(a)) => a,
         _ => Vec::new(),
     }
 }
 
-fn parse_input(input_json: &str) -> napi::Result<(Vec<Value>, Vec<Value>)> {
-    let mut input: Value = serde_json::from_str(input_json)
-        .map_err(|e| napi::Error::from_reason(format!("scan: parse input: {e}")))?;
+fn parse_json(input_json: String, context: &str) -> napi::Result<Value> {
+    serde_json::from_str(&input_json)
+        .map_err(|e| napi::Error::from_reason(format!("{context}: {e}")))
+}
+
+fn parse_input(input_json: String) -> napi::Result<(Vec<Value>, Vec<Value>)> {
+    let mut input = parse_json(input_json, "scan: parse input")?;
     let files = take_array(&mut input, "files");
     let edges = take_array(&mut input, "edges");
     Ok((files, edges))
@@ -112,7 +116,7 @@ fn build_models<'a>(
 /// analysis runs once.
 #[napi]
 pub fn scan(input_json: String) -> napi::Result<String> {
-    let (files, edges) = parse_input(&input_json)?;
+    let (files, edges) = parse_input(input_json)?;
     let built = build_models(&files, &edges);
 
     // Source kept by id ONLY for the UTF-16 remap of reported spans on non-ASCII
@@ -144,7 +148,7 @@ pub fn scan(input_json: String) -> napi::Result<String> {
 /// `memberComponentTags` byte-for-byte (pinned by `tests/native-parse-files.test.ts`).
 #[napi]
 pub fn parse_files(input_json: String) -> napi::Result<String> {
-    let (files, _edges) = parse_input(&input_json)?;
+    let (files, _edges) = parse_input(input_json)?;
 
     let rows: Vec<Value> = files
         .par_iter()
@@ -167,8 +171,7 @@ pub fn parse_files(input_json: String) -> napi::Result<String> {
 /// this keeps a direct, minimal check on the template `<Component>` read specifically.
 #[napi]
 pub fn ir_component_tags(ast_json: String) -> napi::Result<String> {
-    let ast: Value = serde_json::from_str(&ast_json)
-        .map_err(|e| napi::Error::from_reason(format!("ir_component_tags: parse: {e}")))?;
+    let ast = parse_json(ast_json, "ir_component_tags: parse")?;
     let root = svelte_shaker_engine::ir::from_value(&ast);
     let tags: Vec<Value> = svelte_shaker_engine::ir::component_tags(&root)
         .into_iter()
@@ -204,7 +207,7 @@ fn parse_to_ast_value(code: &str) -> Value {
 /// [`scan`]; the corpus test asserts byte-for-byte agreement between the two.
 #[napi]
 pub fn scan_via_value(input_json: String) -> napi::Result<String> {
-    let (files, edges) = parse_input(&input_json)?;
+    let (files, edges) = parse_input(input_json)?;
     let parsed: Vec<Value> = files
         .par_iter()
         .map(|f| {
@@ -225,7 +228,7 @@ pub fn scan_via_value(input_json: String) -> napi::Result<String> {
 #[napi]
 pub fn scan_profile(input_json: String) -> napi::Result<String> {
     use std::time::Instant;
-    let (files, edges) = parse_input(&input_json)?;
+    let (files, edges) = parse_input(input_json)?;
     let imports = imports_by_file(&edges);
     let empty: HashMap<String, String> = HashMap::new();
     let codes: HashMap<String, String> = files
@@ -315,7 +318,7 @@ impl ScanDaemon {
     /// `input_json` is the same `{ files: [{id, code}], edges }` as [`scan`].
     #[napi]
     pub fn init(&mut self, input_json: String) -> napi::Result<String> {
-        let (files, edges) = parse_input(&input_json)?;
+        let (files, edges) = parse_input(input_json)?;
         self.models.clear();
         self.codes.clear();
         self.rebuild(&files, &edges);
@@ -328,8 +331,7 @@ impl ScanDaemon {
     /// `removed`, then re-runs the whole-program assembly over the cached models.
     #[napi]
     pub fn update(&mut self, input_json: String) -> napi::Result<String> {
-        let mut input: Value = serde_json::from_str(&input_json)
-            .map_err(|e| napi::Error::from_reason(format!("update: parse input: {e}")))?;
+        let mut input = parse_json(input_json, "update: parse input")?;
         if let Some(removed) = input.get("removed").and_then(Value::as_array) {
             for id in removed.iter().filter_map(Value::as_str) {
                 self.models.remove(id);

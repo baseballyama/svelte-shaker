@@ -8,10 +8,10 @@
 //! direction).
 
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::plan::{Model, Plans};
+use crate::plan::{CallBodyKind, CallSiteNode, Model, Plans};
 use crate::props::ReachableInputs;
 use crate::transform::MagicEdit;
 
@@ -21,7 +21,7 @@ use crate::transform::MagicEdit;
 /// removal base); `eat_leading_space` widens the removal by one space for an
 /// attribute, keeping the tag tidy.
 pub(crate) struct ReverseOp {
-    pub(crate) component: Value,
+    pub(crate) component: Span,
     pub(crate) start: i64,
     pub(crate) end: i64,
     pub(crate) eat_leading_space: bool,
@@ -36,35 +36,28 @@ pub(crate) fn collect_reverse_removals(
     plans: &Plans,
 ) -> Vec<ReverseOp> {
     let mut ops = Vec::new();
-    walk(get(&model.ast, "fragment"), &mut |node| {
-        if !str_eq(node, "type", "Component") {
-            return;
-        }
-        let child_id = match node.get("name").and_then(Value::as_str).and_then(|n| model.imports.get(n)) {
-            Some(c) => c,
-            None => return,
-        };
-        let child = match models_by_id.get(child_id.as_str()) {
+    for call in &model.child_calls {
+        let child = match models_by_id.get(call.child_id.as_str()) {
             Some(c) => *c,
-            None => return,
+            None => continue,
         };
-        let plan = match plans.get(child_id) {
+        let plan = match plans.get(&call.child_id) {
             Some(p) => p,
-            None => return,
+            None => continue,
         };
         if plan.bail {
-            return;
+            continue;
         }
         // Only when the child's reachable set is precisely known (not ALL).
         if let ReachableInputs::Names(reachable) = &child.reachable_inputs {
-            collect_site_removals(node, reachable, &mut ops);
+            collect_site_removals(&call.node, reachable, &mut ops);
         }
-    });
+    }
     ops
 }
 
-fn collect_site_removals(node: &Value, reachable: &HashSet<String>, ops: &mut Vec<ReverseOp>) {
-    let attrs = arr(node, "attributes");
+fn collect_site_removals(node: &CallSiteNode, reachable: &HashSet<String>, ops: &mut Vec<ReverseOp>) {
+    let attrs = &node.attributes;
     // A spread may set ANY prop (including `children`), so nothing at this site is
     // provably unread.
     if attrs.iter().any(|a| type_of(a) == Some("SpreadAttribute")) {
@@ -93,7 +86,12 @@ fn collect_site_removals(node: &Value, reachable: &HashSet<String>, ops: &mut Ve
         if !is_reverse_removable_value(get(attr, "value")) {
             continue;
         }
-        ops.push(ReverseOp { component: node.clone(), start: off(attr, "start"), end: off(attr, "end"), eat_leading_space: true });
+        ops.push(ReverseOp {
+            component: node.span,
+            start: off(attr, "start"),
+            end: off(attr, "end"),
+            eat_leading_space: true,
+        });
     }
 
     // (b) Body content: `children` for any non-snippet content, plus a prop per
@@ -101,30 +99,29 @@ fn collect_site_removals(node: &Value, reachable: &HashSet<String>, ops: &mut Ve
     // per-block even when `children` is unread (either may be read while the other
     // is not).
     let children_reachable = reachable.contains("children");
-    for bn in arr(get(node, "fragment"), "nodes") {
-        if type_of(bn) == Some("SnippetBlock") {
-            let expr = get(bn, "expression");
-            if str_eq(expr, "type", "Identifier") {
-                if let Some(sname) = expr.get("name").and_then(Value::as_str) {
-                    if !reachable.contains(sname) {
-                        ops.push(ReverseOp { component: node.clone(), start: off(bn, "start"), end: off(bn, "end"), eat_leading_space: false });
-                    }
+    for body in &node.body {
+        if let CallBodyKind::Snippet(name) = &body.kind {
+            if let Some(sname) = name {
+                if !reachable.contains(sname) {
+                    ops.push(ReverseOp {
+                        component: node.span,
+                        start: body.span.0,
+                        end: body.span.1,
+                        eat_leading_space: false,
+                    });
                 }
             }
             continue;
         }
-        if children_reachable {
+        if children_reachable || matches!(body.kind, CallBodyKind::Inert) {
             continue;
         }
-        // Whitespace-only text and comments render nothing (do not synthesize
-        // `children`), so there is nothing to remove.
-        if type_of(bn) == Some("Comment") {
-            continue;
-        }
-        if type_of(bn) == Some("Text") && crate::props::text_data(bn).trim().is_empty() {
-            continue;
-        }
-        ops.push(ReverseOp { component: node.clone(), start: off(bn, "start"), end: off(bn, "end"), eat_leading_space: false });
+        ops.push(ReverseOp {
+            component: node.span,
+            start: body.span.0,
+            end: body.span.1,
+            eat_leading_space: false,
+        });
     }
 }
 
@@ -173,7 +170,7 @@ pub(crate) fn protect_spans(ops: &[ReverseOp]) -> Vec<Span> {
 pub(crate) fn apply_reverse_removals(ops: &[ReverseOp], edits: &mut MagicEdit, edited_spans: &[Span]) {
     let mut spans: Vec<Span> = Vec::new();
     for op in ops {
-        if !edited_spans.is_empty() && in_spans(&op.component, edited_spans) {
+        if !edited_spans.is_empty() && span_in_spans(op.component, edited_spans) {
             continue;
         }
         let mut start = op.start;

@@ -4,7 +4,7 @@
 //! decideChain/computeDeadSpans.  Validated by `plans == TS plans`.
 
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use crate::analyze::*;
 use crate::ast::*;
@@ -98,7 +98,7 @@ pub(crate) fn remap_to_local_names<V: Clone>(map: &HashMap<String, V>, model: &M
 
 pub(crate) fn build_plan(
     model: &Model,
-    sites: Option<&Vec<CallSite>>,
+    sites: Option<&Vec<(&CallSite, &str)>>,
     owner_envs: &OwnerEnvs,
 ) -> ComponentPlan {
     let mut plan = ComponentPlan::empty();
@@ -144,6 +144,39 @@ pub(crate) fn build_plan(
     plan
 }
 
+/// The source-level fields later phases need from one rendered component. Keeping
+/// this flat avoids cloning the component's entire descendant fragment into every
+/// analysis/mono record: later phases need only attributes plus a compact summary
+/// of each direct body node.
+#[derive(Clone)]
+pub(crate) struct CallSiteNode {
+    pub(crate) name: String,
+    pub(crate) span: Span,
+    pub(crate) attributes: Box<[Value]>,
+    pub(crate) body: Box<[CallBodyNode]>,
+}
+
+#[derive(Clone)]
+pub(crate) struct CallBodyNode {
+    pub(crate) span: Span,
+    pub(crate) kind: CallBodyKind,
+}
+
+#[derive(Clone)]
+pub(crate) enum CallBodyKind {
+    Snippet(Option<String>),
+    Inert,
+    Children,
+}
+
+pub(crate) struct ChildCall {
+    pub(crate) child_id: String,
+    pub(crate) node: CallSiteNode,
+    /// Parsed once during model construction and borrowed by every fixpoint round.
+    /// This replaces rebuilding the same explicit-prop map on each round.
+    pub(crate) site: CallSite,
+}
+
 pub(crate) struct Model {
     pub(crate) id: String,
     pub(crate) ast: Value,
@@ -152,7 +185,6 @@ pub(crate) struct Model {
     /// design: the IR types only the template STRUCTURE, while the engine's other phases
     /// (shake_body, css, fold) read `ast` as `Value` (see `ir.rs` module docs).
     pub(crate) ir: crate::ir::Root,
-    pub(crate) imports: HashMap<String, String>, // tag name -> childId (all edge kinds), for call-site edits
     pub(crate) props_info: Option<PropsInfo>,
     /// The inputs this component can observe (docs §PR4) — drives the reverse pass.
     pub(crate) reachable_inputs: ReachableInputs,
@@ -168,8 +200,8 @@ pub(crate) struct Model {
     /// owner's fold env so `<Child {count}/>` (an unmutated `let count = $state(0)`
     /// / `const count = 0`) folds in the child. Static per file (`compute_script_const_env`).
     pub(crate) script_const_env: HashMap<String, Literal>,
-    /// (childId, the `<Child/>` Component node) for every rendered child.
-    pub(crate) child_calls: Vec<(String, Value)>,
+    /// Flat call-site records for every rendered child, in source order.
+    pub(crate) child_calls: Vec<ChildCall>,
     pub(crate) escaped: Vec<String>,
     pub(crate) bail_reasons: Vec<String>,
 }
@@ -197,8 +229,45 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[&Value]) -> Model 
     let mut child_calls = Vec::new();
     walk(get(&ast, "fragment"), &mut |n| {
         if str_eq(n, "type", "Component") {
-            if let Some(cid) = n.get("name").and_then(Value::as_str).and_then(|nm| imports.get(nm)) {
-                child_calls.push((cid.clone(), n.clone()));
+            if let Some(name) = n.get("name").and_then(Value::as_str) {
+                if let Some(cid) = imports.get(name) {
+                    let body = arr(get(n, "fragment"), "nodes")
+                        .iter()
+                        .map(|body_node| {
+                            let kind = match type_of(body_node) {
+                                Some("SnippetBlock") => {
+                                    let expr = get(body_node, "expression");
+                                    let name = if str_eq(expr, "type", "Identifier") {
+                                        expr.get("name").and_then(Value::as_str).map(str::to_string)
+                                    } else {
+                                        None
+                                    };
+                                    CallBodyKind::Snippet(name)
+                                }
+                                Some("Comment") => CallBodyKind::Inert,
+                                Some("Text") if text_data(body_node).trim().is_empty() => {
+                                    CallBodyKind::Inert
+                                }
+                                _ => CallBodyKind::Children,
+                            };
+                            CallBodyNode {
+                                span: (off(body_node, "start"), off(body_node, "end")),
+                                kind,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice();
+                    child_calls.push(ChildCall {
+                        child_id: cid.clone(),
+                        node: CallSiteNode {
+                            name: name.to_string(),
+                            span: (off(n, "start"), off(n, "end")),
+                            attributes: arr(n, "attributes").to_vec().into_boxed_slice(),
+                            body,
+                        },
+                        site: read_call_site(n),
+                    });
+                }
             }
         }
     });
@@ -208,7 +277,6 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[&Value]) -> Model 
         id: id.to_string(),
         ast,
         ir: ir_root,
-        imports,
         props_info,
         reachable_inputs,
         unread_declared,
@@ -247,32 +315,34 @@ pub(crate) fn stamp_module_escapes(models: &mut [Model], input: &Value) {
     }
 }
 
-pub(crate) fn build_usage(models: &[Model], dead: &HashMap<String, Vec<Span>>) -> HashMap<String, Vec<CallSite>> {
+pub(crate) type Usage<'a> = HashMap<&'a str, Vec<(&'a CallSite, &'a str)>>;
+
+pub(crate) fn build_usage<'a>(models: &'a [Model], dead: &HashMap<String, Vec<Span>>) -> Usage<'a> {
     // Each owner's (child_id, call_site) pairs are independent; compute them per model
     // (fanned across cores on native), then group. `par_iter().collect()` keeps the
     // per-model order, and grouping walks models in order, so each child profile's
     // call-site order is identical to the sequential build (it feeds mono's
     // first-caller keying, so the order must not drift).
-    let one = |model: &Model| -> Vec<(String, CallSite)> {
+    let one = |model: &'a Model| -> Vec<(&'a str, (&'a CallSite, &'a str))> {
         let empty = Vec::new();
         let spans = dead.get(&model.id).unwrap_or(&empty);
         model
             .child_calls
             .iter()
-            .filter_map(|(child_id, node)| {
-                if !spans.is_empty() && in_spans(node, spans) {
+            .filter_map(|call| {
+                if !spans.is_empty() && span_in_spans(call.node.span, spans) {
                     None // folded-away call site: excluded from the child's profile
                 } else {
-                    Some((child_id.clone(), read_call_site(node, Some(model.id.clone()))))
+                    Some((call.child_id.as_str(), (&call.site, model.id.as_str())))
                 }
             })
             .collect()
     };
-    let per_model: Vec<Vec<(String, CallSite)>> = {
+    let per_model: Vec<Vec<(&str, (&CallSite, &str))>> = {
         use rayon::prelude::*;
         models.par_iter().map(one).collect()
     };
-    let mut usage: HashMap<String, Vec<CallSite>> = HashMap::new();
+    let mut usage: Usage<'a> = HashMap::new();
     for pairs in per_model {
         for (child_id, site) in pairs {
             usage.entry(child_id).or_default().push(site);
@@ -337,9 +407,9 @@ pub(crate) fn merge_script_consts(script_consts: &HashMap<String, Literal>, fold
     merged
 }
 
-pub(crate) fn build_plans(models: &[Model], usage: &HashMap<String, Vec<CallSite>>, prev: &Plans) -> Plans {
+pub(crate) fn build_plans(models: &[Model], usage: &Usage<'_>, prev: &Plans) -> Plans {
     let owner_envs = owner_envs_for(models, prev);
-    let build = |m: &Model| (m.id.clone(), build_plan(m, usage.get(&m.id), &owner_envs));
+    let build = |m: &Model| (m.id.clone(), build_plan(m, usage.get(m.id.as_str()), &owner_envs));
     {
         use rayon::prelude::*;
         models.par_iter().map(build).collect()
@@ -470,14 +540,15 @@ pub fn find_never_passed_props(input: &Value) -> Value {
             Some(p) if !p.props.is_empty() => &p.props,
             _ => continue,
         };
-        let sites = match usage.get(&m.id) {
+        let sites = match usage.get(m.id.as_str()) {
             Some(s) if !s.is_empty() => s,
             _ => continue,
         };
         let mut arr: Vec<Value> = Vec::new();
         for decl in props {
-            let maybe_passed =
-                sites.iter().any(|s| s.had_spread || s.explicit.contains_key(&decl.name));
+            let maybe_passed = sites
+                .iter()
+                .any(|(site, _)| site.had_spread || site.explicit.contains_key(&decl.name));
             if maybe_passed {
                 continue;
             }
