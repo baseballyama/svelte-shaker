@@ -66,7 +66,7 @@ jobs:
           mkdir -p .cargo
           printf '[patch."https://github.com/baseballyama/rsvelte"]\nrsvelte_core = { path = ".rsvelte-src/crates/rsvelte_core" }\n' > .cargo/config.toml
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       # Building the native scanner compiles the engine-rs rlib AND the napi
       # cdylib — the exact combination the napi skew broke.
