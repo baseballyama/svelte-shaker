@@ -18,6 +18,8 @@ on:
       - 'packages/svelte-shaker/engine-scan-native/**'
       - 'packages/svelte-shaker/tests/native-*.test.ts'
       - 'packages/svelte-shaker/tests/ir-parity.test.ts'
+      - 'packages/svelte-shaker/tests/vite.test.ts'
+      - 'packages/svelte-shaker/tests/module-callsite-vite.test.ts'
       - 'packages/svelte-shaker/tests/native-addon.ts'
       - '.github/workflows/ci-rust.yml'
   pull_request:
@@ -26,6 +28,8 @@ on:
       - 'packages/svelte-shaker/engine-scan-native/**'
       - 'packages/svelte-shaker/tests/native-*.test.ts'
       - 'packages/svelte-shaker/tests/ir-parity.test.ts'
+      - 'packages/svelte-shaker/tests/vite.test.ts'
+      - 'packages/svelte-shaker/tests/module-callsite-vite.test.ts'
       - 'packages/svelte-shaker/tests/native-addon.ts'
       - '.github/workflows/ci-rust.yml'
   workflow_dispatch:
@@ -102,3 +106,5 @@ jobs:
           tests/native-full-shake.test.ts
           tests/native-parse-files.test.ts
           tests/ir-parity.test.ts
+          tests/vite.test.ts
+          tests/module-callsite-vite.test.ts

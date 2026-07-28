@@ -19,6 +19,18 @@ pub(crate) fn attr_value_parts(value: &Value) -> Cow<'_, [Value]> {
     }
 }
 
+/// True for an `Attribute` name that is NOT a prop write on a component, even
+/// though the parser typed it as a plain `Attribute`: a `--custom-prop` (svelte
+/// compiles it to `$.css_props(...)`, which RENDERS a `<svelte-css-wrapper>`
+/// element, so it is markup) or a `ns:name` in a namespace svelte does not define
+/// (the parser turns only the known directive prefixes into typed nodes and leaves
+/// every other prefix on a plain `Attribute`, so the allow-list is already applied
+/// upstream — these are preprocessor markers, not props).
+/// Mirrors `parse.ts::isNonPropAttrName`.
+pub(crate) fn is_non_prop_attr_name(name: &str) -> bool {
+    name.starts_with("--") || name.contains(':')
+}
+
 /// `node[key] === val` for a string field, false if absent or non-string.
 pub(crate) fn str_eq(node: &Value, key: &str, val: &str) -> bool {
     node.get(key).and_then(Value::as_str) == Some(val)

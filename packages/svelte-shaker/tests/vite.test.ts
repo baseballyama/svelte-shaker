@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { build, type Rollup } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { shaker, type ShakerOptions } from '../src/vite';
+import { tryLoadNativeEngine } from '../src/native-engine';
 
 // Build inside the package so the temp app resolves `svelte/internal/*`.
 const APP = join(dirname(fileURLToPath(import.meta.url)), '.shaker-tmp-vite');
@@ -17,6 +18,7 @@ const FILES: Record<string, string> = {
 
 /** Conditional-rendering machinery Svelte emits for a surviving `{#if}`. */
 const IF_MACHINERY = /\bif_block\b|\$\.if\(/;
+const nativeAvailable = tryLoadNativeEngine() !== null;
 
 beforeAll(() => {
   rmSync(APP, { recursive: true, force: true });
@@ -63,15 +65,18 @@ describe('vite-plugin-svelte-shaker (end-to-end build)', () => {
     expect(code).toContain('This is Sub Component'); // live markup survives
   });
 
-  it('engine: the native Rust engine shakes identically to the JS engine', async () => {
-    const js = await bundle([shaker({ entries: ['.'], monomorphize: false, engine: 'js' })]);
-    const rust = await bundle([shaker({ entries: ['.'], monomorphize: false, engine: 'rust' })]);
-    // The Rust engine removed the dead branch just like the JS engine …
-    expect(rust).not.toMatch(IF_MACHINERY);
-    expect(rust).toContain('This is Sub Component');
-    // … and the whole bundle is byte-identical (the engines are differential-tested).
-    expect(rust).toBe(js);
-  });
+  it.skipIf(!nativeAvailable)(
+    'engine: the native Rust engine shakes identically to the JS engine',
+    async () => {
+      const js = await bundle([shaker({ entries: ['.'], monomorphize: false, engine: 'js' })]);
+      const rust = await bundle([shaker({ entries: ['.'], monomorphize: false, engine: 'rust' })]);
+      // The Rust engine removed the dead branch just like the JS engine …
+      expect(rust).not.toMatch(IF_MACHINERY);
+      expect(rust).toContain('This is Sub Component');
+      // … and the whole bundle is byte-identical (the engines are differential-tested).
+      expect(rust).toBe(js);
+    },
+  );
 
   it('sourcemap: a shaken file reports an empty map, so no SOURCEMAP_BROKEN warning', async () => {
     // Issue #89: replacing a component's source in `transform` without declaring a
@@ -138,12 +143,15 @@ describe('vite-plugin-svelte-shaker (end-to-end build)', () => {
     ).not.toThrow();
   });
 
-  it('engine: "rust" shakes with monomorphization on by default (native)', async () => {
-    // The Rust engine implements monomorphization too, so engine: "rust" with the
-    // default options shakes the dead branch (and would specialize where it wins)
-    // rather than throw.
-    const code = await bundle([shaker({ entries: ['.'], engine: 'rust' })]);
-    expect(code).not.toMatch(IF_MACHINERY);
-    expect(code).toContain('This is Sub Component');
-  });
+  it.skipIf(!nativeAvailable)(
+    'engine: "rust" shakes with monomorphization on by default (native)',
+    async () => {
+      // The Rust engine implements monomorphization too, so engine: "rust" with the
+      // default options shakes the dead branch (and would specialize where it wins)
+      // rather than throw.
+      const code = await bundle([shaker({ entries: ['.'], engine: 'rust' })]);
+      expect(code).not.toMatch(IF_MACHINERY);
+      expect(code).toContain('This is Sub Component');
+    },
+  );
 });

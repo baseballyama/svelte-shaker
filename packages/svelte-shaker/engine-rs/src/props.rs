@@ -170,7 +170,7 @@ pub(crate) fn compute_reachable_inputs(ast: &Value, props_info: &Option<PropsInf
 /// True when a `$props()` ObjectPattern binds a prop whose external name is not a
 /// plain identifier (a string-literal or computed key), so {@link declared_props_full}
 /// did not capture it.
-fn has_unrepresentable_key(pattern: &Value) -> bool {
+pub(crate) fn has_unrepresentable_key(pattern: &Value) -> bool {
     for p in arr(pattern, "properties") {
         match type_of(p) {
             Some("RestElement") => continue, // handled via has_rest

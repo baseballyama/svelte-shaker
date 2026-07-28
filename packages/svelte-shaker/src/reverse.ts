@@ -1,5 +1,11 @@
 import type MagicString from 'magic-string';
-import { walk, attrValueParts, attrSpanWithSpace, type AnyNode } from './parse.js';
+import {
+  walk,
+  attrValueParts,
+  attrSpanWithSpace,
+  isNonPropAttrName,
+  type AnyNode,
+} from './parse.js';
 import type { ComponentId, ComponentPlan } from './ir.js';
 import type { FileModel } from './model.js';
 import { inSpans, type Span } from './dead.js';
@@ -76,12 +82,15 @@ function collectSiteRemovals(
   // provably unread (spread があるサイトでは本体除去もしない).
   if (attrs.some((a) => a.type === 'SpreadAttribute')) return;
 
-  // (a) Undeclared attributes whose value is side-effect-free.  `bind:` is a
-  // two-way write contract and is a `BindDirective` (not an `Attribute`), so the
-  // `Attribute`-only filter already leaves it — and `on:`/`use:`/`let:`/`class:`/
-  // `style:` directives — untouched.
+  // (a) Undeclared attributes whose value is side-effect-free.  Two kinds of
+  // non-prop attribute must survive this loop:
+  //  - a KNOWN directive (`bind:`/`on:`/`use:`/`let:`/`class:`/`style:`/…) is its
+  //    own node type, so the `Attribute`-only filter already leaves it alone;
+  //  - a `--css-var` or an UNKNOWN `ns:name`, which the parser leaves as a plain
+  //    `Attribute`, is not a prop the child could read either — `isNonPropAttrName`.
   for (const attr of attrs) {
     if (attr.type !== 'Attribute' || !attr.name) continue;
+    if (isNonPropAttrName(attr.name)) continue; // not a prop write -> opaque, leave it
     if (reachable.has(attr.name)) continue; // declared -> the child reads it
     if (!isSideEffectFreeValue(attr.value)) continue; // may have an evaluation effect
     ops.push(attrOp(node, attr, code));

@@ -44,18 +44,18 @@ interface NativeEngine {
   engineApiVersion: () => number;
 }
 
-/** The addon ABI generation this driver speaks (native `engine_api_version`). Bump
- * in lockstep with a breaking change to the exported methods. The 0.2.x addon's
- * `shake` took a JS `ownSize` callback; 0.3.x computes the size proxy in Rust and
- * `shake` takes ONE argument — calling a 0.2.x binary the 0.3.x way throws a napi
- * TypeError that crashes `vite build`, so a version mismatch MUST be rejected here. */
-const EXPECTED_ENGINE_API_VERSION = 3;
+/** The native-engine compatibility generation this driver speaks
+ * (`engine_api_version`). Bump it whenever the exported API OR transform semantics
+ * change in a way that makes an older independently published binary incompatible
+ * with the current JS engine. Rejecting a stale binary preserves JS/native parity
+ * and falls back safely until matching prebuilds are published. */
+const EXPECTED_ENGINE_API_VERSION = 4;
 
-/** Whether a loaded module is a native addon this engine can drive: the right ABI
- * generation AND the `ShakeSession` shape (`parse` + `parseMore` + `shake`). An OLDER
- * published `svelte-shaker-engine-scan-native` — one with no `engineApiVersion`, a
- * different generation, or predating `parseMore` — is REJECTED so the caller degrades
- * to the JS engine instead of mis-calling an incompatible binary and crashing the build. */
+/** Whether a loaded module is a native addon this engine can drive: the right
+ * compatibility generation AND the `ShakeSession` shape (`parse` + `parseMore` +
+ * `shake`). An OLDER published `svelte-shaker-engine-scan-native` — one with no
+ * `engineApiVersion`, a different generation, or predating `parseMore` — is REJECTED
+ * so the caller degrades to JS instead of using an incompatible binary. */
 export function hasSessionApi(mod: Partial<NativeEngine>): mod is NativeEngine {
   const versionFn = mod.engineApiVersion;
   // The 0.2.x addon has no `engineApiVersion` export, so this rejects it — the exact
@@ -80,8 +80,8 @@ export function hasSessionApi(mod: Partial<NativeEngine>): mod is NativeEngine {
  *  - `../engine-scan-native/index.cjs` — the in-repo package, used from source in
  *    this package's own tests / dev (where the npm package isn't a dependency).
  * Either loader resolves the platform `.node`; a missing binary throws (swallowed).
- * A resolved-but-API-incompatible module (an older publish) is rejected so a version
- * skew degrades to a fallback engine, never a crash.
+ * A resolved-but-incompatible module (an older publish) is rejected so a version skew
+ * degrades to a fallback engine, never a crash or behavior mismatch.
  */
 export function tryLoadNativeEngine(): NativeEngine | null {
   for (const spec of ['svelte-shaker-engine-scan-native', '../engine-scan-native/index.cjs']) {

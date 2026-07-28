@@ -722,7 +722,7 @@ export function shaker(options: ShakerOptions = {}): Plugin {
           '[vite-plugin-svelte-shaker] engine: "rust" was requested but the native Rust ' +
             'engine could not be loaded' +
             (nativeAllowed
-              ? ' (no prebuilt binary for this platform, or an ABI mismatch)'
+              ? ' (no prebuilt binary for this platform, or a compatibility mismatch)'
               : ' because `parser: "svelte"` forces it off — the native engine always ' +
                 'parses in-process with rsvelte') +
             '. Remove the option (or use engine: "js") to use the JS engine, whose output ' +

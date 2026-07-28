@@ -71,9 +71,11 @@ fn collect_site_removals(node: &Value, reachable: &HashSet<String>, ops: &mut Ve
         return;
     }
 
-    // (a) Undeclared attributes with a side-effect-free value.  `bind:` is a
-    // `BindDirective` (not an `Attribute`), so it — and `on:`/`use:`/`let:`/
-    // `class:`/`style:` directives — is left untouched by the `Attribute` filter.
+    // (a) Undeclared attributes with a side-effect-free value.  Two kinds of
+    // non-prop attribute must survive: a KNOWN directive (`bind:`/`on:`/`use:`/
+    // `let:`/`class:`/`style:`/…) is its own node type, so the `Attribute` filter
+    // already leaves it; a `--css-var` or an UNKNOWN `ns:name` stays a plain
+    // `Attribute` and is excluded by `is_non_prop_attr_name`.
     for attr in attrs {
         if type_of(attr) != Some("Attribute") {
             continue;
@@ -82,6 +84,9 @@ fn collect_site_removals(node: &Value, reachable: &HashSet<String>, ops: &mut Ve
             Some(n) => n,
             None => continue,
         };
+        if is_non_prop_attr_name(name) {
+            continue; // not a prop write -> opaque, leave it
+        }
         if reachable.contains(name) {
             continue; // declared -> the child reads it
         }

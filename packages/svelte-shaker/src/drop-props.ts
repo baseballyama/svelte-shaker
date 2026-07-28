@@ -6,13 +6,24 @@
 
 import type MagicString from 'magic-string';
 import { isSpace, type AnyNode } from './parse.js';
-import type { FileModel } from './model.js';
+import { hasUnrepresentableKey, type FileModel } from './model.js';
 
 export function dropProps(model: FileModel, drop: Set<string>, s: MagicString): void {
   if (!model.props || drop.size === 0) return;
   const remaining = model.props.filter((p) => !drop.has(p.name));
 
-  if (remaining.length === 0 && !model.hasRestProp && model.propsDeclaration) {
+  // `props` holds only the identifier-keyed properties, so "nothing remains" does
+  // NOT mean the pattern is empty: a string-literal / computed key (`{ 'ns:x': v }`)
+  // is invisible to the count, and deleting the whole declaration would silently
+  // turn its binding into an undefined global — code that still compiles.  Those
+  // patterns fall through to the per-run removal below, which tiles over the FULL
+  // property list and so leaves the unrepresentable one in place.
+  if (
+    remaining.length === 0 &&
+    !model.hasRestProp &&
+    !hasUnrepresentableKey(model.propsPattern) &&
+    model.propsDeclaration
+  ) {
     removeWholeLine(model.code, model.propsDeclaration, s); // signature is now empty
     return;
   }

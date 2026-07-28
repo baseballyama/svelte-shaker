@@ -33,7 +33,14 @@ export interface CallSite {
    * set this — only an opaque spread, which may set any prop, does (docs §4.1).
    */
   hadSpread: boolean;
-  /** Last-write-wins explicit props at this site, keyed by prop name. */
+  /**
+   * Last-write-wins explicit props at this site, keyed by prop name.  A non-prop
+   * attribute the parser still typed as an `Attribute` (`--css-var`, an unknown
+   * `ns:name` — see `isNonPropAttrName`) lands here too, and is inert only
+   * because every consumer looks a name up against the child's `$props()`
+   * declarations, whose keys are ESTree identifiers.  A future consumer that
+   * ITERATES this map instead must exclude those names itself.
+   */
   explicit: Map<string, ExplicitProp>;
   /**
    * The component that OWNS this call site (renders the `<Child .../>`).  The
