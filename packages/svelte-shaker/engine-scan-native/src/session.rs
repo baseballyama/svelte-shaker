@@ -25,7 +25,7 @@ use std::collections::HashSet;
 use napi_derive::napi;
 use rsvelte_core::ast::arena::with_serialize_arena;
 use rsvelte_core::compiler::{compile, CompileOptions, CssMode, GenerateMode};
-use rsvelte_core::{parse, ParseOptions};
+use rsvelte_core::{parse, Allocator, ParseOptions};
 use serde_json::{json, Map, Value};
 use svelte_shaker_engine::{shake_program_with_mono_value, MonoOptions, ShakeFile};
 
@@ -98,7 +98,8 @@ fn root_to_ast_value(root: &rsvelte_core::ast::Root, code: &str) -> Value {
 /// Whether `emitted` (one file's shaken output) still parses as valid Svelte via
 /// rsvelte. Mirrors the JS `unparseableIds` per-file check.
 fn reparses(code: &str) -> bool {
-    parse(code, ParseOptions::default()).is_ok()
+    let allocator = Allocator::default();
+    parse(code, &allocator, ParseOptions::default()).is_ok()
 }
 
 /// Parse + serialize a batch of `{ id, code }` inputs across cores, preserving input
@@ -119,7 +120,8 @@ fn parse_batch(files: Vec<Value>) -> Vec<(StoredFile, Value)> {
         let id = take_string("id");
         let code = take_string("code");
         // One parse feeds BOTH the retained shake AST and the Round-1 facts.
-        match parse(&code, ParseOptions::default()) {
+        let allocator = Allocator::default();
+        match parse(&code, &allocator, ParseOptions::default()) {
             Ok(root) => {
                 let (ast, facts) = with_serialize_arena(&root.arena, || {
                     (root_to_ast_value(&root, &code), facts_from_root(&id, &root))

@@ -117,8 +117,8 @@ importers:
   packages/svelte-shaker:
     dependencies:
       '@rsvelte/compiler':
-        specifier: 0.8.1
-        version: 0.8.1
+        specifier: 0.9.4
+        version: 0.9.4
       magic-string:
         specifier: 1.0.0
         version: 1.0.0
@@ -1017,8 +1017,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@rsvelte/compiler@0.8.1':
-    resolution: {integrity: sha512-0ZwVPEttTfwU2cjiDPQsdHDnvEqxsIDVJ4pst42l/0mrIr8KE8Knw+gUICPR7o77WFfajpsO2Ry39QBV91cAzw==}
+  '@rsvelte/compiler@0.9.4':
+    resolution: {integrity: sha512-oOlRM5zHR7LCWmveE68s3aB3QMJAAlqVFHW3PZTmSrolvQhzVtyXy4gi8G4ind4lXInHMWvZF4DI2YcJoJf2Rg==}
 
   '@rsvelte/svelte-check-darwin-arm64@0.3.10':
     resolution: {integrity: sha512-3arx5sb+Iazwlcj55Sk8pRq8eG09+oGckbv9ko99edQWa9ZF2xyjU56mcP7ar5TDhprSF2xGdn3XhRNM1JaNnQ==}
@@ -3049,7 +3049,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@rsvelte/compiler@0.8.1': {}
+  '@rsvelte/compiler@0.9.4': {}
 
   '@rsvelte/svelte-check-darwin-arm64@0.3.10':
     optional: true

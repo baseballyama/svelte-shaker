@@ -33,7 +33,7 @@ use rsvelte_core::ast::js::Expression;
 use rsvelte_core::ast::{
     Attribute, AttributeValue, AttributeValuePart, Fragment, Root, TemplateNode,
 };
-use rsvelte_core::{parse, ParseOptions};
+use rsvelte_core::{parse, Allocator, ParseOptions};
 use serde_json::Value;
 
 use crate::utf16::Utf8ToUtf16;
@@ -612,7 +612,8 @@ pub struct FileModel {
 /// (tag name -> child id). Returns `None` only on a parse error (the file is then
 /// skipped — sound under-reporting).
 pub fn build_model(id: &str, code: &str, imports: &HashMap<String, String>) -> Option<FileModel> {
-    let root: Root = parse(code, ParseOptions::default()).ok()?;
+    let allocator = Allocator::default();
+    let root: Root = parse(code, &allocator, ParseOptions::default()).ok()?;
     // All `as_json()` calls below need the arena installed to resolve JsNodeIds.
     Some(with_serialize_arena(&root.arena, || build_model_inner(id, code, imports, &root)))
 }

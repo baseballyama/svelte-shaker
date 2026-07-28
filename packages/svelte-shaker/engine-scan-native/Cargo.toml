@@ -28,18 +28,15 @@ rayon = "1.12.0"
 # needs no extra deps.
 #
 # SIZE-PROXY PARITY: the gate must decide identically across the TS and native
-# engines — the JS engines compute the proxy from `@rsvelte/compiler` (0.8.1) while
+# engines — the JS engines compute the proxy from `@rsvelte/compiler` (0.9.4) while
 # native computes it from THIS crate, so their client codegen must agree byte-for-byte.
-# This rev (0.7.17) is verified byte-identical to `@rsvelte/compiler` 0.8.1 across the
-# whole fixture/example/e2e corpus by the differential parity tests
-# (`tests/native-engine.test.ts` etc.). Ideally the pin would be the exact 0.8.1
-# release rev (bd17e3c…) for a matching-rev guarantee, but rsvelte at that rev carries
-# a broken nested corpus submodule (`temp_web/element`, no URL) that breaks cargo's
-# recursive submodule checkout; bumping is deferred until that is fixed upstream (the
-# corpus-verified parity holds meanwhile). rsvelte is public, so cargo fetches it with
-# no credentials. For local dev against a side-by-side checkout, override with a
-# `[patch]` in a local `.cargo/config.toml` (uncommitted) pointing `rsvelte_core` at the path.
-rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "852f80e27a442ea209a19b9f1e4339b62a5dbde2", default-features = false }
+# This is `@rsvelte/compiler@0.9.4` plus an upstream Cargo-only submodule metadata
+# fix. Its compiler source matches the published package byte-for-byte, and
+# the corpus-wide differential tests enforce output parity. rsvelte is public, so
+# cargo fetches it with no credentials. For local dev against a side-by-side checkout,
+# override with a `[patch]` in a local `.cargo/config.toml` (uncommitted) pointing
+# `rsvelte_core` at the path.
+rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "62c263fbbbdb12725e3e326ba7105650104b00a3", default-features = false }
 
 # The Value-based analysis engine, reused verbatim (rlib): its
 # `find_never_passed_props` is pinned byte-for-byte to the JS engine by the
@@ -58,3 +55,23 @@ strip = "symbols"
 # The napi methods intentionally catch parser/compiler panics and turn them into
 # JavaScript errors or safe fallbacks. `abort` would make those guards ineffective.
 panic = "unwind"
+
+# rsvelte 0.9 uses oxc_formatter from git while its other oxc dependencies name
+# crates.io releases. Cargo does not propagate a dependency's root `[patch]` table,
+# so repeat rsvelte's release patch here to keep every oxc AST type from the same
+# source revision.
+[patch.crates-io]
+oxc_allocator = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_parser = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_ast = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_ast_macros = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_ast_visit = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_span = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_diagnostics = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_codegen = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_syntax = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_semantic = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_regular_expression = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_ecmascript = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_str = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_data_structures = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }

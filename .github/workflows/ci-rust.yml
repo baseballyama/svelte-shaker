@@ -52,20 +52,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # Same submodule-free rsvelte vendoring as prebuild-native-scanner.yml:
-      # rsvelte is a git dep with private ecosystem-test submodules CI can't fetch,
-      # so clone it WITHOUT submodules at the pinned rev and `[patch]` the dep to
-      # that path. Keep this rev in sync with the crates' Cargo.toml `rsvelte_core`
-      # pin (and with the prebuild workflow).
-      - name: Vendor rsvelte without submodules + patch the dep
-        working-directory: packages/svelte-shaker/engine-scan-native
-        run: |
-          git clone --no-checkout --no-recurse-submodules --filter=blob:none \
-            https://github.com/baseballyama/rsvelte .rsvelte-src
-          git -C .rsvelte-src checkout 852f80e27a442ea209a19b9f1e4339b62a5dbde2
-          mkdir -p .cargo
-          printf '[patch."https://github.com/baseballyama/rsvelte"]\nrsvelte_core = { path = ".rsvelte-src/crates/rsvelte_core" }\n' > .cargo/config.toml
-
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
 
       # Building the native scanner compiles the engine-rs rlib AND the napi

@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use napi_derive::napi;
 use rayon::prelude::*;
 use rsvelte_core::ast::arena::with_serialize_arena;
-use rsvelte_core::{parse, ParseOptions};
+use rsvelte_core::{parse, Allocator, ParseOptions};
 use serde_json::{json, Value};
 
 mod parse_files;
@@ -186,7 +186,8 @@ pub fn ir_component_tags(ast_json: String) -> napi::Result<String> {
 /// Value engine reads it unchanged. `Value::Null` on a parse error (the engine then
 /// skips the file — sound under-reporting).
 fn parse_to_ast_value(code: &str) -> Value {
-    let root = match parse(code, ParseOptions::default()) {
+    let allocator = Allocator::default();
+    let root = match parse(code, &allocator, ParseOptions::default()) {
         Ok(root) => root,
         Err(_) => return Value::Null,
     };
