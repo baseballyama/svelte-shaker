@@ -9,9 +9,7 @@ had `n` folded to its initial value and the prop deleted, so the child stopped
 re-rendering when the counter changed — the rendered output differed from the
 unshaken build. The cause was upstream: rsvelte's parser serialized an
 assignment target carrying a TS assertion as `null`, so the write never reached
-the engine's write analysis. The pinned rsvelte revision now includes the parser
-fix. The `parser: 'svelte'` path was never affected.
-
-`parser: 'rsvelte'` on the JavaScript engine still resolves the parser from the
-published `@rsvelte/compiler`, and picks the fix up on that package's next
-release.
+the engine's write analysis. The bundled `@rsvelte/compiler` is now 0.9.4, and
+the native engine's `rsvelte_core` pin uses the same compiler source plus a
+Cargo-only submodule metadata fix. Both include the parser fix. The
+`parser: 'svelte'` path was never affected.

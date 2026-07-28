@@ -277,8 +277,7 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
           `<script lang="ts">\n  import Child from './Child.svelte';\n  let count = $state(0);\n  let step = $state(1);\n` +
           `  function inc() { count!++; step! += 1; }\n</script>\n` +
           `<Child n={count} s={step} /><button onclick={inc}>+</button>`,
-        '/Child.svelte':
-          `<script lang="ts">\n  let { n, s } = $props();\n</script>\n<p>{n}/{s}</p>`,
+        '/Child.svelte': `<script lang="ts">\n  let { n, s } = $props();\n</script>\n<p>{n}/{s}</p>`,
       },
       '/App.svelte',
     );

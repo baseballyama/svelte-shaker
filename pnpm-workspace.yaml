@@ -6,11 +6,11 @@ packages:
 allowBuilds:
   esbuild: true
 
-# @rsvelte/compiler@0.8.1 and the freshly-published native scanner trip the
+# @rsvelte/compiler@0.9.4 and the freshly-published native scanner trip the
 # minimumReleaseAge supply-chain gate. Allow these exact pinned versions through (both
 # are ours); remove each once it ages out.
 minimumReleaseAgeExclude:
-  - '@rsvelte/compiler@0.8.1'
+  - '@rsvelte/compiler@0.9.4'
   - 'svelte-shaker-engine-scan-native@0.2.0'
   - 'svelte-shaker-engine-scan-native@0.3.0'
 

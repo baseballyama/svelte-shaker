@@ -13,7 +13,7 @@
 
 use rsvelte_core::ast::arena::with_serialize_arena;
 use rsvelte_core::ast::{Fragment, Root, TemplateNode};
-use rsvelte_core::{parse, ParseOptions};
+use rsvelte_core::{parse, Allocator, ParseOptions};
 use serde_json::{json, Value};
 
 /// One import specifier, mirroring the JS `ImportInfo`.
@@ -211,7 +211,8 @@ pub fn facts_from_root(id: &str, root: &Root) -> FileParse {
 /// empty result flagged `parse_error` (the JS crawl simply cannot follow such a
 /// file), never a panic.
 pub fn parse_one(id: &str, code: &str) -> FileParse {
-    let root: Root = match parse(code, ParseOptions::default()) {
+    let allocator = Allocator::default();
+    let root: Root = match parse(code, &allocator, ParseOptions::default()) {
         Ok(root) => root,
         Err(_) => {
             return FileParse {
