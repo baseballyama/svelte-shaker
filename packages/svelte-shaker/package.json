@@ -25,6 +25,7 @@
     "dist"
   ],
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -49,9 +50,10 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "prepack": "tsc -p tsconfig.build.json",
-    "dev": "tsc -p tsconfig.build.json -w",
+    "build": "tsdown && node scripts/check-dist.mjs",
+    "prepack": "pnpm build",
+    "dev": "tsdown --watch",
+    "check:dist": "node scripts/check-dist.mjs",
     "test:watch": "vitest",
     "test": "vitest run"
   },
@@ -65,6 +67,7 @@
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@types/picomatch": "4.0.2",
     "svelte": "^5.56.6",
+    "tsdown": "0.22.14",
     "vite": "^8.1.5"
   },
   "peerDependencies": {

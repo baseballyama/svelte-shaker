@@ -112,6 +112,7 @@ jobs:
           if [ -z "$bin" ]; then
             echo "no cdylib found in $rel"; ls -la "$rel"; exit 1
           fi
+          node scripts/check-binary-size.cjs "$bin"
           out="svelte-shaker-engine-scan-native.${{ matrix.napi }}.node"
           echo "binary: $bin -> $out"
           cp "$bin" "$out"

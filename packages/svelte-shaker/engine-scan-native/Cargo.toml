@@ -51,6 +51,10 @@ svelte-shaker-engine = { path = "../engine-rs" }
 napi-build = "2.3.2"
 
 [profile.release]
-opt-level = 3
-lto = true
+opt-level = "z"
+lto = "fat"
 codegen-units = 1
+strip = "symbols"
+# The napi methods intentionally catch parser/compiler panics and turn them into
+# JavaScript errors or safe fallbacks. `abort` would make those guards ineffective.
+panic = "unwind"

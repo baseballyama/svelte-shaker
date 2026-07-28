@@ -1,16 +1,13 @@
 {
-  // No bundler: `tsc` just transpiles each `src/*.ts` to a matching `dist/*.js`
-  // (ESM, unminified) with its `.d.ts` beside it. The file split is preserved so
-  // a consumer stepping through `node_modules/svelte-shaker/dist` reads the same
-  // module layout as the source. This is why the engine's internal imports carry
-  // explicit `.js` extensions (`./parse.js`) — Node ESM requires them and `tsc`
-  // emits import specifiers verbatim.
+  // Isolated declarations let tsdown's Oxc path generate and bundle the three
+  // public type surfaces without publishing declarations for internal modules.
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "noEmit": false,
+    "allowJs": false,
+    "checkJs": false,
     "declaration": true,
-    "outDir": "./dist",
-    "declarationDir": "./dist",
+    "isolatedDeclarations": true,
+    "noEmit": false,
     "rootDir": "./src"
   },
   "include": ["src"]
