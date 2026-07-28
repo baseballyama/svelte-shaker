@@ -1,5 +1,43 @@
 # svelte-shaker
 
+## 0.18.1
+
+### Patch Changes
+
+- 10256da: Stop removing call-site attributes that are not props
+
+  - A CSS custom property on a component (`<Card --accent="red" />`) is no longer
+    removed. Svelte compiles it to `$.css_props(...)`, which renders a
+    `<svelte-css-wrapper>` element, so dropping it changed the rendered HTML.
+  - An attribute in a namespace Svelte does not define (`<Card my:directive />`)
+    is no longer removed. Svelte's parser turns only its own directive prefixes
+    (`bind:`, `use:`, `on:`, …) into directives and leaves any other `ns:name` as a
+    plain attribute, which the shaker treated as a prop the child never reads —
+    silently breaking preprocessors that consume such markers. The component is
+    still shaken normally, so you no longer need to list it in `external` (which
+    also froze its prop folding) to keep the marker.
+  - `let { 'my:directive': marker, y = 1 } = $props()` no longer loses its entire
+    declaration when every identifier-keyed prop folds away. The string-literal key
+    was invisible to the prop model, so `marker` silently became an undefined
+    global in code that still compiled.
+
+- 0b0df54: Faster native builds with byte-for-byte identical output: the Rust engine now stores each component call site as a cache-friendly flat record, parses its prop writes once and reuses them in every fixpoint round, and shares that index across reverse, unread-prop, attribute-removal, and monomorphization passes instead of repeatedly walking and cloning the full AST.
+
+  The native session also moves source strings directly out of its owned JSON input instead of copying the whole program into retained storage.
+
+- a431492: Fix the native engine missing a write made through a TypeScript non-null
+  assertion (`count!++`, `count! += 1`), which let it fold a prop that is not
+  constant. A component like `<Child n={count} />` whose owner wrote `count!++`
+  had `n` folded to its initial value and the prop deleted, so the child stopped
+  re-rendering when the counter changed — the rendered output differed from the
+  unshaken build. The cause was upstream: rsvelte's parser serialized an
+  assignment target carrying a TS assertion as `null`, so the write never reached
+  the engine's write analysis. The bundled `@rsvelte/compiler` is now 0.9.4, and
+  the native engine's `rsvelte_core` pin uses the same compiler source plus a
+  Cargo-only submodule metadata fix. Both include the parser fix. The
+  `parser: 'svelte'` path was never affected.
+- 168cf5e: Bundle and minify the JavaScript entry points, and optimize native release binaries for size while preserving the public API.
+
 ## 0.18.0
 
 ### Minor Changes
