@@ -20,5 +20,5 @@ minimumReleaseAgeExclude:
 # (postcss 8.5.19 is what main already ships). Remove once the gate no longer
 # blocks the latest.
 overrides:
-  lightningcss: 1.32.0
+  lightningcss: 1.33.0
   postcss: 8.5.19
