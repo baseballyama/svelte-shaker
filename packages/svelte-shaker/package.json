@@ -59,9 +59,9 @@
   },
   "dependencies": {
     "@rsvelte/compiler": "0.9.4",
-    "magic-string": "1.0.0",
-    "picomatch": "4.0.5",
-    "zimmerframe": "1.1.4"
+    "magic-string": "^1.0.0",
+    "picomatch": "^4.0.0",
+    "zimmerframe": "^1.0.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
