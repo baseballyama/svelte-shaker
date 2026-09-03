@@ -52,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       # Building the native scanner compiles the engine-rs rlib AND the napi
       # cdylib — the exact combination the napi skew broke.
@@ -75,10 +75,10 @@ jobs:
       # assertion-free green. Building the addon above (its `target/release` cdylib is
       # what `index.cjs` loads) makes them actually execute; the guard below fails loudly
       # if the addon still didn't load, so the suite can never silently skip green.
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6 — version comes from package.json "packageManager"
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6 — version comes from package.json "packageManager"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.0
+          node-version: 24.20.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Guard — the native addon must load
