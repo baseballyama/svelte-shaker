@@ -51,7 +51,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       # Node 24: `changeset publish` shells out to `npm publish`, and OIDC
       # Trusted Publishers require npm CLI >= 11.5.1, which ships with Node 24.
@@ -63,7 +63,7 @@ jobs:
       # blocking the OIDC code path.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.18.0
+          node-version: 24.20.0
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
