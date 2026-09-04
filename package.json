@@ -16,10 +16,10 @@
     "@changesets/cli": "2.31.1",
     "@tsconfig/strictest": "2.0.8",
     "@types/node": "24.13.3",
-    "oxfmt": "0.59.0",
-    "oxlint": "1.74.0",
+    "oxfmt": "0.66.0",
+    "oxlint": "1.81.0",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   },
   "engines": {
     "node": ">=22.23.1",
