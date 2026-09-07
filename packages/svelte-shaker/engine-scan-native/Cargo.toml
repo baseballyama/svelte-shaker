@@ -16,7 +16,7 @@ crate-type = ["cdylib"]
 # on both restores a matching pairing.
 napi = { version = "3.11.0", default-features = false, features = ["napi8"] }
 napi-derive = "3.6.0"
-serde_json = { version = "1.0.150", features = ["preserve_order"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
 rayon = "1.12.0"
 
 # rsvelte, used for BOTH parsing AND the monomorphization size proxy
