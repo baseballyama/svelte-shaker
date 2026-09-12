@@ -36,7 +36,7 @@ rayon = "1.12.0"
 # cargo fetches it with no credentials. For local dev against a side-by-side checkout,
 # override with a `[patch]` in a local `.cargo/config.toml` (uncommitted) pointing
 # `rsvelte_core` at the path.
-rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "62c263fbbbdb12725e3e326ba7105650104b00a3", default-features = false }
+rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "7588fdc12afbd5775d79ce6a4c41591c5dda294a", default-features = false }
 
 # The Value-based analysis engine, reused verbatim (rlib): its
 # `find_never_passed_props` is pinned byte-for-byte to the JS engine by the
