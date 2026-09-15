@@ -21,4 +21,4 @@ minimumReleaseAgeExclude:
 # blocks the latest.
 overrides:
   lightningcss: 1.32.0
-  postcss: 8.5.19
+  postcss: 8.5.28
