@@ -13,6 +13,9 @@ jobs:
       matrix:
         ref:
           - f0066df51437731946ea8b5f2b49aaf56fc89a78 # 196
+          - 3cc39278a9eb67158c10a42c78b85284e10612ad # 193 merged head (post-hoc)
+          - 18a4e16204d701c1cf11d5d3e3aa1f69223598ea # 199 merged head (post-hoc)
+          - 17f4cdf5982efa45673e499032c765bcd8fa0431 # main after 200 (post-hoc)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
