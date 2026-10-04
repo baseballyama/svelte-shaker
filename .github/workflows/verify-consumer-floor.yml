@@ -1,0 +1,76 @@
+# Temporary verification workflow (not for main). Read-only: no secrets, no publish.
+name: Verify consumer floor
+on:
+  push:
+    branches: ['verify/shaker-consumer-floor*']
+permissions:
+  contents: read
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Pack svelte-shaker
+        run: |
+          mkdir -p "$RUNNER_TEMP/tgz"
+          pnpm --filter svelte-shaker pack --pack-destination "$RUNNER_TEMP/tgz"
+          cd "$RUNNER_TEMP/tgz" && ls -l && sha256sum *.tgz
+          tar -xzOf svelte-shaker-*.tgz package/package.json | node -e 'const p=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(JSON.stringify({version:p.version,engines:p.engines,peerDependencies:p.peerDependencies,optionalDependencies:p.optionalDependencies}))'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: svelte-shaker-tgz
+          path: ${{ runner.temp }}/tgz/*.tgz
+  consumer:
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.23.1', '24.21.0']
+        svelte: ['5.56.6', '5.57.1']
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: svelte-shaker-tgz
+          path: tgz
+      - name: Create consumer app
+        run: |
+          node --version
+          mkdir app && cd app
+          tgz="$(ls "$GITHUB_WORKSPACE"/tgz/svelte-shaker-*.tgz)"
+          cat > package.json <<JSON
+          {"name":"consumer","private":true,"type":"module",
+           "dependencies":{"svelte-shaker":"file:$tgz","svelte":"${{ matrix.svelte }}"},
+           "devDependencies":{"vite":"^8.1.5","@sveltejs/vite-plugin-svelte":"^7.2.0"}}
+          JSON
+          mkdir src
+          printf '%s\n' '<script>' "  let { flag } = \$props();" '</script>' '{#if flag}<p>LIVE_BRANCH</p>{:else}<p>DEAD_BRANCH_MARKER</p>{/if}' > src/Child.svelte
+          printf '%s\n' '<script>' "  import Child from './Child.svelte';" '</script>' '<Child flag={true} />' > src/App.svelte
+          printf '%s\n' "import { mount } from 'svelte';" "import App from './App.svelte';" "mount(App, { target: document.body });" > src/main.js
+          printf '%s\n' '<!doctype html><html><body><script type="module" src="/src/main.js"></script></body></html>' > index.html
+          printf '%s\n' "import { defineConfig } from 'vite';" "import { svelte } from '@sveltejs/vite-plugin-svelte';" "import { shaker } from 'svelte-shaker/vite';" "export default defineConfig({ plugins: [shaker({ entries: ['src'] }), svelte()] });" > vite.config.js
+      - name: npm install with engine-strict
+        working-directory: app
+        run: npm install --engine-strict --no-audit --no-fund && npm ls svelte svelte-shaker
+      - name: Import entry points
+        working-directory: app
+        run: node -e "await import('svelte-shaker'); await import('svelte-shaker/vite'); await import('svelte-shaker/node'); console.log('imports ok')" --input-type=module
+      - name: vite build with the shaker
+        working-directory: app
+        run: |
+          npx vite build
+          grep -rl LIVE_BRANCH dist >/dev/null
+          if grep -rl DEAD_BRANCH_MARKER dist; then echo "dead branch was not removed"; exit 1; fi
+          echo "shaken: dead branch removed"
