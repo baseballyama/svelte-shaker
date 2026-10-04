@@ -1,0 +1,59 @@
+# Temporary investigation (not for main, not a PR gate change): for #191, measure
+# where the native binary grew and whether native/JS parity still holds.
+# Read-only token, no secrets, no publish.
+name: Temporary 191 probe
+on:
+  push:
+    branches: ['ci-tmp/shaker-191-probe']
+permissions:
+  contents: read
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+jobs:
+  bloat:
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ['64ed8f7b54c059235c24709cb38ab35f267712b2', '7a4cdbf773f9dc5d82e84a27daca4cf57beeb44f']
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - run: cargo install cargo-bloat --locked --version 0.12.1
+      - name: Build + size
+        working-directory: packages/svelte-shaker/engine-scan-native
+        run: |
+          cargo build --release
+          ls -l target/release/*.so
+      - name: Crate breakdown (same release profile)
+        working-directory: packages/svelte-shaker/engine-scan-native
+        run: cargo bloat --release --lib --crates -n 40 2>&1 | tail -50
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: 7a4cdbf773f9dc5d82e84a27daca4cf57beeb44f
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Build native scanner
+        working-directory: packages/svelte-shaker/engine-scan-native
+        run: cargo build --release && node scripts/check-binary-size.cjs || true
+      - name: Test engine core
+        working-directory: packages/svelte-shaker/engine-rs
+        run: cargo test --release
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Guard — the native addon must load
+        working-directory: packages/svelte-shaker
+        run: node -e "const a=require('./engine-scan-native/index.cjs'); if(typeof a.ShakeSession!=='function'){process.exit(1)}"
+      - name: Native byte-identity tests
+        working-directory: packages/svelte-shaker
+        run: pnpm exec vitest run tests/native-engine.test.ts tests/native-full-shake.test.ts tests/native-parse-files.test.ts tests/ir-parity.test.ts tests/vite.test.ts tests/module-callsite-vite.test.ts
