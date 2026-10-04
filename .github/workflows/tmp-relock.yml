@@ -1,0 +1,33 @@
+# Temporary (not for main): regenerate pnpm-lock.yaml on a GitHub runner.
+# Read-only token, no secrets, no publish. Lockfile only, no install scripts.
+name: Temporary relock
+on:
+  push:
+    branches: ['ci-tmp/relock-shaker-*']
+permissions:
+  contents: read
+jobs:
+  relock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.21.0
+      - name: Relock
+        run: |
+          pnpm --version
+          cp pnpm-lock.yaml "$RUNNER_TEMP/before.yaml"
+          pnpm install --lockfile-only --ignore-scripts
+          diff -u "$RUNNER_TEMP/before.yaml" pnpm-lock.yaml > "$RUNNER_TEMP/lock.diff" || true
+          wc -l "$RUNNER_TEMP/lock.diff"
+          sha256sum pnpm-lock.yaml
+          mkdir -p out && cp pnpm-lock.yaml "$RUNNER_TEMP/lock.diff" out/
+      - name: Frozen install check against the new lock
+        run: pnpm install --frozen-lockfile --lockfile-only --ignore-scripts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: relock
+          path: out/
