@@ -1,0 +1,30 @@
+# Temporary (not for main): run the repo's real `pnpm format:fix` on PR heads
+# and require an empty diff. Read-only token, no secrets, no publish, no push.
+name: Temporary format check
+on:
+  push:
+    branches: ['ci-tmp/format-shaker']
+permissions:
+  contents: read
+jobs:
+  format:
+    strategy:
+      fail-fast: false
+      matrix:
+        ref:
+          - 72e2e1b497924a639e42f933e87c2644825db91f # 200
+          - 35ff84b90f35c3c3c732cd45ca491aa17a30a531 # 196
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.21.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: git rev-parse HEAD && pnpm format:fix
+      - name: Diff must be empty
+        run: git status --porcelain && git diff --stat && git diff --exit-code
