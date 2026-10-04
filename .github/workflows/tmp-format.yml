@@ -12,8 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         ref:
-          - 72e2e1b497924a639e42f933e87c2644825db91f # 200
-          - 35ff84b90f35c3c3c732cd45ca491aa17a30a531 # 196
+          - f0066df51437731946ea8b5f2b49aaf56fc89a78 # 196
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
