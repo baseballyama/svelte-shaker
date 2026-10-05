@@ -213,7 +213,8 @@ export function monomorphize(
         childPlan.bail ||
         !child.props ||
         child.props.length === 0 ||
-        foldsImplicitRead(child, childPlan)
+        foldsImplicitRead(child, childPlan) ||
+        passesDroppedProp(child, models, plans)
       ) {
         ineligible.add(call.childId);
         continue;
@@ -586,6 +587,33 @@ function specializableShape(
     shape.set(name, explicit.value);
   }
   return shape;
+}
+
+/**
+ * Whether `owner` passes, at any of its call sites, an attribute for a prop the
+ * child may drop from its `$props()` — one it folds, or one it declares but never
+ * reads.  The base transform removes such an attribute after the body pass, but a
+ * variant is rendered by the body pass alone, so it would keep passing the prop;
+ * a child with `...rest` then receives (and may render) it.  Such an owner is
+ * never specialized.  Deliberately coarse (every site, every folded or unread
+ * name): it only ever declines a specialization.
+ */
+function passesDroppedProp(
+  owner: FileModel,
+  models: Map<ComponentId, FileModel>,
+  plans: Map<ComponentId, ComponentPlan>,
+): boolean {
+  return owner.childCalls.some(({ childId, node }) => {
+    const child = models.get(childId);
+    const plan = plans.get(childId);
+    if (!child || !plan || plan.bail) return false;
+    return (node.attributes ?? []).some(
+      (attr) =>
+        attr.type === 'Attribute' &&
+        attr.name !== undefined &&
+        (plan.constFold.has(attr.name) || child.unreadDeclaredProps.has(attr.name)),
+    );
+  });
 }
 
 /**

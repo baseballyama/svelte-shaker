@@ -156,6 +156,28 @@ pub(crate) fn live_children_for_env(model: &Model, env: &Env, set_env: &SetEnv) 
     out
 }
 
+/// Whether `owner` passes, at any of its call sites, an attribute for a prop the
+/// child may drop from its `$props()` — one it folds, or one it declares but never
+/// reads. The base transform removes such an attribute after the body pass, but a
+/// variant is rendered by the body pass alone, so it would keep passing the prop;
+/// a child with `...rest` then receives (and may render) it. Such an owner is never
+/// specialized. Deliberately coarse: it only ever declines. Mirrors mono.ts
+/// `passesDroppedProp`.
+fn passes_dropped_prop(owner: &Model, models_by_id: &HashMap<&str, &Model>, plans: &Plans) -> bool {
+    owner.child_calls.iter().any(|call| {
+        let (child, plan) = match (models_by_id.get(call.child_id.as_str()), plans.get(&call.child_id)) {
+            (Some(c), Some(p)) if !p.bail => (*c, p),
+            _ => return false,
+        };
+        call.node.attributes.iter().any(|attr| {
+            str_eq(attr, "type", "Attribute")
+                && attr.get("name").and_then(Value::as_str).is_some_and(|name| {
+                    plan.const_fold.iter().any(|(n, _)| n == name) || child.unread_declared.contains(name)
+                })
+        })
+    })
+}
+
 /// Whether the app-wide plan folds a prop that is read implicitly (`$name`,
 /// `<name/>`, `use:name`, …). The plan proved every such read sits in a branch it
 /// deletes, but a variant re-emits a chain inside an arm it collapses verbatim
@@ -422,7 +444,11 @@ pub(crate) fn monomorphize(
                 None => continue,
             };
             let no_props = child.props_info.as_ref().map(|p| p.props.is_empty()).unwrap_or(true);
-            if child_plan.bail || no_props || folds_implicit_read(child, child_plan) {
+            if child_plan.bail
+                || no_props
+                || folds_implicit_read(child, child_plan)
+                || passes_dropped_prop(child, &models_by_id, plans)
+            {
                 ineligible.insert(child_id.clone());
                 continue;
             }
