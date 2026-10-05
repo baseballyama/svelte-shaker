@@ -209,7 +209,12 @@ export function monomorphize(
       if (!child || !childPlan) continue;
       // Never specialize a fully-bailed child (escape/barrel/accessors): its
       // prop profile is unobservable, so a "specialized" copy could be wrong.
-      if (childPlan.bail || !child.props || child.props.length === 0) {
+      if (
+        childPlan.bail ||
+        !child.props ||
+        child.props.length === 0 ||
+        foldsImplicitRead(child, childPlan)
+      ) {
         ineligible.add(call.childId);
         continue;
       }
@@ -570,6 +575,10 @@ function specializableShape(
     // A nested-pattern entry (`null` local) is unfoldable, and a prop whose LOCAL
     // binding is shadowed / used in `{@debug}` must not fold — both exactly as constant fold.
     if (decl.local === null || isFoldBlockedName(child, decl.local)) continue;
+    // An implicitly read prop (`$name`, `<name/>`, `use:name`, …) admits no
+    // substituted literal.  Constant fold keeps one only when its own fold deletes
+    // every such read; a variant does not re-check that, so it never freezes one.
+    if (child.implicitReads.has(decl.local)) continue;
     // The value must be a literal this site genuinely passes and no spread can
     // override — exactly the analysis's "safely explicit" condition.
     if (explicit.dynamic || !explicit.afterLastSpread) continue;
@@ -577,6 +586,20 @@ function specializableShape(
     shape.set(name, explicit.value);
   }
   return shape;
+}
+
+/**
+ * Whether the app-wide plan folds a prop that is read implicitly (`$name`,
+ * `<name/>`, `use:name`, …).  The plan proved every such read sits in a branch it
+ * deletes, but a variant renders differently: a chain inside an arm the variant
+ * collapses is re-emitted verbatim (only substituted), so the read can survive
+ * while the prop is still dropped from `$props()`.  Such a child is never
+ * specialized.
+ */
+function foldsImplicitRead(child: FileModel, plan: ComponentPlan): boolean {
+  return (child.props ?? []).some(
+    (d) => d.local !== null && plan.constFold.has(d.name) && child.implicitReads.has(d.local),
+  );
 }
 
 /**

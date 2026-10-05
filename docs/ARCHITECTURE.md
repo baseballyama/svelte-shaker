@@ -231,7 +231,8 @@ value-set narrowing で削った後、`<Button variant="primary">` の**呼び�
 > - **健全性（構成的）**：特殊化するのは (1) **生きている**コールサイト（dead `{#if}` span 内は除外、
 >   fixpoint と同一述語）かつ (2) その prop が **spread に上書きされ得ないリテラル**であるサイトのみ
 >   （`afterLastSpread` かつ非 `dynamic`、§4.1 の部分 bail と同条件）。bail 済みコンポーネント
->   （escape/barrel/accessors）・shadow される prop・`{@debug}` prop・constant fold で既に畳んだ prop は
+>   （escape/barrel/accessors）・shadow される prop・`{@debug}` prop・constant fold で既に畳んだ prop・
+>   識別子を経ずに暗黙に読まれる prop（`$store`・`<Name/>`/`<name.X/>`・`use:`/`transition:`/`animate:`）は
 >   特殊化しない。residual は **unused-prop fold / constant fold / value-set narrowing と同一の監査済み
 >   ボディパイプライン**（`shakeBody`）で生成し、monomorphization は fold 環境を増やすだけ。
 > - **絶対に肥大しない（net-win ゲート）**：上記 1–4 の all-sites-or-nothing ＋ 測定ベース `Σ_spec < Σ_base`

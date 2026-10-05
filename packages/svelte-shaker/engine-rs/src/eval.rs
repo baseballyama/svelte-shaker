@@ -355,10 +355,29 @@ fn relational(l: &Literal, r: &Literal, want: impl Fn(std::cmp::Ordering) -> boo
 /// Sound set-aware predicate (`evaluateWithSets`): a known value ONLY when the
 /// boolean holds for the whole reachable set.
 pub fn evaluate_with_sets(node: &Value, const_env: &Env, set_env: &SetEnv) -> Option<Literal> {
-    if let Some(v) = evaluate(node, const_env) {
+    let env = with_singleton_sets(const_env, set_env);
+    if let Some(v) = evaluate(node, &env) {
         return Some(v);
     }
-    eval_tri(node, const_env, set_env).map(Literal::Bool)
+    eval_tri(node, &env, set_env).map(Literal::Bool)
+}
+
+/// `const_env` plus every one-value set as a constant. Such a set is a constant the
+/// plan may not substitute (a fold demoted because the prop is read implicitly —
+/// see `prune_implicitly_read_folds`); it must decide every branch the constant
+/// would, or demoting it would shrink the dead spans. Mirrors `withSingletonSets`.
+fn with_singleton_sets<'a>(const_env: &'a Env, set_env: &SetEnv) -> std::borrow::Cow<'a, Env> {
+    let mut merged: Option<Env> = None;
+    for (name, set) in set_env {
+        if set.len() != 1 || const_env.contains_key(name) {
+            continue;
+        }
+        merged.get_or_insert_with(|| const_env.clone()).insert(name.clone(), set[0].clone());
+    }
+    match merged {
+        Some(env) => std::borrow::Cow::Owned(env),
+        None => std::borrow::Cow::Borrowed(const_env),
+    }
 }
 
 fn eval_tri(node: &Value, const_env: &Env, set_env: &SetEnv) -> Option<bool> {
@@ -514,6 +533,17 @@ mod tests {
             evaluate_with_sets(&bin("===", ident("variant"), lit_str("primary")), &Env::new(), &variant),
             None
         );
+    }
+
+    #[test]
+    fn singleton_set_decides_like_a_constant() {
+        // A one-value set is a demoted constant: it must settle a bare truthiness
+        // test (`!a`), which the set evaluator alone leaves unknown.
+        let single = sets(&[("a", &["x"])]);
+        let not_a = json!({ "type": "UnaryExpression", "operator": "!", "argument": ident("a") });
+        assert_eq!(bool_of(evaluate_with_sets(&not_a, &Env::new(), &single)), Some(false));
+        let pair = sets(&[("a", &["x", "y"])]);
+        assert_eq!(evaluate_with_sets(&ident("a"), &Env::new(), &pair), None);
     }
 
     #[test]
