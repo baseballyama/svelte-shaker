@@ -13,9 +13,10 @@ crate-type = ["cdylib"]
 # must track `napi`'s major: #127 bumped `napi` to v3 but left `napi-derive` at
 # 2.16, whose macro emits v2 codegen (`bindgen_prelude::ctor`, the 4-arg
 # `register_class`) that v3 no longer provides — a fresh `cargo build` fails. v3
-# on both restores a matching pairing.
-napi = { version = "3.11.0", default-features = false, features = ["napi8"] }
-napi-derive = "3.6.0"
+# on both restores a matching pairing. Renovate groups the three napi-rs crates
+# so they always move together (a lone napi-derive bump can outrun `napi`).
+napi = { version = "3.14.0", default-features = false, features = ["napi8"] }
+napi-derive = "3.6.10"
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 rayon = "1.12.0"
 
@@ -45,7 +46,7 @@ rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "62c263f
 svelte-shaker-engine = { path = "../engine-rs" }
 
 [build-dependencies]
-napi-build = "2.3.2"
+napi-build = "2.6.0"
 
 [profile.release]
 opt-level = "z"
