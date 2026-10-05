@@ -66,13 +66,18 @@ pub(crate) fn is_fold_blocked(model: &Model, name: &str) -> bool {
     model.shadowed.contains(name) || model.debug.contains(name) || model.written.contains(name)
 }
 
-/// Unfold every folded prop that is read IMPLICITLY (`Model::implicit_reads`:
-/// `$name`, `<name/>`, `use:name`, …) at a node the plan does not delete. A folded
-/// prop leaves the `$props()` signature, and no literal can be substituted at those
-/// positions, so a surviving implicit read would dangle. A read inside a branch
-/// the fold itself kills is fine. Unfolding only shrinks the dead spans, which can
-/// expose further reads, so this repeats until stable. Narrowing is untouched.
-/// Mirrors analyze.ts `pruneImplicitlyReadFolds`.
+/// Demote to `narrow` every folded prop that is read IMPLICITLY
+/// (`Model::implicit_reads`: `$name`, `<name/>`, `use:name`, …) at a node the plan
+/// does not delete. A folded prop is substituted and leaves the `$props()`
+/// signature, but no literal can be substituted at those positions, so a surviving
+/// implicit read would dangle. A read inside a branch the plan kills is fine.
+/// The demoted prop keeps its single value as a one-element `narrow` set: narrowing
+/// never substitutes or drops the prop, yet still kills every branch the value
+/// excludes. Dropping the value instead would SHRINK the dead spans and break the
+/// fixpoint's monotonicity (the plans oscillate until the round cap). Should the
+/// set evaluate weaker than the constant somewhere, the spans could still shrink
+/// and expose further reads, so this repeats until stable. Mirrors analyze.ts
+/// `pruneImplicitlyReadFolds`.
 fn prune_implicitly_read_folds(model: &Model, plan: &mut ComponentPlan) {
     if model.implicit_reads.is_empty() {
         return;
@@ -98,9 +103,11 @@ fn prune_implicitly_read_folds(model: &Model, plan: &mut ComponentPlan) {
             if !survives {
                 continue;
             }
-            let before = plan.const_fold.len();
-            plan.const_fold.retain(|(name, _)| name != &decl.name);
-            changed |= plan.const_fold.len() != before;
+            if let Some(i) = plan.const_fold.iter().position(|(name, _)| name == &decl.name) {
+                let (name, value) = plan.const_fold.remove(i);
+                plan.narrow.push((name, vec![value]));
+                changed = true;
+            }
         }
         if !changed {
             return;

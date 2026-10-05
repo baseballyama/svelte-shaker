@@ -209,7 +209,12 @@ export function monomorphize(
       if (!child || !childPlan) continue;
       // Never specialize a fully-bailed child (escape/barrel/accessors): its
       // prop profile is unobservable, so a "specialized" copy could be wrong.
-      if (childPlan.bail || !child.props || child.props.length === 0) {
+      if (
+        childPlan.bail ||
+        !child.props ||
+        child.props.length === 0 ||
+        foldsImplicitRead(child, childPlan)
+      ) {
         ineligible.add(call.childId);
         continue;
       }
@@ -581,6 +586,20 @@ function specializableShape(
     shape.set(name, explicit.value);
   }
   return shape;
+}
+
+/**
+ * Whether the app-wide plan folds a prop that is read implicitly (`$name`,
+ * `<name/>`, `use:name`, …).  The plan proved every such read sits in a branch it
+ * deletes, but a variant renders differently: a chain inside an arm the variant
+ * collapses is re-emitted verbatim (only substituted), so the read can survive
+ * while the prop is still dropped from `$props()`.  Such a child is never
+ * specialized.
+ */
+function foldsImplicitRead(child: FileModel, plan: ComponentPlan): boolean {
+  return (child.props ?? []).some(
+    (d) => d.local !== null && plan.constFold.has(d.name) && child.implicitReads.has(d.local),
+  );
 }
 
 /**

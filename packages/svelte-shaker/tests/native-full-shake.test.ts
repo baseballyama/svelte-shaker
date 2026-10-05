@@ -314,6 +314,25 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     expect(files['/Child.svelte']).not.toContain('{#if d}');
   });
 
+  it('demotes an implicitly read constant to a one-value narrow set, identically to the TS engine', async () => {
+    // B's `act` collapses to `undefined` but `use:act` is live, so it stays
+    // declared; as a one-value set it must still kill `{#if act === 5}` (and A's
+    // `x` then folds to 1) in both engines, or the fixpoint oscillates. C covers
+    // the singleton deciding a bare `!a` exactly like the constant would.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>import A from './A.svelte'; import B from './B.svelte'; import C from './C.svelte'; let { f = false } = $props();</script><A x={1} /><B flag={f} /><C a={true} />`,
+        '/A.svelte': `<script>import B from './B.svelte'; let { x } = $props();</script><p>A{x}</p>{#if x === 2}<B act={null} />{/if}`,
+        '/B.svelte': `<script>import A from './A.svelte'; let { act, flag } = $props();</script>{#if flag}<div use:act>x</div>{/if}{#if act === 5}<A x={2} />{/if}<i>B</i>`,
+        '/C.svelte': `<script>let { a, b, s } = $props();</script><div use:a>hi</div>{#if !a}<b.Root />{/if}{#if s === 5}<em>five</em>{/if}<p>{$s}</p>`,
+      },
+      '/App.svelte',
+      MONO_ON,
+    );
+    expect(files['/B.svelte']).not.toContain('act === 5');
+    expect(files['/C.svelte']).toContain('let { a, s } = $props();');
+  });
+
   it('matches the TS engine on an interprocedural pass-through (docs §13.1)', async () => {
     // App -> Mid -> Child: `variant` folds in Mid, so the forwarded
     // `<Child variant={variant}/>` must fold in Child too and its attribute be

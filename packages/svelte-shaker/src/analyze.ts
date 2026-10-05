@@ -172,8 +172,7 @@ export function planFixpoint(models: Map<ComponentId, FileModel>): Map<Component
 
   const bound = fixpointIterationBound(models.size);
   for (let i = 0; i < bound; i++) {
-    const deadSpans = deadSpansForPlans(models, plans);
-    const nextPlans = buildPlans(models, buildUsage(models, deadSpans), plans);
+    const nextPlans = refinePlans(models, plans);
     // Convergence is monotone: excluding a folded-away call site can only shrink
     // a child's value set (or clear `dynamic`/`top`), never grow it, so dead
     // spans only grow. Equal plans => a true fixpoint; we then stop.
@@ -185,6 +184,16 @@ export function planFixpoint(models: Map<ComponentId, FileModel>): Map<Component
   }
 
   return plans;
+}
+
+/** One fixpoint round: re-derive every plan from the call sites that survive
+ * `plans`' dead spans.  `plans` is a fixpoint exactly when this returns plans
+ * {@link plansEqual} to it. */
+export function refinePlans(
+  models: Map<ComponentId, FileModel>,
+  plans: Map<ComponentId, ComponentPlan>,
+): Map<ComponentId, ComponentPlan> {
+  return buildPlans(models, buildUsage(models, deadSpansForPlans(models, plans)), plans);
 }
 
 /**
@@ -331,7 +340,7 @@ function buildPlans(
  * so equal decisions => identical next round.  `bail` is structural (it never
  * changes across rounds) but is cheap to include for safety.
  */
-function plansEqual(
+export function plansEqual(
   a: Map<ComponentId, ComponentPlan>,
   b: Map<ComponentId, ComponentPlan>,
 ): boolean {
@@ -562,15 +571,20 @@ function buildPlan(model: FileModel, u: Usage | undefined, ownerEnv: OwnerEnv): 
 }
 
 /**
- * Unfold every folded prop that is read IMPLICITLY ({@link
+ * Demote to `narrow` every folded prop that is read IMPLICITLY ({@link
  * FileModel.implicitReads}: `$name`, `<name/>`, `use:name`, …) at a node the
- * plan does not delete.  A folded prop leaves the `$props()` signature, and no
- * literal can be substituted at those positions, so a surviving implicit read
- * would dangle.  A read inside a branch the fold itself kills is fine (`{#if
- * Icon}<Icon/>{/if}` with `Icon` never passed folds the arm away).  Unfolding
- * only shrinks the dead spans, which can expose further reads, so this repeats
- * until stable.  Narrowing is untouched: a narrowed prop is never substituted or
- * dropped.
+ * plan does not delete.  A folded prop is substituted and leaves the `$props()`
+ * signature, but no literal can be substituted at those positions, so a
+ * surviving implicit read would dangle.  A read inside a branch the plan kills
+ * is fine (`{#if Icon}<Icon/>{/if}` with `Icon` never passed folds the arm away).
+ *
+ * The demoted prop keeps its single value as a one-element `narrow` set: narrowing
+ * never substitutes or drops the prop, yet still kills every branch the value
+ * excludes.  Dropping the value instead would SHRINK the dead spans, which breaks
+ * the fixpoint's monotonicity (a revived call site re-widens a value set, which
+ * later collapses again — the plans oscillate until the round cap).  Should the
+ * set evaluate weaker than the constant somewhere, the spans could still shrink
+ * and expose further reads, so this repeats until stable.
  */
 function pruneImplicitlyReadFolds(model: FileModel, plan: ComponentPlan): void {
   if (model.implicitReads.size === 0) return;
@@ -585,6 +599,7 @@ function pruneImplicitlyReadFolds(model: FileModel, plan: ComponentPlan): void {
       if (decl.local === null || !plan.constFold.has(decl.name)) continue;
       const reads = model.implicitReads.get(decl.local);
       if (reads?.some((node) => !inSpans(node, dead))) {
+        plan.narrow.set(decl.name, [plan.constFold.get(decl.name)]);
         plan.constFold.delete(decl.name);
         changed = true;
       }

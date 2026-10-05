@@ -445,7 +445,7 @@ function collectImplicitReads(ast: Root): Map<string, AnyNode[]> {
             (node.type === 'Component' || REFERENCE_DIRECTIVES.has(node.type)) &&
             node.name
           ) {
-            add(rootSegment(node.name), node);
+            add(node.name.split('.')[0]!, node); // `ns.Child` reads `ns`
           }
           next({ parent: node });
         },
@@ -455,12 +455,6 @@ function collectImplicitReads(ast: Root): Map<string, AnyNode[]> {
   scan(ast.instance);
   scan(ast.fragment);
   return reads;
-}
-
-/** `ns.Child` -> `ns`: the binding a dotted tag / directive name reads. */
-function rootSegment(name: string): string {
-  const dot = name.indexOf('.');
-  return dot === -1 ? name : name.slice(0, dot);
 }
 
 /**

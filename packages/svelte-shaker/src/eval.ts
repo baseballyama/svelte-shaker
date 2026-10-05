@@ -195,11 +195,31 @@ export function evaluateWithSets(
 ): EvalResult {
   // Constant folding alone may already settle the test (e.g. it only mentions
   // constFold props or literals); prefer that — it can even prove `true`.
-  const constOnly = evaluate(node, constEnv);
+  const env = withSingletonSets(constEnv, setEnv);
+  const constOnly = evaluate(node, env);
   if (constOnly.known) return constOnly;
 
-  const tri = evalTri(node, constEnv, setEnv);
+  const tri = evalTri(node, env, setEnv);
   return tri === 'unknown' ? UNKNOWN : { known: true, value: tri };
+}
+
+/**
+ * `constEnv` plus every one-value set as a constant.  Such a set is a constant the
+ * plan may not substitute (a fold demoted because the prop is read implicitly —
+ * see `pruneImplicitlyReadFolds`); it must decide every branch the constant would,
+ * or demoting it would shrink the dead spans.
+ */
+function withSingletonSets(
+  constEnv: Map<string, Literal>,
+  setEnv: Map<string, Literal[]>,
+): Map<string, Literal> {
+  let merged: Map<string, Literal> | undefined;
+  for (const [name, set] of setEnv) {
+    if (set.length !== 1 || constEnv.has(name)) continue;
+    merged ??= new Map(constEnv);
+    merged.set(name, set[0]);
+  }
+  return merged ?? constEnv;
 }
 
 /** Evaluate a boolean condition to a Kleene truth over the value sets. */

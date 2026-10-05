@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { svelteShaker } from '../src/index';
+import { analyze, plansEqual, refinePlans } from '../src/analyze';
+import { monomorphize } from '../src/mono';
 import { assertCompiles, cleanTmp, renderGraphHtml } from './diff';
 import { memGraph } from './mem-graph';
 
@@ -173,16 +175,65 @@ describe('issue #202: props read implicitly are kept', () => {
     expect(out['/Child.svelte']).not.toContain('{#if');
   });
 
-  it('unfolding one prop re-exposes a read it was hiding (iterates to a fixpoint)', async () => {
-    // `a`'s fold would kill the `{#if !a}` arm (`a` is `true`), but `a` is itself
-    // read by `use:a` at top level, so it unfolds; the arm then lives, exposing
-    // `<b.Root/>`, so `b` (never passed) must unfold too.
+  it('a demoted constant still kills the branches its value excludes', async () => {
+    // `s` (never passed) and `a` are constants read implicitly at top level, so
+    // they stay declared — but as one-value narrow sets they still delete the
+    // `{#if}` arms their value rules out.  `b`'s only implicit read sits in such an
+    // arm, so `b` folds and is dropped.
     const out = await shakeSound({
       '/App.svelte': `<script>\n  ${IMPORT_CHILD}\n</script>\n<Child a={true} />\n`,
       '/Child.svelte':
-        `<script>\n  let { a, b } = $props();\n</script>\n` +
-        `<div use:a>hi</div>{#if !a}<b.Root />{/if}\n`,
+        `<script>\n  let { a, b, s } = $props();\n</script>\n` +
+        `<div use:a>hi</div>{#if !a}<b.Root />{/if}{#if s === 5}<em>five</em>{/if}<p>{$s}</p>\n`,
     });
-    expect(out['/Child.svelte']).toContain('let { a, b } = $props();');
+    const child = out['/Child.svelte']!;
+    expect(child).toContain('let { a, s } = $props();');
+    expect(child).not.toContain('{#if');
+    expect(child).toContain('<p>{$s}</p>');
+  });
+
+  it('the fixpoint converges when a demoted constant would otherwise revive a call site', async () => {
+    // `act` in B narrows to {null, undefined}, then collapses to `undefined` once
+    // A's `x === 2` arm dies; `use:act` is live, so it is demoted.  Kept as a
+    // one-value set it still kills `{#if act === 5}`; dropping the value instead
+    // revived `<A x={2}/>`, re-widened `x`, and the plans cycled until the cap.
+    const files = {
+      '/App.svelte': `<script>import A from './A.svelte'; import B from './B.svelte'; let { f = false } = $props();</script><A x={1} /><B flag={f} />`,
+      '/A.svelte': `<script>import B from './B.svelte'; let { x } = $props();</script><p>A{x}</p>{#if x === 2}<B act={null} />{/if}`,
+      '/B.svelte': `<script>import A from './A.svelte'; let { act, flag } = $props();</script>{#if flag}<div use:act>x</div>{/if}{#if act === 5}<A x={2} />{/if}<i>B</i>`,
+    };
+    const { resolve, readFile } = memGraph(files);
+    const { models, plans } = await analyze('/App.svelte', resolve, readFile);
+    expect(plansEqual(plans, refinePlans(models, plans))).toBe(true);
+    expect(plans.get('/B.svelte')!.narrow.get('act')).toEqual([undefined]);
+    expect(plans.get('/A.svelte')!.constFold.get('x')).toBe(1);
+    const out = await shakeSound(files);
+    expect(out['/B.svelte']).not.toContain('act === 5');
+  });
+
+  it('never specializes a child whose app-wide fold hides an implicit read', async () => {
+    // The base deletes `{#if s}{$s}{/if}` (s never passed) inside the live
+    // `{#if a === 0}` arm.  A variant freezing `a = 0` re-emits that arm verbatim,
+    // which would leave `{$s}` behind with `s` dropped — so the child is ineligible.
+    // The size measure prices every variant at 0 so only that guard can decline.
+    const files = {
+      '/App.svelte': `<script>\n  ${IMPORT_CHILD}\n</script>\n<Child a={0} /><Child a={1} />\n`,
+      '/Child.svelte':
+        `<script>\n  let { a, s } = $props();\n</script>\n` +
+        `{#if a === 0}<i>zero</i>{#if s}{$s}{/if}{/if}<b>{a}</b>\n`,
+    };
+    const { resolve, readFile } = memGraph(files);
+    const { models, plans } = await analyze('/App.svelte', resolve, readFile);
+    expect(plans.get('/Child.svelte')!.constFold.has('s')).toBe(true);
+    const sizeVariantsFree = (id: string, source: string): number =>
+      id.includes('::v') ? 0 : source.length;
+    const res = monomorphize(
+      models,
+      plans,
+      { enabled: true, maxVariants: 8, minSavings: 0 },
+      '/App.svelte',
+      sizeVariantsFree,
+    );
+    expect(res.variants.size).toBe(0);
   });
 });

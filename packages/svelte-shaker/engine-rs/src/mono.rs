@@ -156,6 +156,24 @@ pub(crate) fn live_children_for_env(model: &Model, env: &Env, set_env: &SetEnv) 
     out
 }
 
+/// Whether the app-wide plan folds a prop that is read implicitly (`$name`,
+/// `<name/>`, `use:name`, …). The plan proved every such read sits in a branch it
+/// deletes, but a variant re-emits a chain inside an arm it collapses verbatim
+/// (only substituted), so the read can survive while the prop is still dropped
+/// from `$props()`. Such a child is never specialized. Mirrors mono.ts
+/// `foldsImplicitRead`.
+fn folds_implicit_read(child: &Model, plan: &ComponentPlan) -> bool {
+    let props = match &child.props_info {
+        Some(pi) => &pi.props,
+        None => return false,
+    };
+    props.iter().any(|d| {
+        d.local.as_ref().is_some_and(|local| {
+            child.implicit_reads.contains_key(local) && plan.const_fold.iter().any(|(name, _)| name == &d.name)
+        })
+    })
+}
+
 /// The extra props a call site freezes to a literal (declared, not already an
 /// app-wide constant, not shadowed/`{@debug}`/nested, literal & no spread can
 /// override).  Mirrors `specializableShape`.
@@ -404,7 +422,7 @@ pub(crate) fn monomorphize(
                 None => continue,
             };
             let no_props = child.props_info.as_ref().map(|p| p.props.is_empty()).unwrap_or(true);
-            if child_plan.bail || no_props {
+            if child_plan.bail || no_props || folds_implicit_read(child, child_plan) {
                 ineligible.insert(child_id.clone());
                 continue;
             }
