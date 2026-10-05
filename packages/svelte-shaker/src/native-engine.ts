@@ -48,8 +48,13 @@ interface NativeEngine {
  * (`engine_api_version`). Bump it whenever the exported API OR transform semantics
  * change in a way that makes an older independently published binary incompatible
  * with the current JS engine. Rejecting a stale binary preserves JS/native parity
- * and falls back safely until matching prebuilds are published. */
-const EXPECTED_ENGINE_API_VERSION = 4;
+ * and falls back safely until matching prebuilds are published.
+ *
+ * Lockstep rule (enforced by `tests/native-version-lockstep.test.ts`): the
+ * `svelte-shaker-engine-scan-native` package's minor version IS this number, and the
+ * wrapper's `optionalDependencies` range targets it — otherwise the wrapper ships
+ * depending on a published binary its own loader rejects. */
+export const EXPECTED_ENGINE_API_VERSION = 4;
 
 /** Whether a loaded module is a native addon this engine can drive: the right
  * compatibility generation AND the `ShakeSession` shape (`parse` + `parseMore` +
