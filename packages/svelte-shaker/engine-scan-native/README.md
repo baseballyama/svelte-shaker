@@ -100,6 +100,14 @@ Prerequisites for the tokenless publish:
   If the publish fails with a `404` on `/-/npm/v1/oidc/token/exchange`, that
   registration is missing or doesn't match.
 
+This package is not a pnpm workspace package, so changesets never bumps it: its
+version is maintained by hand, in lockstep with the engine API generation. Its
+**minor version is `engine_api_version()`** (0.3.x speaks API 3, 0.4.x speaks API 4),
+and the wrapper's `optionalDependencies` range (`~0.N.0` in
+`packages/svelte-shaker/package.json`) targets that minor.
+`tests/native-version-lockstep.test.ts` fails if the API is bumped without both. Publish
+the native release **before** the `svelte-shaker` release that depends on it.
+
 To publish: bump the version in `package.json`, then run the workflow
 (`workflow_dispatch` with `publish: true`, or push a
 `svelte-shaker-engine-scan-native@<version>` tag). The build matrix produces all 5
