@@ -21,6 +21,26 @@
       "description": "GitHub Actions: group all updates so the matrix moves together",
       "matchManagers": ["github-actions"],
       "groupName": "github-actions"
+    },
+    {
+      "description": "napi-rs: napi-derive's macro output must match the napi runtime it targets, so the crates move together",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["napi", "napi-derive", "napi-build"],
+      "groupName": "napi-rs"
+    },
+    {
+      "description": "rsvelte_core must stay on the same rsvelte release as the pinned @rsvelte/compiler (the mono size proxy needs byte-identical codegen), so both are bumped together by hand",
+      "matchPackageNames": ["rsvelte_core"],
+      "enabled": false
+    },
+    {
+      "description": "Published packages keep their consumer-facing Node floor; raising it is a user-visible change that needs a changeset",
+      "matchDepTypes": ["engines"],
+      "matchFileNames": [
+        "packages/svelte-shaker/package.json",
+        "packages/svelte-shaker/engine-scan-native/package.json"
+      ],
+      "enabled": false
     }
   ],
   "ignoreDeps": ["@rsvelte/compiler"],
