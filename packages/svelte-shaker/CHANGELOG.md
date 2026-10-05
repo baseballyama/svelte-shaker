@@ -1,5 +1,51 @@
 # svelte-shaker
 
+## 0.18.2
+
+### Patch Changes
+
+- 41bab81: Update `@rsvelte/compiler` to 0.12.6 (and the native engine's `rsvelte_core` to the same release), keeping the JS and native engines' size proxy on one compiler version.
+- 517fd5b: Stop removing a prop that is read without a plain identifier. The shaker treated
+  these props as unread and dropped them from `$props()`, which broke the build or
+  the page:
+
+  - a store auto-subscription (`let { progressStore } = $props()` with
+    `{$progressStore.current}` in the markup or `$progressStore` in the script) failed
+    to compile with `global_reference_invalid`;
+  - a `style:width` shorthand directive threw `width is not defined` when the caller
+    passed a value only known at runtime;
+  - a component tag from a prop (`<Icon />`, `<component.Root />`) threw
+    `component is not defined`;
+  - an action, transition or animation from a prop (`use:action`, `transition:fn`,
+    `in:fn`, `out:fn`, `animate:fn`) threw `… is not defined` in the browser.
+
+  A constant prop is still folded where that is safe. `style:width` with a literal
+  `width` still becomes `style:width={"42px"}`. A prop that is never passed and only
+  used inside `{#if Icon}<Icon />{/if}` still has the dead branch removed. Both the
+  JavaScript and the native engine have the fix.
+
+- 9fe6c31: Fix monomorphization leaking a removed prop into a child's `...rest`. A
+  specialized copy of a component kept passing an attribute that the shaker had
+  removed everywhere else, because its child no longer declared that prop (the
+  prop was constant or never read). If the child spreads `...rest` onto an element,
+  the attribute showed up in the HTML: `<p v="a">a</p>` instead of `<p>a</p>`.
+  A component whose child call sites lose such an attribute is no longer
+  specialized.
+- 41d0960: Depend on `svelte-shaker-engine-scan-native@~0.4.0`, the native engine release that speaks the engine API the plugin expects. 0.18.1 depended on `~0.3.0`, whose binary reports engine API 3, so the plugin always rejected it: `engine: "auto"` silently fell back to the JS engine and `engine: "rust"` failed to load.
+- ffef766: Stop crashing the build when an imported component is a virtual module
+
+  When Vite resolved a component import to an id with no file on disk — a
+  `\0`-prefixed virtual id, or a path whose source another plugin's `load` hook
+  supplies — the plugin tried to read it from disk in `buildStart` and failed
+  (`ENOENT`, or a null-byte path error). Such a component is now left as written.
+
+  The shaker cannot see what a virtual component renders or which props it passes,
+  so it can no longer prove any prop fold safe for that build. Instead of folding
+  against an incomplete set of call sites, it skips the shake for the build and
+  warns, listing the virtual ids. A virtual module that is not a component (for
+  example `$env/static/public` imported from a `.ts` file) does not affect the
+  shake.
+
 ## 0.18.1
 
 ### Patch Changes
