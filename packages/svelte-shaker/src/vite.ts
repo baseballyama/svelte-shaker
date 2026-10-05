@@ -657,25 +657,79 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       }
       const read = (id: ComponentId) => fs.readFileSync(id, 'utf-8');
 
-      // Resolve relative imports straight off disk (fast, and the id matches what
-      // Vite hands `transform`), but send bare specifiers through Vite's resolver
-      // so a component library consumed as `@scope/ui` (the design-system shape) is
-      // crawled into the program and shaken instead of treated as an opaque
-      // external.  The arrow keeps `this` bound to the Rollup plugin context.
-      const resolve: Resolve = async (source, importer) => {
-        if (source.startsWith('.') || path.isAbsolute(source)) return fsResolve(source, importer);
-        // `this.resolve` THROWS for specifiers some plugin in the chain rejects
-        // (a types-only subpath like `svelte/elements`, a virtual id, etc.).  A
-        // specifier we cannot resolve is simply out of scope — never a build
-        // error — so swallow it and leave that barrel branch unfollowed.
-        let resolved: Awaited<ReturnType<typeof this.resolve>>;
-        try {
-          resolved = await this.resolve(source, importer);
-        } catch {
+      // A resolved id with no file behind it — a `\0`-prefixed virtual id, or a
+      // path-shaped one whose source another plugin's `load` hook supplies — cannot
+      // be read here: Vite's load pipeline would also run every `transform` (ours
+      // included) before the shake exists.  Such an id resolves to `null`, so it is
+      // never read or rewritten; `onVirtual` lets the crawl record it (see below).
+      const resolveWith = (onVirtual: (id: string) => void): Resolve => {
+        const onDisk = (id: string): ComponentId | null => {
+          if (!id.startsWith('\0') && fs.existsSync(id)) return id;
+          onVirtual(id);
           return null;
+        };
+        // Resolve relative imports straight off disk (fast, and the id matches what
+        // Vite hands `transform`), but send bare specifiers through Vite's resolver
+        // so a component library consumed as `@scope/ui` (the design-system shape)
+        // is crawled into the program and shaken instead of treated as an opaque
+        // external.  The arrow keeps `this` bound to the Rollup plugin context.
+        return async (source, importer) => {
+          if (source.startsWith('.') || path.isAbsolute(source)) {
+            const id = await fsResolve(source, importer);
+            // A missing relative `.js`/`.ts` target (an extensionless `./lib`) is
+            // left to the barrel reader, which already treats an unreadable barrel
+            // as unfollowed; only a missing COMPONENT is a virtual one.
+            return id !== null && id.endsWith('.svelte') ? onDisk(id) : id;
+          }
+          // `this.resolve` THROWS for specifiers some plugin in the chain rejects
+          // (a types-only subpath like `svelte/elements`, a virtual id, etc.).  A
+          // specifier we cannot resolve is simply out of scope — never a build
+          // error — so swallow it and leave that barrel branch unfollowed.
+          let resolved: Awaited<ReturnType<typeof this.resolve>>;
+          try {
+            resolved = await this.resolve(source, importer);
+          } catch {
+            return null;
+          }
+          if (!resolved || resolved.external) return null;
+          return onDisk(resolved.id.split('?')[0]!);
+        };
+      };
+      // A virtual COMPONENT is one whose source we cannot read — and whatever it
+      // renders is a call site we cannot see.  Any real component may be among
+      // them, so no fold can be proven against the call sites we do see: the shake
+      // is dropped (see `finish`).  The crawl resolves only component imports and
+      // the barrels they go through, so every virtual id it meets counts.  The
+      // escape scan resolves every specifier of every `.ts` module, where a virtual
+      // id (`$env/static/public`) is usually an ordinary module, so there only a
+      // `.svelte` one counts.
+      const virtualComponents = new Set<string>();
+      const resolve = resolveWith((id) => {
+        if (id.endsWith('.svelte')) virtualComponents.add(id);
+      });
+      const crawlResolve = resolveWith((id) => virtualComponents.add(id));
+
+      const finish = (files: Record<ComponentId, string>, variants: Map<string, string>): void => {
+        if (virtualComponents.size === 0) {
+          shaken = files;
+          variantSources = variants;
+          reportSizes(shaken, read, root, options.verbose === true, log);
+          return;
         }
-        if (!resolved || resolved.external) return null;
-        return resolved.id.split('?')[0]!;
+        shaken = {};
+        variantSources = new Map();
+        warn(
+          `skipped the shake for this build: ${virtualComponents.size} imported component(s) ` +
+            `have no file on disk (a virtual module, or one another plugin's \`load\` hook ` +
+            `supplies), so the components they render — and the props they pass — are ` +
+            `invisible to the shake. Every component is compiled as written:\n` +
+            [...virtualComponents]
+              .map(
+                (id) =>
+                  `  - ${id.startsWith('\0') ? `\\0${id.slice(1)}` : path.relative(root, id)}`,
+              )
+              .join('\n'),
+        );
       };
 
       // Components used from OUTSIDE the `.svelte` graph must not be folded (docs
@@ -745,14 +799,12 @@ export function shaker(options: ShakerOptions = {}): Plugin {
           const result = await svelteShakerNativeWithMono(
             native,
             entryComponents,
-            resolve,
+            crawlResolve,
             read,
             mono,
             escaped,
           );
-          shaken = result.files;
-          variantSources = result.variants;
-          reportSizes(shaken, read, root, options.verbose === true, log);
+          finish(result.files, result.variants);
           return;
         } catch (err) {
           warn(
@@ -766,15 +818,16 @@ export function shaker(options: ShakerOptions = {}): Plugin {
       if (!mono.enabled) {
         // JS engine, monomorphization off: byte-for-byte the unused-prop fold /
         // constant fold / value-set narrowing output.
-        shaken = await svelteShaker(entryComponents, resolve, read, getParse(), escaped);
-        variantSources = new Map();
-        reportSizes(shaken, read, root, options.verbose === true, log);
+        finish(
+          await svelteShaker(entryComponents, crawlResolve, read, getParse(), escaped),
+          new Map(),
+        );
         return;
       }
 
       const result = await svelteShakerWithMono(
         entryComponents,
-        resolve,
+        crawlResolve,
         read,
         mono,
         variantSpecifier,
@@ -782,11 +835,9 @@ export function shaker(options: ShakerOptions = {}): Plugin {
         escaped,
         loadOwnSize(),
       );
-      shaken = result.files;
-      variantSources = new Map();
-      for (const v of result.mono.variants.values())
-        variantSources.set(variantSpecifier(v.id), v.code);
-      reportSizes(shaken, read, root, options.verbose === true, log);
+      const variants = new Map<string, string>();
+      for (const v of result.mono.variants.values()) variants.set(variantSpecifier(v.id), v.code);
+      finish(result.files, variants);
     },
 
     // A `?shaker_variant` request resolves to the real child path (so relative
