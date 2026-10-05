@@ -333,6 +333,27 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     expect(files['/C.svelte']).toContain('let { a, s } = $props();');
   });
 
+  it('never specializes an owner whose call sites the base edits, identically to the TS engine', async () => {
+    // A variant is rendered by the body pass alone, so it would keep `<Grand v={"a"} />`
+    // (and `u="x"`) after Grand dropped `v` (folded) / `u` (unread) — and Grand's
+    // `...rest` would render them. Both engines must decline to specialize Mid.
+    const heavy = Array.from({ length: 40 }, (_, i) => `<span>heavy ${i}</span>`).join('');
+    const { files, variants } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>import Mid from './Mid.svelte';</script><Mid a={0} b={1} x="a" /><Mid a={1} b={0} x="a" />`,
+        '/Mid.svelte':
+          `<script>import Heavy from './Heavy.svelte'; import Grand from './Grand.svelte'; let { a, b, x } = $props();</script>` +
+          `{#if a === 1 && b === 1}<Heavy />{/if}<Grand v={x} u="x" /><p>base</p>`,
+        '/Grand.svelte': `<script>let { v, u, ...rest } = $props();</script><p {...rest}>{v}</p>`,
+        '/Heavy.svelte': `<script>let { n = 0 } = $props();</script><div>${heavy}</div>`,
+      },
+      '/App.svelte',
+      MONO_ON,
+    );
+    expect(variants).toEqual({});
+    expect(files['/Mid.svelte']).toContain('<Grand />');
+  });
+
   it('removes a forwarded demoted constant with the prop it folds, identically to the TS engine', async () => {
     // Mid's `s` is a one-value narrow set; Grand folds `v` from it, so `v={s}` must
     // go too or it lands in Grand's `...rest` (`<p v="a">`).
