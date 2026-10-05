@@ -29,15 +29,15 @@ rayon = "1.12.0"
 # needs no extra deps.
 #
 # SIZE-PROXY PARITY: the gate must decide identically across the TS and native
-# engines — the JS engines compute the proxy from `@rsvelte/compiler` (0.9.4) while
+# engines — the JS engines compute the proxy from `@rsvelte/compiler` (0.12.6) while
 # native computes it from THIS crate, so their client codegen must agree byte-for-byte.
-# This is `@rsvelte/compiler@0.9.4` plus an upstream Cargo-only submodule metadata
-# fix. Its compiler source matches the published package byte-for-byte, and
+# This is exactly the `@rsvelte/compiler@0.12.6` release tag (every rsvelte
+# submodule is `update = none`, so the tag builds as a git dependency as-is), and
 # the corpus-wide differential tests enforce output parity. rsvelte is public, so
 # cargo fetches it with no credentials. For local dev against a side-by-side checkout,
 # override with a `[patch]` in a local `.cargo/config.toml` (uncommitted) pointing
 # `rsvelte_core` at the path.
-rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "62c263fbbbdb12725e3e326ba7105650104b00a3", default-features = false }
+rsvelte_core = { git = "https://github.com/baseballyama/rsvelte", rev = "0d2ecab524623fb9e501517e204c1bb9fff4c2b7", default-features = false }
 
 # The Value-based analysis engine, reused verbatim (rlib): its
 # `find_never_passed_props` is pinned byte-for-byte to the JS engine by the
@@ -57,22 +57,22 @@ strip = "symbols"
 # JavaScript errors or safe fallbacks. `abort` would make those guards ineffective.
 panic = "unwind"
 
-# rsvelte 0.9 uses oxc_formatter from git while its other oxc dependencies name
+# rsvelte 0.12 uses oxc_formatter from git while its other oxc dependencies name
 # crates.io releases. Cargo does not propagate a dependency's root `[patch]` table,
 # so repeat rsvelte's release patch here to keep every oxc AST type from the same
 # source revision.
 [patch.crates-io]
-oxc_allocator = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_parser = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_ast = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_ast_macros = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_ast_visit = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_span = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_diagnostics = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_codegen = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_syntax = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_semantic = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_regular_expression = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_ecmascript = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_str = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
-oxc_data_structures = { git = "https://github.com/oxc-project/oxc", rev = "83abe3b49c0913b1a984a7eec5e433a59fd76eae" }
+oxc_allocator = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_parser = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_ast = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_ast_macros = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_ast_visit = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_span = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_diagnostics = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_codegen = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_syntax = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_semantic = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_regular_expression = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_ecmascript = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_str = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
+oxc_data_structures = { git = "https://github.com/oxc-project/oxc", rev = "60fa13878c3808413268c462ddadbceaf71c38bb" }
