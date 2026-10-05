@@ -139,7 +139,9 @@ export interface ComponentPlan {
    * 'danger'` arm when `variant ∈ {'primary','secondary'}`), but — unlike
    * `constFold` — the prop is still genuinely used/dynamic, so it is NOT
    * substituted and NOT dropped from the `$props()` signature.  Singletons stay
-   * in `constFold`; these two maps are disjoint.
+   * in `constFold`, except a constant read through a position no literal can be
+   * substituted into (`$name`, `<name/>`, `use:name`, …), which is kept here as a
+   * one-element set.  These two maps are disjoint.
    */
   narrow: Map<string, Literal[]>;
   /**

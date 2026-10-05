@@ -172,8 +172,7 @@ export function planFixpoint(models: Map<ComponentId, FileModel>): Map<Component
 
   const bound = fixpointIterationBound(models.size);
   for (let i = 0; i < bound; i++) {
-    const deadSpans = deadSpansForPlans(models, plans);
-    const nextPlans = buildPlans(models, buildUsage(models, deadSpans), plans);
+    const nextPlans = refinePlans(models, plans);
     // Convergence is monotone: excluding a folded-away call site can only shrink
     // a child's value set (or clear `dynamic`/`top`), never grow it, so dead
     // spans only grow. Equal plans => a true fixpoint; we then stop.
@@ -185,6 +184,16 @@ export function planFixpoint(models: Map<ComponentId, FileModel>): Map<Component
   }
 
   return plans;
+}
+
+/** One fixpoint round: re-derive every plan from the call sites that survive
+ * `plans`' dead spans.  `plans` is a fixpoint exactly when this returns plans
+ * {@link plansEqual} to it. */
+export function refinePlans(
+  models: Map<ComponentId, FileModel>,
+  plans: Map<ComponentId, ComponentPlan>,
+): Map<ComponentId, ComponentPlan> {
+  return buildPlans(models, buildUsage(models, deadSpansForPlans(models, plans)), plans);
 }
 
 /**
@@ -306,8 +315,7 @@ function buildPlans(
       // fold/narrow derived from the owner's OWN prop plan is gated on the plan
       // being present and not bailed.
       const foldable = plan !== undefined && !plan.bail;
-      const foldedProps =
-        foldable && plan.constFold.size > 0 ? remapToLocalNames(plan.constFold, model) : EMPTY_ENV;
+      const foldedProps = foldable ? remapToLocalNames(provenConstants(plan), model) : EMPTY_ENV;
       const narrow =
         foldable && plan.narrow.size > 0 ? remapToLocalNames(plan.narrow, model) : EMPTY_SET_ENV;
       const fold = mergeScriptConsts(model.scriptConstEnv, foldedProps);
@@ -331,7 +339,7 @@ function buildPlans(
  * so equal decisions => identical next round.  `bail` is structural (it never
  * changes across rounds) but is cheap to include for safety.
  */
-function plansEqual(
+export function plansEqual(
   a: Map<ComponentId, ComponentPlan>,
   b: Map<ComponentId, ComponentPlan>,
 ): boolean {
@@ -496,6 +504,25 @@ export function remapToLocalNames<V>(map: Map<string, V>, model: FileModel): Map
 }
 
 /**
+ * Every prop the plan proves constant, keyed by EXTERNAL name: `constFold` plus
+ * each one-value `narrow` set (a fold demoted by {@link pruneImplicitlyReadFolds}
+ * — still a constant, only not substitutable in the body).  A forwarded
+ * `<Child v={s}/>` with such an `s` hands the child a known value, so the owner
+ * env that resolves it and the one that decides whether its attribute is
+ * removable must BOTH see it, or the child folds `v` while `v={s}` stays and
+ * leaks into the child's `...rest`.
+ */
+export function provenConstants(plan: ComponentPlan): Map<string, Literal> {
+  let merged: Map<string, Literal> | undefined;
+  for (const [name, set] of plan.narrow) {
+    if (set.length !== 1) continue;
+    merged ??= new Map(plan.constFold);
+    merged.set(name, set[0]);
+  }
+  return merged ?? plan.constFold;
+}
+
+/**
  * Whether a declared prop name is unsafe to fold/narrow/drop because it is also
  * bound elsewhere: shadowed by a local `let`/`function` or a template binder
  * (`{#each as}`, snippet params, `{#await then}`, `let:`, `{@const}`), or used as
@@ -557,5 +584,44 @@ function buildPlan(model: FileModel, u: Usage | undefined, ownerEnv: OwnerEnv): 
     // narrowing, never for substitution/dropping.
     if (set.values.length >= 2) plan.narrow.set(decl.name, set.values);
   }
+  pruneImplicitlyReadFolds(model, plan);
   return plan;
+}
+
+/**
+ * Demote to `narrow` every folded prop that is read IMPLICITLY ({@link
+ * FileModel.implicitReads}: `$name`, `<name/>`, `use:name`, …) at a node the
+ * plan does not delete.  A folded prop is substituted and leaves the `$props()`
+ * signature, but no literal can be substituted at those positions, so a
+ * surviving implicit read would dangle.  A read inside a branch the plan kills
+ * is fine (`{#if Icon}<Icon/>{/if}` with `Icon` never passed folds the arm away).
+ *
+ * The demoted prop keeps its single value as a one-element `narrow` set: narrowing
+ * never substitutes or drops the prop, yet still kills every branch the value
+ * excludes.  Dropping the value instead would SHRINK the dead spans, which breaks
+ * the fixpoint's monotonicity (a revived call site re-widens a value set, which
+ * later collapses again — the plans oscillate until the round cap).  Should the
+ * set evaluate weaker than the constant somewhere, the spans could still shrink
+ * and expose further reads, so this repeats until stable.
+ */
+function pruneImplicitlyReadFolds(model: FileModel, plan: ComponentPlan): void {
+  if (model.implicitReads.size === 0) return;
+  for (;;) {
+    const dead = computeDeadSpans(
+      model.ast.fragment,
+      remapToLocalNames(plan.constFold, model),
+      remapToLocalNames(plan.narrow, model),
+    );
+    let changed = false;
+    for (const decl of model.props ?? []) {
+      if (decl.local === null || !plan.constFold.has(decl.name)) continue;
+      const reads = model.implicitReads.get(decl.local);
+      if (reads?.some((node) => !inSpans(node, dead))) {
+        plan.narrow.set(decl.name, [plan.constFold.get(decl.name)]);
+        plan.constFold.delete(decl.name);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+  }
 }

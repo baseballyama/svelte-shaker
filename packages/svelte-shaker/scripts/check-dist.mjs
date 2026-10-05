@@ -6,7 +6,7 @@ import { gzipSync } from 'node:zlib';
 
 const DIST = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const MAX_DIST_BYTES = 110_000;
-const MAX_JS_BYTES = 60_000;
+const MAX_JS_BYTES = 61_000;
 const MAX_JS_GZIP_BYTES = 20_000;
 
 /**

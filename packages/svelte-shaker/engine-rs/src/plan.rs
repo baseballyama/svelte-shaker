@@ -57,6 +57,21 @@ impl ComponentPlan {
     pub(crate) fn const_env(&self) -> Env {
         self.const_fold.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
+    /// Every prop the plan proves constant: `const_fold` plus each one-value
+    /// `narrow` set (a fold demoted by `prune_implicitly_read_folds`). The owner env
+    /// that resolves a forwarded `<Child v={s}/>` and the one that decides whether
+    /// its attribute is removable must BOTH see it, or the child folds `v` while
+    /// `v={s}` stays and leaks into the child's `...rest`. Mirrors analyze.ts
+    /// `provenConstants`.
+    pub(crate) fn proven_env(&self) -> Env {
+        let mut env = self.const_env();
+        for (k, v) in &self.narrow {
+            if let [only] = v.as_slice() {
+                env.insert(k.clone(), only.clone());
+            }
+        }
+        env
+    }
     pub(crate) fn set_env(&self) -> SetEnv {
         self.narrow.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
@@ -64,6 +79,55 @@ impl ComponentPlan {
 
 pub(crate) fn is_fold_blocked(model: &Model, name: &str) -> bool {
     model.shadowed.contains(name) || model.debug.contains(name) || model.written.contains(name)
+}
+
+/// Demote to `narrow` every folded prop that is read IMPLICITLY
+/// (`Model::implicit_reads`: `$name`, `<name/>`, `use:name`, …) at a node the plan
+/// does not delete. A folded prop is substituted and leaves the `$props()`
+/// signature, but no literal can be substituted at those positions, so a surviving
+/// implicit read would dangle. A read inside a branch the plan kills is fine.
+/// The demoted prop keeps its single value as a one-element `narrow` set: narrowing
+/// never substitutes or drops the prop, yet still kills every branch the value
+/// excludes. Dropping the value instead would SHRINK the dead spans and break the
+/// fixpoint's monotonicity (the plans oscillate until the round cap). Should the
+/// set evaluate weaker than the constant somewhere, the spans could still shrink
+/// and expose further reads, so this repeats until stable. Mirrors analyze.ts
+/// `pruneImplicitlyReadFolds`.
+fn prune_implicitly_read_folds(model: &Model, plan: &mut ComponentPlan) {
+    if model.implicit_reads.is_empty() {
+        return;
+    }
+    let props = match &model.props_info {
+        Some(pi) => &pi.props,
+        None => return,
+    };
+    loop {
+        let env = remap_to_local_names(&plan.const_env(), model);
+        let set_env = remap_to_local_names(&plan.set_env(), model);
+        let dead = compute_dead_spans_ir(&model.ir.fragment, &env, &set_env);
+        let mut changed = false;
+        for decl in props {
+            let local = match &decl.local {
+                Some(l) => l,
+                None => continue,
+            };
+            let survives = model
+                .implicit_reads
+                .get(local)
+                .is_some_and(|spans| spans.iter().any(|&span| !span_in_spans(span, &dead)));
+            if !survives {
+                continue;
+            }
+            if let Some(i) = plan.const_fold.iter().position(|(name, _)| name == &decl.name) {
+                let (name, value) = plan.const_fold.remove(i);
+                plan.narrow.push((name, vec![value]));
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+    }
 }
 
 /// Remap an env keyed by EXTERNAL prop name (`constFold` / `narrow`) to one keyed
@@ -141,6 +205,7 @@ pub(crate) fn build_plan(
             plan.narrow.push((decl.name.clone(), vs));
         }
     }
+    prune_implicitly_read_folds(model, &mut plan);
     plan
 }
 
@@ -195,6 +260,9 @@ pub(crate) struct Model {
     pub(crate) debug: HashSet<String>,
     /// Prop names the component WRITES TO — never folded (see `is_fold_blocked`).
     pub(crate) written: HashSet<String>,
+    /// Bindings read through a non-identifier position (`$name`, `<name/>`,
+    /// `use:name`, …), with the spans that read them — see `collect_implicit_reads`.
+    pub(crate) implicit_reads: HashMap<String, Vec<Span>>,
     /// Owner-local, provably-constant primitive bindings (docs §13.1), keyed by the
     /// LOCAL name a forwarded call-site expression references — merged into the
     /// owner's fold env so `<Child {count}/>` (an unmutated `let count = $state(0)`
@@ -219,7 +287,8 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[&Value]) -> Model 
     let shadowed: HashSet<String> = shadowed_vec.into_iter().collect();
     let debug: HashSet<String> = debug_vec.into_iter().collect();
     let written: HashSet<String> = written_vec.into_iter().collect();
-    let unread_declared = compute_unread_declared(&ast, &props_info, &shadowed, &debug, &written);
+    let implicit_reads = collect_implicit_reads(&ast);
+    let unread_declared = compute_unread_declared(&ast, &props_info, &shadowed, &debug, &written, &implicit_reads);
     let props_declaration = props_info.as_ref().map(|p| p.declaration.clone()).unwrap_or(Value::Null);
     let script_const_env = compute_script_const_env(&ast, &props_declaration, &written);
     let mut bail_reasons = component_bail(&ast);
@@ -283,6 +352,7 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[&Value]) -> Model 
         shadowed,
         debug,
         written,
+        implicit_reads,
         script_const_env,
         child_calls,
         escaped,
@@ -367,7 +437,7 @@ fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
         let plan = prev.get(&model.id);
         let foldable = plan.map(|p| !p.bail).unwrap_or(false);
         let folded_props = match plan {
-            Some(p) if foldable && !p.const_fold.is_empty() => remap_to_local_names(&p.const_env(), model),
+            Some(p) if foldable => remap_to_local_names(&p.proven_env(), model),
             _ => HashMap::new(),
         };
         let narrow = match plan {

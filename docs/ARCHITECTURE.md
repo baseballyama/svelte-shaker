@@ -231,7 +231,8 @@ value-set narrowing で削った後、`<Button variant="primary">` の**呼び�
 > - **健全性（構成的）**：特殊化するのは (1) **生きている**コールサイト（dead `{#if}` span 内は除外、
 >   fixpoint と同一述語）かつ (2) その prop が **spread に上書きされ得ないリテラル**であるサイトのみ
 >   （`afterLastSpread` かつ非 `dynamic`、§4.1 の部分 bail と同条件）。bail 済みコンポーネント
->   （escape/barrel/accessors）・shadow される prop・`{@debug}` prop・constant fold で既に畳んだ prop は
+>   （escape/barrel/accessors）・shadow される prop・`{@debug}` prop・constant fold で既に畳んだ prop・
+>   識別子を経ずに暗黙に読まれる prop（`$store`・`<Name/>`/`<name.X/>`・`use:`/`transition:`/`animate:`）は
 >   特殊化しない。residual は **unused-prop fold / constant fold / value-set narrowing と同一の監査済み
 >   ボディパイプライン**（`shakeBody`）で生成し、monomorphization は fold 環境を増やすだけ。
 > - **絶対に肥大しない（net-win ゲート）**：上記 1–4 の all-sites-or-nothing ＋ 測定ベース `Σ_spec < Σ_base`
@@ -337,6 +338,22 @@ soundness ホール）と、どの component にもマッチしなかった `pre
 Vite シェルはこれを **`config.logger.warn` で対象パス付きの actionable な警告**として surface する
 （build は失敗させない）。将来の eslint シェルは同じ構造化データを自前で報告できる。silent drop は
 CLAUDE.md「Don't swallow exceptions」に反するため、ここは必ず可視化する。
+
+#### ディスク上に無いコンポーネント（仮想モジュール）
+
+`this.resolve` が返す id が **ディスク上のファイルでない**場合（`\0` 始まりの仮想 id、または別プラグインの
+`load` フックがソースを供給するパス形の id）、Shell はそのソースを読めない。Vite の load パイプライン
+（`this.load`）は全 `transform`（shaker 自身と vite-plugin-svelte を含む）まで走らせてしまい、shake 前に
+生の `.svelte` ソースを得る手段にならない。そこで Vite シェルはこうした id を **未解決（`null`）として
+扱う** — 読まない・書き換えない（子として使われる仮想コンポーネントはそのまま残り、クラッシュしない）。
+
+ただし仮想コンポーネントが**何を描画し、どの prop を渡すか**は見えない。任意の実コンポーネントが
+その不可視コールサイトを持ち得るので、見えるコールサイトだけで fold を証明できない。よって
+**クロール（コンポーネント import とその barrel 経路）で仮想 id に当たったら、そのビルドの shake 全体を
+捨てる**（全ファイルを書かれたまま compile させ、対象 id 付きで `config.logger.warn`）。escape スキャン
+（`.ts` の全 specifier を解決する）では `$env/static/public` のような非コンポーネント仮想モジュールは
+普通の依存なので、`.svelte` で終わる仮想 id だけを数える。判定は Shell の Resolve で完結するため、
+JS / ネイティブ両エンジンで同一に効く。
 
 ---
 

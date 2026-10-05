@@ -462,13 +462,16 @@ fn collect_script_writes(program: &Value, out: &mut HashSet<String>) {
 /// pattern are excluded; default expressions ARE scanned.  Conservative: a prop is
 /// kept when the `$props()` shape is not a clean single-call ObjectPattern, when it
 /// binds a nested pattern (`local` is `None`), or when its local is shadowed /
-/// written / a `{@debug}` argument.
+/// written / a `{@debug}` argument / read implicitly ([`collect_implicit_reads`]).
+/// A `style:NAME` shorthand directive reads `NAME` too; it carries no identifier
+/// node (its `value` is the `true` marker), so the scan matches it by name.
 pub(crate) fn compute_unread_declared(
     ast: &Value,
     props_info: &Option<PropsInfo>,
     shadowed: &HashSet<String>,
     debug: &HashSet<String>,
     written: &HashSet<String>,
+    implicit_reads: &HashMap<String, Vec<Span>>,
 ) -> HashSet<String> {
     let pi = match props_info {
         Some(pi) if !pi.props.is_empty() => pi,
@@ -483,7 +486,11 @@ pub(crate) fn compute_unread_declared(
     let mut external_by_local: HashMap<String, String> = HashMap::new();
     for decl in &pi.props {
         if let Some(local) = &decl.local {
-            if !shadowed.contains(local) && !debug.contains(local) && !written.contains(local) {
+            if !shadowed.contains(local)
+                && !debug.contains(local)
+                && !written.contains(local)
+                && !implicit_reads.contains_key(local)
+            {
                 external_by_local.insert(local.clone(), decl.name.clone());
             }
         }
@@ -539,8 +546,15 @@ fn scan_reads(
     read_locals: &mut HashSet<String>,
 ) {
     let not_type = |n: &Value| !is_type_only_node(n);
-    walk_parented_pruned(root, None, &not_type, &mut |node, parent| {
-        if str_eq(node, "type", "Identifier") {
+    walk_parented_pruned(root, None, &not_type, &mut |node, parent| match type_of(node) {
+        Some("StyleDirective") if get(node, "value").as_bool() == Some(true) => {
+            if let Some(name) = node.get("name").and_then(Value::as_str) {
+                if external_by_local.contains_key(name) {
+                    read_locals.insert(name.to_string());
+                }
+            }
+        }
+        Some("Identifier") => {
             if let Some(name) = node.get("name").and_then(Value::as_str) {
                 if external_by_local.contains_key(name)
                     && !decl_spans.contains(&(off(node, "start"), off(node, "end")))
@@ -550,7 +564,42 @@ fn scan_reads(
                 }
             }
         }
+        _ => {}
     });
+}
+
+/// Bindings read IMPLICITLY — through a syntactic position that is not an
+/// expression identifier, so neither the read scans nor the fold substitution see
+/// an `Identifier(name)` there — keyed by the binding name, with the spans of the
+/// nodes that read it: a store auto-subscription `$name` (script or template), a
+/// component tag `<name/>` / `<name.Member/>`, and an action / transition /
+/// animation directive `use:name` / `transition:` / `in:` / `out:` / `animate:`.
+/// No literal can be substituted at these positions. Mirrors model.ts
+/// `collectImplicitReads`.
+pub(crate) fn collect_implicit_reads(ast: &Value) -> HashMap<String, Vec<Span>> {
+    let mut reads: HashMap<String, Vec<Span>> = HashMap::new();
+    let not_type = |n: &Value| !is_type_only_node(n);
+    for root in [get(ast, "instance"), get(ast, "fragment")] {
+        walk_parented_pruned(root, None, &not_type, &mut |node, parent| {
+            let name = match node.get("name").and_then(Value::as_str) {
+                Some(n) => n,
+                None => return,
+            };
+            let read = match type_of(node) {
+                // In runes mode `$name` subscribes to the binding `name` — even when
+                // `$name` is also a rune (`$state` with a `state` prop is a store
+                // read, per the compiler's `store_rune_conflict`). `$$props`-style
+                // names map to a `$`-prefixed binding no prop can declare.
+                Some("Identifier") if name.starts_with('$') && is_value_use(node, parent) => &name[1..],
+                Some("Component") | Some("UseDirective") | Some("TransitionDirective") | Some("AnimateDirective") => {
+                    name.split('.').next().unwrap_or(name)
+                }
+                _ => return,
+            };
+            reads.entry(read.to_string()).or_default().push((off(node, "start"), off(node, "end")));
+        });
+    }
+    reads
 }
 
 /// Whole-component bail reasons: `<svelte:options accessors|customElement>` makes

@@ -287,6 +287,87 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     expect(files['/App.svelte']).toContain('<Child n={count} s={step} />');
   });
 
+  it('keeps props read implicitly, identically to the TS engine (issue #202)', async () => {
+    // `$store`, `style:name`, `<name/>` / `<name.X/>` and `use:`/`transition:`/
+    // `animate:` read a prop without an expression identifier. Both engines must
+    // keep such a prop declared (it is read) and refuse to fold one whose read
+    // survives — but still fold `d`, whose only implicit read sits in the arm its
+    // own fold deletes, and `w`, whose `style:w` shorthand substitution expands.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte':
+          `<script>\n  import Child from './Child.svelte';\n  import Leaf from './Leaf.svelte';\n` +
+          `  import { writable } from 'svelte/store';\n  const store = writable(1);\n  const fn = () => ({});\n` +
+          `  let { width } = $props();\n</script>\n` +
+          `<Child s={store} t={store} st={width} w="4px" C={Leaf} ns={{ Root: Leaf }} u={fn} tr={fn} an={fn} />`,
+        '/Child.svelte':
+          `<script>\n  let { s, t, st, w, C, ns, u, tr, an, n, d } = $props();\n  const doubled = $derived($t * 2);\n</script>\n` +
+          `<p>{$s}{doubled}{$n}</p><i style:st style:w></i><C /><ns.Root />` +
+          `<div use:u in:tr out:tr></div>{#each [1] as k (k)}<div animate:an>{k}</div>{/each}` +
+          `{#if d}<d.Root />{/if}`,
+        '/Leaf.svelte': `<p>leaf</p>`,
+      },
+      '/App.svelte',
+    );
+    expect(files['/Child.svelte']).toContain('let { s, t, st, C, ns, u, tr, an, n } = $props();');
+    expect(files['/Child.svelte']).toContain('style:w={"4px"}');
+    expect(files['/Child.svelte']).not.toContain('{#if d}');
+  });
+
+  it('demotes an implicitly read constant to a one-value narrow set, identically to the TS engine', async () => {
+    // B's `act` collapses to `undefined` but `use:act` is live, so it stays
+    // declared; as a one-value set it must still kill `{#if act === 5}` (and A's
+    // `x` then folds to 1) in both engines, or the fixpoint oscillates. C covers
+    // the singleton deciding a bare `!a` exactly like the constant would.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>import A from './A.svelte'; import B from './B.svelte'; import C from './C.svelte'; let { f = false } = $props();</script><A x={1} /><B flag={f} /><C a={true} />`,
+        '/A.svelte': `<script>import B from './B.svelte'; let { x } = $props();</script><p>A{x}</p>{#if x === 2}<B act={null} />{/if}`,
+        '/B.svelte': `<script>import A from './A.svelte'; let { act, flag } = $props();</script>{#if flag}<div use:act>x</div>{/if}{#if act === 5}<A x={2} />{/if}<i>B</i>`,
+        '/C.svelte': `<script>let { a, b, s } = $props();</script><div use:a>hi</div>{#if !a}<b.Root />{/if}{#if s === 5}<em>five</em>{/if}<p>{$s}</p>`,
+      },
+      '/App.svelte',
+      MONO_ON,
+    );
+    expect(files['/B.svelte']).not.toContain('act === 5');
+    expect(files['/C.svelte']).toContain('let { a, s } = $props();');
+  });
+
+  it('never specializes an owner whose call sites the base edits, identically to the TS engine', async () => {
+    // A variant is rendered by the body pass alone, so it would keep `<Grand v={"a"} />`
+    // (and `u="x"`) after Grand dropped `v` (folded) / `u` (unread) — and Grand's
+    // `...rest` would render them. Both engines must decline to specialize Mid.
+    const heavy = Array.from({ length: 40 }, (_, i) => `<span>heavy ${i}</span>`).join('');
+    const { files, variants } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>import Mid from './Mid.svelte';</script><Mid a={0} b={1} x="a" /><Mid a={1} b={0} x="a" />`,
+        '/Mid.svelte':
+          `<script>import Heavy from './Heavy.svelte'; import Grand from './Grand.svelte'; let { a, b, x } = $props();</script>` +
+          `{#if a === 1 && b === 1}<Heavy />{/if}<Grand v={x} u="x" /><p>base</p>`,
+        '/Grand.svelte': `<script>let { v, u, ...rest } = $props();</script><p {...rest}>{v}</p>`,
+        '/Heavy.svelte': `<script>let { n = 0 } = $props();</script><div>${heavy}</div>`,
+      },
+      '/App.svelte',
+      MONO_ON,
+    );
+    expect(variants).toEqual({});
+    expect(files['/Mid.svelte']).toContain('<Grand />');
+  });
+
+  it('removes a forwarded demoted constant with the prop it folds, identically to the TS engine', async () => {
+    // Mid's `s` is a one-value narrow set; Grand folds `v` from it, so `v={s}` must
+    // go too or it lands in Grand's `...rest` (`<p v="a">`).
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>import Mid from './Mid.svelte'; let { f = false } = $props();</script><Mid s="a" flag={f} />`,
+        '/Mid.svelte': `<script>import Grand from './Grand.svelte'; let { s, flag } = $props();</script>{#if flag}<div use:s>x</div>{/if}<Grand v={s} />`,
+        '/Grand.svelte': `<script>let { v, ...rest } = $props();</script><p {...rest}>{v}</p>`,
+      },
+      '/App.svelte',
+    );
+    expect(files['/Mid.svelte']).toContain('<Grand />');
+  });
+
   it('matches the TS engine on an interprocedural pass-through (docs §13.1)', async () => {
     // App -> Mid -> Child: `variant` folds in Mid, so the forwarded
     // `<Child variant={variant}/>` must fold in Child too and its attribute be

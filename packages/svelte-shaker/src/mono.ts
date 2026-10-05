@@ -209,7 +209,13 @@ export function monomorphize(
       if (!child || !childPlan) continue;
       // Never specialize a fully-bailed child (escape/barrel/accessors): its
       // prop profile is unobservable, so a "specialized" copy could be wrong.
-      if (childPlan.bail || !child.props || child.props.length === 0) {
+      if (
+        childPlan.bail ||
+        !child.props ||
+        child.props.length === 0 ||
+        foldsImplicitRead(child, childPlan) ||
+        passesDroppedProp(child, models, plans)
+      ) {
         ineligible.add(call.childId);
         continue;
       }
@@ -570,6 +576,10 @@ function specializableShape(
     // A nested-pattern entry (`null` local) is unfoldable, and a prop whose LOCAL
     // binding is shadowed / used in `{@debug}` must not fold — both exactly as constant fold.
     if (decl.local === null || isFoldBlockedName(child, decl.local)) continue;
+    // An implicitly read prop (`$name`, `<name/>`, `use:name`, …) admits no
+    // substituted literal.  Constant fold keeps one only when its own fold deletes
+    // every such read; a variant does not re-check that, so it never freezes one.
+    if (child.implicitReads.has(decl.local)) continue;
     // The value must be a literal this site genuinely passes and no spread can
     // override — exactly the analysis's "safely explicit" condition.
     if (explicit.dynamic || !explicit.afterLastSpread) continue;
@@ -577,6 +587,47 @@ function specializableShape(
     shape.set(name, explicit.value);
   }
   return shape;
+}
+
+/**
+ * Whether `owner` passes, at any of its call sites, an attribute for a prop the
+ * child may drop from its `$props()` — one it folds, or one it declares but never
+ * reads.  The base transform removes such an attribute after the body pass, but a
+ * variant is rendered by the body pass alone, so it would keep passing the prop;
+ * a child with `...rest` then receives (and may render) it.  Such an owner is
+ * never specialized.  Deliberately coarse (every site, every folded or unread
+ * name): it only ever declines a specialization.
+ */
+function passesDroppedProp(
+  owner: FileModel,
+  models: Map<ComponentId, FileModel>,
+  plans: Map<ComponentId, ComponentPlan>,
+): boolean {
+  return owner.childCalls.some(({ childId, node }) => {
+    const child = models.get(childId);
+    const plan = plans.get(childId);
+    if (!child || !plan || plan.bail) return false;
+    return (node.attributes ?? []).some(
+      (attr) =>
+        attr.type === 'Attribute' &&
+        attr.name !== undefined &&
+        (plan.constFold.has(attr.name) || child.unreadDeclaredProps.has(attr.name)),
+    );
+  });
+}
+
+/**
+ * Whether the app-wide plan folds a prop that is read implicitly (`$name`,
+ * `<name/>`, `use:name`, …).  The plan proved every such read sits in a branch it
+ * deletes, but a variant renders differently: a chain inside an arm the variant
+ * collapses is re-emitted verbatim (only substituted), so the read can survive
+ * while the prop is still dropped from `$props()`.  Such a child is never
+ * specialized.
+ */
+function foldsImplicitRead(child: FileModel, plan: ComponentPlan): boolean {
+  return (child.props ?? []).some(
+    (d) => d.local !== null && plan.constFold.has(d.name) && child.implicitReads.has(d.local),
+  );
 }
 
 /**
