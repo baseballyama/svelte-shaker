@@ -116,6 +116,19 @@ export interface FileModel {
    */
   writtenNames: Set<string>;
   /**
+   * Bindings read IMPLICITLY — through a syntactic position that is not an
+   * expression identifier, so neither the read scans nor the fold substitution
+   * see an `Identifier(name)` there — keyed by the binding name, with the nodes
+   * that read it: a store auto-subscription `$name` (script or template; the
+   * identifier is `$name`, the binding read is `name`), a component tag `<name/>`
+   * / `<name.Member/>`, and an action / transition / animation directive
+   * `use:name` / `transition:` / `in:` / `out:` / `animate:` (its `name` is a
+   * string, possibly dotted).  Such a prop is genuinely read, and no literal can
+   * be substituted at these positions, so it may only fold when its own fold
+   * deletes every one of these nodes (see `pruneImplicitlyReadFolds`).
+   */
+  implicitReads: Map<string, AnyNode[]>;
+  /**
    * Owner-local bindings that are provably a single primitive CONSTANT, keyed by
    * the LOCAL name a forwarded call-site expression references (docs §13.1
    * interprocedural pass-through).  Merged into the owner's fold env so that
@@ -247,6 +260,7 @@ export function buildModelFromInput(
     instance,
     propsDeclaration,
   );
+  const implicitReads = collectImplicitReads(ast);
   const unreadDeclaredProps = computeUnreadDeclaredProps(
     ast,
     instance,
@@ -255,6 +269,7 @@ export function buildModelFromInput(
     shadowedNames,
     debugNames,
     writtenNames,
+    implicitReads,
   );
   const scriptConstEnv = computeScriptConstEnv(
     ast,
@@ -286,6 +301,7 @@ export function buildModelFromInput(
     shadowedNames,
     debugNames,
     writtenNames,
+    implicitReads,
     scriptConstEnv,
     escapedComponents,
     bailReasons,
@@ -305,7 +321,10 @@ export function buildModelFromInput(
  *    member access we do not track), or
  *  - it binds a nested pattern (no single local identifier), or
  *  - its local is shadowed / written / a `{@debug}` argument ({@link
- *    isFoldBlockedName}), where the reference's identity is ambiguous.
+ *    isFoldBlockedName}), where the reference's identity is ambiguous, or
+ *  - its local is read implicitly ({@link FileModel.implicitReads}).
+ * A `style:NAME` shorthand directive reads `NAME` too; it carries no identifier
+ * node (its `value` is the `true` marker), so the scan matches it by name.
  */
 function computeUnreadDeclaredProps(
   ast: Root,
@@ -315,6 +334,7 @@ function computeUnreadDeclaredProps(
   shadowedNames: Set<string>,
   debugNames: Set<string>,
   writtenNames: Set<string>,
+  implicitReads: Map<string, AnyNode[]>,
 ): Set<string> {
   if (!instance || !props || props.length === 0) return new Set();
   // A second `$props()` call can alias the props object (`const all = $props()`)
@@ -326,7 +346,12 @@ function computeUnreadDeclaredProps(
   const externalByLocal = new Map<string, string>();
   for (const decl of props) {
     if (decl.local === null) continue; // nested pattern: no single identifier
-    if (shadowedNames.has(decl.local) || debugNames.has(decl.local) || writtenNames.has(decl.local))
+    if (
+      shadowedNames.has(decl.local) ||
+      debugNames.has(decl.local) ||
+      writtenNames.has(decl.local) ||
+      implicitReads.has(decl.local)
+    )
       continue;
     externalByLocal.set(decl.local, decl.name);
   }
@@ -355,6 +380,13 @@ function computeUnreadDeclaredProps(
         _(node, { state, next }) {
           if (isTypeOnlyNode(node)) return; // TS type positions are erased, never reads
           if (
+            node.type === 'StyleDirective' &&
+            node.value === true &&
+            node.name &&
+            externalByLocal.has(node.name)
+          ) {
+            readLocals.add(node.name);
+          } else if (
             node.type === 'Identifier' &&
             node.name &&
             externalByLocal.has(node.name) &&
@@ -376,6 +408,59 @@ function computeUnreadDeclaredProps(
     if (!readLocals.has(local)) unread.add(name);
   }
   return unread;
+}
+
+/** Directives whose `name` is a reference to a binding (`use:action`), not a
+ * property / event / class name. */
+const REFERENCE_DIRECTIVES = new Set(['UseDirective', 'TransitionDirective', 'AnimateDirective']);
+
+/** {@link FileModel.implicitReads}: every binding read through a non-identifier
+ * position, over the instance script and the template. */
+function collectImplicitReads(ast: Root): Map<string, AnyNode[]> {
+  const reads = new Map<string, AnyNode[]>();
+  const add = (name: string, node: AnyNode): void => {
+    const nodes = reads.get(name);
+    if (nodes) nodes.push(node);
+    else reads.set(name, [node]);
+  };
+  const scan = (root: AnyNode | null | undefined): void => {
+    if (!root) return;
+    walk<{ parent: AnyNode | null }>(
+      root,
+      { parent: null },
+      {
+        _(node, { state, next }) {
+          if (isTypeOnlyNode(node)) return; // TS type positions are erased, never reads
+          if (
+            node.type === 'Identifier' &&
+            node.name?.startsWith('$') &&
+            isValueUse(node, state.parent)
+          ) {
+            // In runes mode `$name` subscribes to the binding `name` — even when
+            // `$name` is also a rune (`$state` with a `state` prop is a store read,
+            // per the compiler's `store_rune_conflict`).  `$$props`-style names map
+            // to a `$`-prefixed binding no prop can declare, so they never match.
+            add(node.name.slice(1), node);
+          } else if (
+            (node.type === 'Component' || REFERENCE_DIRECTIVES.has(node.type)) &&
+            node.name
+          ) {
+            add(rootSegment(node.name), node);
+          }
+          next({ parent: node });
+        },
+      },
+    );
+  };
+  scan(ast.instance);
+  scan(ast.fragment);
+  return reads;
+}
+
+/** `ns.Child` -> `ns`: the binding a dotted tag / directive name reads. */
+function rootSegment(name: string): string {
+  const dot = name.indexOf('.');
+  return dot === -1 ? name : name.slice(0, dot);
 }
 
 /**

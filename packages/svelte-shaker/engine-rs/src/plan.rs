@@ -66,6 +66,48 @@ pub(crate) fn is_fold_blocked(model: &Model, name: &str) -> bool {
     model.shadowed.contains(name) || model.debug.contains(name) || model.written.contains(name)
 }
 
+/// Unfold every folded prop that is read IMPLICITLY (`Model::implicit_reads`:
+/// `$name`, `<name/>`, `use:name`, …) at a node the plan does not delete. A folded
+/// prop leaves the `$props()` signature, and no literal can be substituted at those
+/// positions, so a surviving implicit read would dangle. A read inside a branch
+/// the fold itself kills is fine. Unfolding only shrinks the dead spans, which can
+/// expose further reads, so this repeats until stable. Narrowing is untouched.
+/// Mirrors analyze.ts `pruneImplicitlyReadFolds`.
+fn prune_implicitly_read_folds(model: &Model, plan: &mut ComponentPlan) {
+    if model.implicit_reads.is_empty() {
+        return;
+    }
+    let props = match &model.props_info {
+        Some(pi) => &pi.props,
+        None => return,
+    };
+    loop {
+        let env = remap_to_local_names(&plan.const_env(), model);
+        let set_env = remap_to_local_names(&plan.set_env(), model);
+        let dead = compute_dead_spans_ir(&model.ir.fragment, &env, &set_env);
+        let mut changed = false;
+        for decl in props {
+            let local = match &decl.local {
+                Some(l) => l,
+                None => continue,
+            };
+            let survives = model
+                .implicit_reads
+                .get(local)
+                .is_some_and(|spans| spans.iter().any(|&span| !span_in_spans(span, &dead)));
+            if !survives {
+                continue;
+            }
+            let before = plan.const_fold.len();
+            plan.const_fold.retain(|(name, _)| name != &decl.name);
+            changed |= plan.const_fold.len() != before;
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
 /// Remap an env keyed by EXTERNAL prop name (`constFold` / `narrow`) to one keyed
 /// by the LOCAL binding name each prop introduces.  Call-site analysis and
 /// call-site attribute dropping work off the external name (`prop` in `prop:
@@ -141,6 +183,7 @@ pub(crate) fn build_plan(
             plan.narrow.push((decl.name.clone(), vs));
         }
     }
+    prune_implicitly_read_folds(model, &mut plan);
     plan
 }
 
@@ -195,6 +238,9 @@ pub(crate) struct Model {
     pub(crate) debug: HashSet<String>,
     /// Prop names the component WRITES TO — never folded (see `is_fold_blocked`).
     pub(crate) written: HashSet<String>,
+    /// Bindings read through a non-identifier position (`$name`, `<name/>`,
+    /// `use:name`, …), with the spans that read them — see `collect_implicit_reads`.
+    pub(crate) implicit_reads: HashMap<String, Vec<Span>>,
     /// Owner-local, provably-constant primitive bindings (docs §13.1), keyed by the
     /// LOCAL name a forwarded call-site expression references — merged into the
     /// owner's fold env so `<Child {count}/>` (an unmutated `let count = $state(0)`
@@ -219,7 +265,8 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[&Value]) -> Model 
     let shadowed: HashSet<String> = shadowed_vec.into_iter().collect();
     let debug: HashSet<String> = debug_vec.into_iter().collect();
     let written: HashSet<String> = written_vec.into_iter().collect();
-    let unread_declared = compute_unread_declared(&ast, &props_info, &shadowed, &debug, &written);
+    let implicit_reads = collect_implicit_reads(&ast);
+    let unread_declared = compute_unread_declared(&ast, &props_info, &shadowed, &debug, &written, &implicit_reads);
     let props_declaration = props_info.as_ref().map(|p| p.declaration.clone()).unwrap_or(Value::Null);
     let script_const_env = compute_script_const_env(&ast, &props_declaration, &written);
     let mut bail_reasons = component_bail(&ast);
@@ -283,6 +330,7 @@ pub(crate) fn build_model_full(id: &str, ast: Value, edges: &[&Value]) -> Model 
         shadowed,
         debug,
         written,
+        implicit_reads,
         script_const_env,
         child_calls,
         escaped,

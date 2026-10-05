@@ -557,5 +557,38 @@ function buildPlan(model: FileModel, u: Usage | undefined, ownerEnv: OwnerEnv): 
     // narrowing, never for substitution/dropping.
     if (set.values.length >= 2) plan.narrow.set(decl.name, set.values);
   }
+  pruneImplicitlyReadFolds(model, plan);
   return plan;
+}
+
+/**
+ * Unfold every folded prop that is read IMPLICITLY ({@link
+ * FileModel.implicitReads}: `$name`, `<name/>`, `use:name`, …) at a node the
+ * plan does not delete.  A folded prop leaves the `$props()` signature, and no
+ * literal can be substituted at those positions, so a surviving implicit read
+ * would dangle.  A read inside a branch the fold itself kills is fine (`{#if
+ * Icon}<Icon/>{/if}` with `Icon` never passed folds the arm away).  Unfolding
+ * only shrinks the dead spans, which can expose further reads, so this repeats
+ * until stable.  Narrowing is untouched: a narrowed prop is never substituted or
+ * dropped.
+ */
+function pruneImplicitlyReadFolds(model: FileModel, plan: ComponentPlan): void {
+  if (model.implicitReads.size === 0) return;
+  for (;;) {
+    const dead = computeDeadSpans(
+      model.ast.fragment,
+      remapToLocalNames(plan.constFold, model),
+      remapToLocalNames(plan.narrow, model),
+    );
+    let changed = false;
+    for (const decl of model.props ?? []) {
+      if (decl.local === null || !plan.constFold.has(decl.name)) continue;
+      const reads = model.implicitReads.get(decl.local);
+      if (reads?.some((node) => !inSpans(node, dead))) {
+        plan.constFold.delete(decl.name);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+  }
 }

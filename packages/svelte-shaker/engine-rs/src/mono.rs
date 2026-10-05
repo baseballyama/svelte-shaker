@@ -187,6 +187,13 @@ pub(crate) fn specializable_shape(
         if is_fold_blocked(child, local) {
             continue;
         }
+        // An implicitly read prop (`$name`, `<name/>`, `use:name`, …) admits no
+        // substituted literal. Constant fold keeps one only when its own fold
+        // deletes every such read; a variant does not re-check that, so it never
+        // freezes one. Mirrors mono.ts `specializableShape`.
+        if child.implicit_reads.contains_key(local) {
+            continue;
+        }
         if explicit.dynamic || !explicit.after_last_spread {
             continue; // not a literal a spread cannot override
         }

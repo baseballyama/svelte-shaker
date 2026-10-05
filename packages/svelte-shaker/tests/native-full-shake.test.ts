@@ -287,6 +287,33 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     expect(files['/App.svelte']).toContain('<Child n={count} s={step} />');
   });
 
+  it('keeps props read implicitly, identically to the TS engine (issue #202)', async () => {
+    // `$store`, `style:name`, `<name/>` / `<name.X/>` and `use:`/`transition:`/
+    // `animate:` read a prop without an expression identifier. Both engines must
+    // keep such a prop declared (it is read) and refuse to fold one whose read
+    // survives — but still fold `d`, whose only implicit read sits in the arm its
+    // own fold deletes, and `w`, whose `style:w` shorthand substitution expands.
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte':
+          `<script>\n  import Child from './Child.svelte';\n  import Leaf from './Leaf.svelte';\n` +
+          `  import { writable } from 'svelte/store';\n  const store = writable(1);\n  const fn = () => ({});\n` +
+          `  let { width } = $props();\n</script>\n` +
+          `<Child s={store} t={store} st={width} w="4px" C={Leaf} ns={{ Root: Leaf }} u={fn} tr={fn} an={fn} />`,
+        '/Child.svelte':
+          `<script>\n  let { s, t, st, w, C, ns, u, tr, an, n, d } = $props();\n  const doubled = $derived($t * 2);\n</script>\n` +
+          `<p>{$s}{doubled}{$n}</p><i style:st style:w></i><C /><ns.Root />` +
+          `<div use:u in:tr out:tr></div>{#each [1] as k (k)}<div animate:an>{k}</div>{/each}` +
+          `{#if d}<d.Root />{/if}`,
+        '/Leaf.svelte': `<p>leaf</p>`,
+      },
+      '/App.svelte',
+    );
+    expect(files['/Child.svelte']).toContain('let { s, t, st, C, ns, u, tr, an, n } = $props();');
+    expect(files['/Child.svelte']).toContain('style:w={"4px"}');
+    expect(files['/Child.svelte']).not.toContain('{#if d}');
+  });
+
   it('matches the TS engine on an interprocedural pass-through (docs §13.1)', async () => {
     // App -> Mid -> Child: `variant` folds in Mid, so the forwarded
     // `<Child variant={variant}/>` must fold in Child too and its attribute be

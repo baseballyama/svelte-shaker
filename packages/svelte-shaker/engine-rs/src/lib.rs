@@ -294,6 +294,7 @@ mod tests {
             "shadowed": sorted(m.shadowed.into_iter().collect()),
             "debug": sorted(m.debug.into_iter().collect()),
             "written": sorted(m.written.into_iter().collect()),
+            "implicitReads": sorted(m.implicit_reads.into_keys().collect()),
             "bail": m.bail_reasons,
             "childCalls": m.child_calls.iter().map(|call| json!({
                 "childId": call.child_id,
@@ -372,6 +373,39 @@ mod tests {
             ] }
         });
         assert_eq!(analyze(&ast)["written"], json!(["bound", "count", "label"]));
+    }
+
+    #[test]
+    fn collects_implicit_reads() {
+        // `$store` (script and template), a component tag (bare and dotted), and the
+        // `use:` / `transition:` / `animate:` directive names read a binding with no
+        // expression identifier (issue #202). A `$`-name used as a member property,
+        // a `class:` directive (whose shorthand has a real identifier) and an
+        // `on:` event name do not.
+        let ast = json!({
+            "type": "Root",
+            "instance": { "content": { "body": [
+                { "type": "ExpressionStatement", "expression": {
+                    "type": "MemberExpression", "computed": false, "start": 0, "end": 21,
+                    "object": { "type": "Identifier", "name": "$fromScript", "start": 0, "end": 11 },
+                    "property": { "type": "Identifier", "name": "$notARead", "start": 12, "end": 21 } } }
+            ] } },
+            "fragment": { "type": "Fragment", "nodes": [
+                { "type": "ExpressionTag", "expression": { "type": "Identifier", "name": "$store" } },
+                { "type": "Component", "name": "Icon", "attributes": [] },
+                { "type": "Component", "name": "ns.Root", "attributes": [] },
+                { "type": "RegularElement", "name": "div", "attributes": [
+                    { "type": "UseDirective", "name": "act.run" },
+                    { "type": "TransitionDirective", "name": "fade" },
+                    { "type": "AnimateDirective", "name": "flip" },
+                    { "type": "ClassDirective", "name": "on" },
+                    { "type": "OnDirective", "name": "click" } ] }
+            ] }
+        });
+        assert_eq!(
+            analyze(&ast)["implicitReads"],
+            json!(["Icon", "act", "fade", "flip", "fromScript", "ns", "store"])
+        );
     }
 
     #[test]
