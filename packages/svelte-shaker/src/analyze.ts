@@ -315,8 +315,7 @@ function buildPlans(
       // fold/narrow derived from the owner's OWN prop plan is gated on the plan
       // being present and not bailed.
       const foldable = plan !== undefined && !plan.bail;
-      const foldedProps =
-        foldable && plan.constFold.size > 0 ? remapToLocalNames(plan.constFold, model) : EMPTY_ENV;
+      const foldedProps = foldable ? remapToLocalNames(provenConstants(plan), model) : EMPTY_ENV;
       const narrow =
         foldable && plan.narrow.size > 0 ? remapToLocalNames(plan.narrow, model) : EMPTY_SET_ENV;
       const fold = mergeScriptConsts(model.scriptConstEnv, foldedProps);
@@ -502,6 +501,25 @@ export function remapToLocalNames<V>(map: Map<string, V>, model: FileModel): Map
     if (local !== undefined) out.set(local, value);
   }
   return out;
+}
+
+/**
+ * Every prop the plan proves constant, keyed by EXTERNAL name: `constFold` plus
+ * each one-value `narrow` set (a fold demoted by {@link pruneImplicitlyReadFolds}
+ * — still a constant, only not substitutable in the body).  A forwarded
+ * `<Child v={s}/>` with such an `s` hands the child a known value, so the owner
+ * env that resolves it and the one that decides whether its attribute is
+ * removable must BOTH see it, or the child folds `v` while `v={s}` stays and
+ * leaks into the child's `...rest`.
+ */
+export function provenConstants(plan: ComponentPlan): Map<string, Literal> {
+  let merged: Map<string, Literal> | undefined;
+  for (const [name, set] of plan.narrow) {
+    if (set.length !== 1) continue;
+    merged ??= new Map(plan.constFold);
+    merged.set(name, set[0]);
+  }
+  return merged ?? plan.constFold;
 }
 
 /**

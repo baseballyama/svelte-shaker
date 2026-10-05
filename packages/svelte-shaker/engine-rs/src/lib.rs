@@ -186,7 +186,7 @@ fn run_base_phases(models: &[Model], plans: &Plans, code_by_id: &HashMap<String,
         // script constant is side-effect-free, so once the child drops the prop its
         // attribute is removable. Mirrors runBasePhases's `mergeLocalConstEnv`.
         let folded =
-            if plan.bail { HashMap::new() } else { remap_to_local_names(&plan.const_env(), model) };
+            if plan.bail { HashMap::new() } else { remap_to_local_names(&plan.proven_env(), model) };
         let owner_env = merge_script_consts(&model.script_const_env, folded);
         if let Some(edits) = edits_map.get_mut(&model.id) {
             let empty = Vec::new();

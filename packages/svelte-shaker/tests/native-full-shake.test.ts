@@ -333,6 +333,20 @@ describe.skipIf(!addon)('native ShakeSession matches svelteShakerWithMono', () =
     expect(files['/C.svelte']).toContain('let { a, s } = $props();');
   });
 
+  it('removes a forwarded demoted constant with the prop it folds, identically to the TS engine', async () => {
+    // Mid's `s` is a one-value narrow set; Grand folds `v` from it, so `v={s}` must
+    // go too or it lands in Grand's `...rest` (`<p v="a">`).
+    const { files } = await bothOverGraph(
+      {
+        '/App.svelte': `<script>import Mid from './Mid.svelte'; let { f = false } = $props();</script><Mid s="a" flag={f} />`,
+        '/Mid.svelte': `<script>import Grand from './Grand.svelte'; let { s, flag } = $props();</script>{#if flag}<div use:s>x</div>{/if}<Grand v={s} />`,
+        '/Grand.svelte': `<script>let { v, ...rest } = $props();</script><p {...rest}>{v}</p>`,
+      },
+      '/App.svelte',
+    );
+    expect(files['/Mid.svelte']).toContain('<Grand />');
+  });
+
   it('matches the TS engine on an interprocedural pass-through (docs §13.1)', async () => {
     // App -> Mid -> Child: `variant` folds in Mid, so the forwarded
     // `<Child variant={variant}/>` must fold in Child too and its attribute be

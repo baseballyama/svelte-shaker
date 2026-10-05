@@ -8,7 +8,7 @@
 import MagicString from 'magic-string';
 import { walk, attrSpanWithSpace, attrValueParts, type AnyNode } from './parse.js';
 import type { ComponentId, ComponentPlan, Literal } from './ir.js';
-import { remapToLocalNames } from './analyze.js';
+import { provenConstants, remapToLocalNames } from './analyze.js';
 import type { FileModel } from './model.js';
 import { decideChain, inSpans, type Span } from './dead.js';
 import { collectReverseRemovals, applyReverseRemovals, type ReverseOp } from './reverse.js';
@@ -125,11 +125,12 @@ export function runBasePhases(
   for (const model of models.values()) {
     const plan = plans.get(model.id)!;
     // A forwarded expression (`<Child prop={ownerProp}/>`) that the owner proves
-    // constant — a folded prop OR an owner-local script constant (docs §13.1) — is
+    // constant — a folded (or demoted one-value narrowed) prop OR an owner-local
+    // script constant (docs §13.1) — is
     // side-effect-free, so once the child drops the prop its attribute is as
     // removable as a written literal.  Give phase 2 the owner's fold env plus its
     // `scriptConstEnv`, both local-keyed as the expression references props/locals.
-    const foldEnv = plan.bail ? EMPTY_LOCAL_ENV : remapToLocalNames(plan.constFold, model);
+    const foldEnv = plan.bail ? EMPTY_LOCAL_ENV : remapToLocalNames(provenConstants(plan), model);
     const ownerEnv = mergeLocalConstEnv(model.scriptConstEnv, foldEnv);
     removeCallSiteAttributes(
       model,

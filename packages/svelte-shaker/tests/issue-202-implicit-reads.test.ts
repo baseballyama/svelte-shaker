@@ -211,6 +211,19 @@ describe('issue #202: props read implicitly are kept', () => {
     expect(out['/B.svelte']).not.toContain('act === 5');
   });
 
+  it('a demoted constant forwarded to a child is removed with the prop it folds', async () => {
+    // Mid's `s` is demoted to the one-value set {"a"}, so Grand receives exactly
+    // "a" and folds `v`.  Phase 2 must then remove `v={s}` too: left in place, it
+    // would land in Grand's `...rest` and render as `<p v="a">`.
+    const out = await shakeSound({
+      '/App.svelte': `<script>import Mid from './Mid.svelte'; let { f = false } = $props();</script><Mid s="a" flag={f} />`,
+      '/Mid.svelte': `<script>import Grand from './Grand.svelte'; let { s, flag } = $props();</script>{#if flag}<div use:s>x</div>{/if}<Grand v={s} />`,
+      '/Grand.svelte': `<script>let { v, ...rest } = $props();</script><p {...rest}>{v}</p>`,
+    });
+    expect(out['/Mid.svelte']).toContain('<Grand />');
+    expect(out['/Grand.svelte']).toContain('<p {...rest}>{"a"}</p>');
+  });
+
   it('never specializes a child whose app-wide fold hides an implicit read', async () => {
     // The base deletes `{#if s}{$s}{/if}` (s never passed) inside the live
     // `{#if a === 0}` arm.  A variant freezing `a = 0` re-emits that arm verbatim,

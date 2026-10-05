@@ -57,6 +57,21 @@ impl ComponentPlan {
     pub(crate) fn const_env(&self) -> Env {
         self.const_fold.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
+    /// Every prop the plan proves constant: `const_fold` plus each one-value
+    /// `narrow` set (a fold demoted by `prune_implicitly_read_folds`). The owner env
+    /// that resolves a forwarded `<Child v={s}/>` and the one that decides whether
+    /// its attribute is removable must BOTH see it, or the child folds `v` while
+    /// `v={s}` stays and leaks into the child's `...rest`. Mirrors analyze.ts
+    /// `provenConstants`.
+    pub(crate) fn proven_env(&self) -> Env {
+        let mut env = self.const_env();
+        for (k, v) in &self.narrow {
+            if let [only] = v.as_slice() {
+                env.insert(k.clone(), only.clone());
+            }
+        }
+        env
+    }
     pub(crate) fn set_env(&self) -> SetEnv {
         self.narrow.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
@@ -422,7 +437,7 @@ fn owner_envs_for(models: &[Model], prev: &Plans) -> OwnerEnvs {
         let plan = prev.get(&model.id);
         let foldable = plan.map(|p| !p.bail).unwrap_or(false);
         let folded_props = match plan {
-            Some(p) if foldable && !p.const_fold.is_empty() => remap_to_local_names(&p.const_env(), model),
+            Some(p) if foldable => remap_to_local_names(&p.proven_env(), model),
             _ => HashMap::new(),
         };
         let narrow = match plan {
