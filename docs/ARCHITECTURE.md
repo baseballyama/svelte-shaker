@@ -338,6 +338,22 @@ Vite シェルはこれを **`config.logger.warn` で対象パス付きの actio
 （build は失敗させない）。将来の eslint シェルは同じ構造化データを自前で報告できる。silent drop は
 CLAUDE.md「Don't swallow exceptions」に反するため、ここは必ず可視化する。
 
+#### ディスク上に無いコンポーネント（仮想モジュール）
+
+`this.resolve` が返す id が **ディスク上のファイルでない**場合（`\0` 始まりの仮想 id、または別プラグインの
+`load` フックがソースを供給するパス形の id）、Shell はそのソースを読めない。Vite の load パイプライン
+（`this.load`）は全 `transform`（shaker 自身と vite-plugin-svelte を含む）まで走らせてしまい、shake 前に
+生の `.svelte` ソースを得る手段にならない。そこで Vite シェルはこうした id を **未解決（`null`）として
+扱う** — 読まない・書き換えない（子として使われる仮想コンポーネントはそのまま残り、クラッシュしない）。
+
+ただし仮想コンポーネントが**何を描画し、どの prop を渡すか**は見えない。任意の実コンポーネントが
+その不可視コールサイトを持ち得るので、見えるコールサイトだけで fold を証明できない。よって
+**クロール（コンポーネント import とその barrel 経路）で仮想 id に当たったら、そのビルドの shake 全体を
+捨てる**（全ファイルを書かれたまま compile させ、対象 id 付きで `config.logger.warn`）。escape スキャン
+（`.ts` の全 specifier を解決する）では `$env/static/public` のような非コンポーネント仮想モジュールは
+普通の依存なので、`.svelte` で終わる仮想 id だけを数える。判定は Shell の Resolve で完結するため、
+JS / ネイティブ両エンジンで同一に効く。
+
 ---
 
 ## 5. 層構造（Shell / Engine / IR）
