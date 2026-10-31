@@ -120,7 +120,7 @@ jobs:
       # forces token auth, blocking OIDC.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24.22.0
+          node-version: 24.22.2
       - name: Ensure OIDC-capable npm
         run: |
           npm install -g npm@latest
