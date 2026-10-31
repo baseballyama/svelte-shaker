@@ -59,7 +59,7 @@
   },
   "dependencies": {
     "@rsvelte/compiler": "0.12.6",
-    "magic-string": "^1.0.0",
+    "magic-string": "^1.4.5",
     "picomatch": "^4.0.7",
     "zimmerframe": "^1.1.5"
   },
