@@ -15,8 +15,8 @@ crate-type = ["cdylib"]
 # `register_class`) that v3 no longer provides — a fresh `cargo build` fails. v3
 # on both restores a matching pairing. Renovate groups the three napi-rs crates
 # so they always move together (a lone napi-derive bump can outrun `napi`).
-napi = { version = "3.14.0", default-features = false, features = ["napi8"] }
-napi-derive = "3.6.10"
+napi = { version = "3.16.1", default-features = false, features = ["napi8"] }
+napi-derive = "3.7.0"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 rayon = "1.12.0"
 
