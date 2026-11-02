@@ -1140,7 +1140,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "rsvelte_core"
 version = "0.12.6"
-source = "git+https://github.com/baseballyama/rsvelte?rev=0d2ecab524623fb9e501517e204c1bb9fff4c2b7#0d2ecab524623fb9e501517e204c1bb9fff4c2b7"
+source = "git+https://github.com/baseballyama/rsvelte?rev=15cf08779e36a8f7fbef369085c3dcab116ca9aa#15cf08779e36a8f7fbef369085c3dcab116ca9aa"
 dependencies = [
  "bumpalo",
  "compact_str",
@@ -1174,7 +1174,7 @@ dependencies = [
 [[package]]
 name = "rsvelte_esrap"
 version = "0.10.45"
-source = "git+https://github.com/baseballyama/rsvelte?rev=0d2ecab524623fb9e501517e204c1bb9fff4c2b7#0d2ecab524623fb9e501517e204c1bb9fff4c2b7"
+source = "git+https://github.com/baseballyama/rsvelte?rev=15cf08779e36a8f7fbef369085c3dcab116ca9aa#15cf08779e36a8f7fbef369085c3dcab116ca9aa"
 dependencies = [
  "compact_str",
  "memchr",
