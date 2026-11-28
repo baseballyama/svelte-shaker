@@ -64,11 +64,11 @@
     "zimmerframe": "^1.1.5"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.2",
     "@types/picomatch": "4.0.3",
-    "svelte": "^5.57.3",
-    "tsdown": "0.23.4",
-    "vite": "^8.3.5"
+    "svelte": "^5.59.2",
+    "tsdown": "0.23.7",
+    "vite": "^8.4.0"
   },
   "peerDependencies": {
     "svelte": "^5.57.3"

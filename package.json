@@ -14,10 +14,10 @@
   },
   "devDependencies": {
     "@changesets/cli": "2.31.1",
-    "@tsconfig/strictest": "2.0.8",
-    "@types/node": "24.19.2",
-    "oxfmt": "0.75.0",
-    "oxlint": "1.90.0",
+    "@tsconfig/strictest": "2.0.9",
+    "@types/node": "24.19.4",
+    "oxfmt": "0.80.0",
+    "oxlint": "1.95.0",
     "typescript": "7.0.2",
     "vitest": "4.1.12"
   },
